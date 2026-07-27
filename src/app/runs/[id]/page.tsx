@@ -1,0 +1,113 @@
+import { notFound } from 'next/navigation';
+import { asc, eq } from 'drizzle-orm';
+import { db } from '@/db';
+import { runResults, runs } from '@/db/schema';
+import type { RunResultStatus, RunStatus } from '@/lib/run-events';
+import { RunDetail } from '@/components/runs/run-detail';
+import type { ResultView, RunView } from '@/components/runs/types';
+
+export const dynamic = 'force-dynamic';
+
+interface MachineSnapshot {
+  name?: unknown;
+  base_url?: unknown;
+  cpu?: unknown;
+  ram?: unknown;
+  gpu?: unknown;
+}
+
+function str(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function parseSnapshot(raw: string): MachineSnapshot {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as MachineSnapshot) : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseParams(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseGroupNames(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export default async function RunDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id: idParam } = await params;
+  const id = Number(idParam);
+  if (!Number.isInteger(id)) {
+    notFound();
+  }
+
+  const [run] = await db.select().from(runs).where(eq(runs.id, id));
+  if (!run) {
+    notFound();
+  }
+
+  const rows = await db
+    .select()
+    .from(runResults)
+    .where(eq(runResults.runId, id))
+    .orderBy(asc(runResults.sortOrder), asc(runResults.id));
+
+  const snapshot = parseSnapshot(run.machineSnapshot);
+
+  const runView: RunView = {
+    id: run.id,
+    machineId: run.machineId,
+    machineName: str(snapshot.name) ?? '(deleted machine)',
+    baseUrl: str(snapshot.base_url),
+    cpu: str(snapshot.cpu),
+    ram: str(snapshot.ram),
+    gpu: str(snapshot.gpu),
+    modelId: run.modelId,
+    params: parseParams(run.params),
+    comment: run.comment,
+    groupNames: parseGroupNames(run.groupNames),
+    status: run.status as RunStatus,
+    createdAt: run.createdAt,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+  };
+
+  const resultViews: ResultView[] = rows.map((row) => ({
+    id: row.id,
+    sortOrder: row.sortOrder,
+    groupName: row.groupName,
+    promptTitle: row.promptTitle,
+    promptText: row.promptText,
+    expectedOutput: row.expectedOutput,
+    systemPromptText: row.systemPromptText,
+    status: row.status as RunResultStatus,
+    responseText: row.responseText,
+    error: row.error,
+    durationMs: row.durationMs,
+    ttftMs: row.ttftMs,
+    promptTokens: row.promptTokens,
+    completionTokens: row.completionTokens,
+    tokensPerSec: row.tokensPerSec,
+    tokensEstimated: row.tokensEstimated,
+  }));
+
+  return <RunDetail run={runView} results={resultViews} />;
+}

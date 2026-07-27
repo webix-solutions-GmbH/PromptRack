@@ -1,0 +1,113 @@
+'use client';
+
+import { formatDuration, formatRate } from '@/lib/format';
+import { StatusBadge } from './status-badge';
+import type { ResultView } from './types';
+
+function Chip({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md border border-zinc-200 px-2 py-0.5 text-xs text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
+      <span className="text-zinc-400 dark:text-zinc-500">{label}</span>
+      <span className="font-mono text-zinc-700 dark:text-zinc-300">{value}</span>
+    </span>
+  );
+}
+
+const preClass =
+  'max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300';
+
+export function ResultCard({ result, index }: { result: ResultView; index: number }) {
+  const hasMetrics =
+    result.durationMs !== null ||
+    result.ttftMs !== null ||
+    result.completionTokens !== null ||
+    result.tokensPerSec !== null;
+
+  const tokenLabel =
+    result.completionTokens === null
+      ? null
+      : `${result.tokensEstimated ? '~' : ''}${result.completionTokens}${
+          result.promptTokens !== null ? ` / ${result.promptTokens} in` : ''
+        }`;
+
+  return (
+    <article className="flex flex-col gap-3 rounded-lg border border-zinc-200 p-5 dark:border-zinc-800">
+      <header className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            {index}. {result.groupName}
+          </span>
+          <h3 className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+            {result.promptTitle}
+          </h3>
+        </div>
+        <StatusBadge status={result.status} />
+      </header>
+
+      <details className="text-sm">
+        <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200">
+          Prompt &amp; system prompt
+        </summary>
+        <div className="mt-2 flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+              User message
+            </span>
+            <pre className={preClass}>{result.promptText}</pre>
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+              Effective system prompt
+            </span>
+            <pre className={preClass}>
+              {result.systemPromptText ?? '(no system message)'}
+            </pre>
+          </div>
+        </div>
+      </details>
+
+      {result.error && (
+        <div className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          {result.error}
+        </div>
+      )}
+
+      {result.expectedOutput ? (
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="flex min-w-0 flex-col gap-1">
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+              Response
+            </span>
+            <pre className={preClass}>
+              {result.responseText ?? (result.status === 'running' ? '…' : '—')}
+            </pre>
+          </div>
+          <div className="flex min-w-0 flex-col gap-1">
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+              Expected output
+            </span>
+            <pre className={preClass}>{result.expectedOutput}</pre>
+          </div>
+        </div>
+      ) : (
+        (result.responseText || result.status === 'running') && (
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+              Response
+            </span>
+            <pre className={preClass}>{result.responseText ?? '…'}</pre>
+          </div>
+        )
+      )}
+
+      {hasMetrics && (
+        <div className="flex flex-wrap gap-2">
+          <Chip label="duration" value={formatDuration(result.durationMs)} />
+          <Chip label="ttft" value={formatDuration(result.ttftMs)} />
+          {tokenLabel && <Chip label="tokens" value={tokenLabel} />}
+          <Chip label="speed" value={formatRate(result.tokensPerSec)} />
+        </div>
+      )}
+    </article>
+  );
+}

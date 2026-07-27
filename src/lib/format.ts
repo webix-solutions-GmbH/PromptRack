@@ -4,3 +4,19 @@ export function formatDateTime(ms: number): string {
     timeStyle: 'short',
   });
 }
+
+/** Compact wall-clock duration: `840ms`, `3.4s`, `1m 12s`. */
+export function formatDuration(ms: number | null | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return '—';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+export function formatRate(tokensPerSec: number | null | undefined): string {
+  if (typeof tokensPerSec !== 'number' || !Number.isFinite(tokensPerSec)) return '—';
+  return `${tokensPerSec.toFixed(1)} tok/s`;
+}
