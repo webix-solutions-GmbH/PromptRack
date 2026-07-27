@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { formatDuration, formatRate } from '@/lib/format';
 import { splitThinking } from '@/lib/thinking';
+import { MarkdownResponse } from '@/components/markdown-response';
 import type { CompareCellView, CompareRowView } from '@/lib/compare';
 
 /** Characters of a response shown before it gets clamped. */
@@ -79,13 +80,9 @@ function Cell({
           {cell.error}
         </div>
       ) : text.length > 0 ? (
-        <p
-          className={`whitespace-pre-wrap break-words font-mono text-xs text-zinc-700 dark:text-zinc-300 ${
-            expanded ? 'max-h-96 overflow-auto' : ''
-          }`}
-        >
-          {shown}
-        </p>
+        <div className={expanded ? 'max-h-96 overflow-auto' : ''}>
+          <MarkdownResponse text={shown} />
+        </div>
       ) : (
         <p className="text-xs text-zinc-400 dark:text-zinc-500">(no response)</p>
       )}

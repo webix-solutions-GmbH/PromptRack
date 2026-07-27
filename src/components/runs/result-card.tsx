@@ -2,6 +2,7 @@
 
 import { formatDuration, formatRate } from '@/lib/format';
 import { splitThinking } from '@/lib/thinking';
+import { MarkdownResponse } from '@/components/markdown-response';
 import { ResultRating } from './result-rating';
 import { StatusBadge } from './status-badge';
 import type { ResultView } from './types';
@@ -58,9 +59,15 @@ function ResponseBlock({ text, running }: { text: string | null; running: boolea
           <pre className={`${preClass} mt-1 italic`}>{thinking}</pre>
         </details>
       )}
-      <pre className={preClass}>
-        {answer || (running ? '…' : thinking !== null ? '(empty answer)' : '—')}
-      </pre>
+      {answer ? (
+        <div className="max-h-96 overflow-auto rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs dark:border-zinc-800 dark:bg-zinc-900">
+          <MarkdownResponse text={answer} />
+        </div>
+      ) : (
+        <pre className={preClass}>
+          {running ? '…' : thinking !== null ? '(empty answer)' : '—'}
+        </pre>
+      )}
     </>
   );
 }
