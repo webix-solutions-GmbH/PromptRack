@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { apiPath } from '@/lib/base-path';
 
 type DiscoverResult =
   | { ok: true; discovered: number; models: string[] }
@@ -16,7 +17,7 @@ export function DiscoverModelsButton({ machineId }: { machineId: number }) {
     setPending(true);
     setResult(null);
     try {
-      const res = await fetch(`/api/machines/${machineId}/discover`, { method: 'POST' });
+      const res = await fetch(apiPath(`/api/machines/${machineId}/discover`), { method: 'POST' });
       const data = (await res.json()) as DiscoverResult;
       setResult(data);
       if (data.ok) {

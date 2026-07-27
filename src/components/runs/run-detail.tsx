@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { apiPath } from '@/lib/base-path';
 import { formatDateTime, formatDuration, formatRate } from '@/lib/format';
 import { isRunEvent, type RunEvent, type RunStatus } from '@/lib/run-events';
 import { ResultCard } from './result-card';
@@ -130,7 +131,7 @@ export function RunDetail({
     abortRef.current = controller;
 
     try {
-      const response = await fetch(`/api/runs/${run.id}/execute`, {
+      const response = await fetch(apiPath(`/api/runs/${run.id}/execute`), {
         method: 'POST',
         signal: controller.signal,
       });

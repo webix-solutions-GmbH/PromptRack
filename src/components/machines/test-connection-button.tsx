@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { apiPath } from '@/lib/base-path';
 
 type TestResult =
   | { ok: true; status: number; latencyMs: number }
@@ -14,7 +15,7 @@ export function TestConnectionButton({ machineId }: { machineId: number }) {
     setPending(true);
     setResult(null);
     try {
-      const res = await fetch(`/api/machines/${machineId}/test`, { method: 'POST' });
+      const res = await fetch(apiPath(`/api/machines/${machineId}/test`), { method: 'POST' });
       const data = (await res.json()) as TestResult;
       setResult(data);
     } catch {

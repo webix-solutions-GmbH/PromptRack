@@ -16,7 +16,7 @@ against the running Node version.
 nvm use 22
 npm install
 npm run db:push   # create/update data/app.db from src/db/schema.ts
-npm run dev       # http://localhost:3000
+npm run dev       # http://localhost:3000/agent-val (the app lives under its basePath)
 ```
 
 Other scripts: `npm run lint`, `npm test` (vitest), `npm run build`.
@@ -38,9 +38,16 @@ docker compose up -d --build
   and survives rebuilds. `user: "1001:1001"` in `docker-compose.yml` must match
   the owner of `./data`.
 - It joins the **external** network `llm_default` (created by the LLM stack);
-  Caddy reverse-proxies `agent-val.ki01.webix.de` → `agent-val:3000` and puts
-  HTTP basic auth in front of it. The app itself has no authentication.
-- `127.0.0.1:3100:3000` is published for LAN/debug access from the host only.
+  Caddy serves the app at `https://ki01.webix.de/agent-val` (path-based routing
+  via a `handle /agent-val*` block → `agent-val:3000`) and puts HTTP basic auth
+  in front of it. The app itself has no authentication.
+- The app is built with `basePath: '/agent-val'` (see `src/lib/base-path.ts`),
+  so it expects that prefix everywhere — including in dev
+  (`http://localhost:3000/agent-val`). Raw `fetch()` calls to our own API routes
+  must go through `apiPath()` from `src/lib/base-path.ts`; `next/link` and the
+  router add the prefix automatically.
+- `127.0.0.1:3100:3000` is published for LAN/debug access from the host only
+  (`http://localhost:3100/agent-val`).
 
 ### Schema bootstrap on start
 
