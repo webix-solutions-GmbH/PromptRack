@@ -9,7 +9,8 @@
  * Idempotency: a group whose name already exists in `prompt_groups` is
  * skipped entirely — re-running never duplicates or overwrites anything.
  * Prompts deliberately embed all instructions and data inline (no
- * `system_prompts` dependency), so each one is self-contained.
+ * `system_prompts` dependency), so each one is self-contained. A prompt may
+ * carry its own `systemText`, stored as a per-prompt override system prompt.
  */
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -21,6 +22,43 @@ const dbPath = path.join(dataDir, 'app.db');
 // ---------------------------------------------------------------------------
 // Seed data
 // ---------------------------------------------------------------------------
+
+// Shared by the two reconcile evals below — mirrors the real pipeline prompt
+// from FoundryAgentFactory.cs.
+const RECONCILE_SYSTEM = `You reconcile a supplier invoice against the ONE purchase order it was matched to. You get the
+invoice header + positions and the PO header + positions. Reason like an accountant.
+
+The decisive question is whether the invoice and PO describe the SAME purchase for the SAME
+money — NOT whether their position lists are formatted identically. The two sides routinely
+itemize differently, and that alone is never a problem:
+- An invoice often folds discounts, shipping, or fees into its TOTAL (or into a line's price)
+  instead of listing them, while the PO itemizes them as separate positions — e.g. "Rabatt",
+  "Aktionsrabatt", "Skonto", "Versand", "Versandkosten". A discount / shipping / fee position
+  that appears on only ONE side is NOT a difference to ask about when the header totals still
+  reconcile: it is exactly what explains the gap between a line and the total.
+- Descriptions may be worded differently; tax, rounding (a few cents), wording and ordering
+  never matter.
+
+Procedure:
+1. Compare the header totals FIRST. If the invoice total ≈ the PO total (within ~1%), the
+   purchase amount agrees — this is the strongest signal and on its own normally means approve.
+2. Map the real GOODS / SERVICE positions to each other. Any position difference that is fully
+   explained by a one-sided discount / shipping / fee line, by tax, or by rounding is NOT a root
+   difference.
+3. A ROOT difference is a genuinely UNEXPLAINED gap: a real product/service on one side that is
+   missing from the other, a wrong quantity of goods, or a materially wrong price that the
+   totals do NOT absorb.
+
+Then decide:
+- Totals reconcile and every position difference is explained (discount / shipping / fee / tax /
+  rounding) → reply EXACTLY:
+    APPROVE | <one short reason>
+- There is a genuine, unexplained root difference → reply with a first line containing only
+    ASK
+  then a SHORT German note to the orderer: informal "du", no salutation, no sign-off, no
+  signature. State each root difference ONCE and ask whether it is correct. Never restate the
+  same discrepancy as both a position and a total.
+Reply with nothing else.`;
 
 const GROUPS = [
   {
@@ -294,6 +332,103 @@ Empfehlung: Zahlung anhalten, beim Lieferanten klären, nur eine der beiden Rech
       },
     ],
   },
+  {
+    name: 'Invoice Agent (Pipeline)',
+    description:
+      'Self-contained evals matching the real invoice-agent pipeline prompts (system prompts from FoundryAgentFactory.cs, user format from GptExecutors.cs): PO judge, reconcile approve/ask, reply interpreter.',
+    prompts: [
+      {
+        title: 'Judge: ambiguous PO candidates',
+        systemText: `You match a supplier invoice to one purchase order from a candidate list. Vendor names
+on invoices rarely match the ERP partner exactly (legal-entity suffixes, abbreviations),
+and totals can differ by tax or rounding. Weigh vendor/partner similarity, total, and date.
+Reply with ONLY the exact PurchaseOrder name (e.g. "P00012") of the single best match, or
+the single word NONE if you cannot confidently identify one. No other text.`,
+        content: `Invoice: vendor="Nordlicht Handels GmbH & Co. KG", total=4165.00 EUR, date=2026-06-12, PO-printed-on-invoice=none.
+Purchase-order candidates:
+- P00018: partner="Nordlicht Handel", total=4165.00 EUR, date=2026-06-05, state=purchase
+- P00019: partner="Nordlicht Handel", total=4165.00 EUR, date=2026-04-02, state=purchase
+- P00007: partner="Süddeutsche Bürotechnik AG", total=4165.00 EUR, date=2026-06-10, state=purchase`,
+        expectedOutput: `P00018
+
+Pass: output contains "P00018" and nothing contradicting it (ideally the bare PO name).
+Fail: P00019 (stale date), P00007 (wrong partner despite matching total), NONE, or any
+explanation text around the answer (the parser does a substring match, so extra prose is
+tolerated at runtime — but a well-behaved model returns only the name).`,
+      },
+      {
+        title: 'Reconcile: folded discount → APPROVE',
+        systemText: RECONCILE_SYSTEM,
+        content: `Invoice: vendor="Süddeutsche Bürotechnik AG", total=2617.30 EUR, date=2026-06-20.
+Invoice positions:
+- Dokumentenscanner DS-940: qty=5, amount=2450.00
+- Wartungspauschale Juni: qty=1, amount=167.30
+Matched purchase order P00021: total=2617.30 EUR.
+PO positions:
+- Dokumentenscanner DS-940: qty=5, unit_price=515.00, total=2575.00
+- Wartungspauschale: qty=1, unit_price=167.30, total=167.30
+- Aktionsrabatt: qty=1, unit_price=-125.00, total=-125.00
+Why it needs review: totals match but line counts differ (2 vs 3)`,
+        expectedOutput: `APPROVE | <one short reason>
+e.g. APPROVE | Totals match; scanner line difference is the PO's itemized Aktionsrabatt folded into the invoice price.
+
+Pass: first token is APPROVE, followed by | and a reason.
+Fail: ASK (asking about the Rabatt line or the 2450 vs 2575 scanner price — that gap is
+exactly the -125.00 discount), or any output not starting with APPROVE.`,
+      },
+      {
+        title: 'Reconcile: quantity mismatch → ASK',
+        systemText: RECONCILE_SYSTEM,
+        content: `Invoice: vendor="Nordlicht Handels GmbH & Co. KG", total=5220.00 EUR, date=2026-06-25.
+Invoice positions:
+- Höhenverstellbarer Schreibtisch E5: qty=12, amount=5220.00
+Matched purchase order P00018: total=4350.00 EUR.
+PO positions:
+- Höhenverstellbarer Schreibtisch E5: qty=10, unit_price=435.00, total=4350.00
+Why it needs review: totals differ (5220.00 vs 4350.00)`,
+        expectedOutput: `First line exactly "ASK", then a short German note using "du", no salutation/sign-off, e.g.:
+
+ASK
+Die Rechnung von Nordlicht listet 12 Schreibtische E5 (5.220,00 EUR), bestellt waren laut P00018 aber nur 10 (4.350,00 EUR). Wurden tatsächlich 12 geliefert, oder stimmt die Rechnung nicht?
+
+Pass: first line is ASK; body is German, informal "du", mentions the 12-vs-10 quantity
+(or the 870 EUR gap) exactly once, ends without signature.
+Fail: APPROVE (20% gap is far outside tolerance), English body, "Sehr geehrte…", or
+restating the same discrepancy as both a quantity and a total difference.`,
+      },
+      {
+        title: 'Reply interpreter: nachgebucht → RECHECK',
+        systemText: `You read an orderer's free-text reply (usually German) to a clarification email about an
+invoice, and decide the outcome — one of three:
+- The orderer says they have just BOOKED / POSTED / CREATED or CORRECTED the order in the ERP
+  (Odoo) and want you to look again (e.g. "habe ich nachgebucht, schau nochmal", "ist jetzt
+  angelegt", "habe es korrigiert") → RECHECK. We will re-query the ERP.
+- The reply confirms the invoice is legitimate / identifies a purchase order → APPROVED.
+- The reply rejects the invoice or is unclear / non-committal → FLAGGED for manual handling.
+Reply on a single line in EXACTLY one of these formats:
+  RECHECK  | <one short note>
+  APPROVED | <po-name-or-"none"> | <one short reason>
+  FLAGGED  | none | <one short reason>
+Prefer RECHECK whenever the orderer claims they changed something in the ERP and asks to
+re-check, even if they also sound confident it is fine now.`,
+        content: `Schriftverkehr mit dem Besteller zu dieser Rechnung (chronologisch):
+---
+Agent fragt:
+Die Rechnung von Nordlicht Handels GmbH & Co. KG über 4.165,00 EUR vom 12.06.2026 passt zu keiner offenen Bestellung. Kannst du sagen, zu welcher Bestellung sie gehört?
+
+Besteller antwortet:
+Sorry, das war mein Fehler — die Bestellung hatte ich nur als Entwurf gespeichert. Habe sie eben in Odoo nachgebucht (P00023), sollte jetzt alles passen. Schau bitte nochmal.
+---
+Interpretiere die LETZTE Antwort des Bestellers im Kontext des gesamten Verlaufs.`,
+        expectedOutput: `RECHECK | <one short note>
+e.g. RECHECK | Besteller hat P00023 in Odoo nachgebucht
+
+Pass: single line starting with RECHECK and containing a |.
+Fail: APPROVED | P00023 | ... — the classic miss: the model latches onto the named PO and
+the confident tone instead of the "nachgebucht, schau nochmal" trigger.`,
+      },
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -312,7 +447,7 @@ function main() {
   const insertPrompt = db.prepare(
     `INSERT INTO prompts
        (group_id, title, content, expected_output, system_prompt_id, system_prompt_mode, custom_system_text, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, NULL, 'append', NULL, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
   );
 
   const seedAll = db.transaction(() => {
@@ -334,6 +469,8 @@ function main() {
           prompt.title,
           prompt.content,
           prompt.expectedOutput,
+          prompt.systemText ? 'override' : 'append',
+          prompt.systemText ?? null,
           (promptIndex + 1) * 10,
           now,
           now,
