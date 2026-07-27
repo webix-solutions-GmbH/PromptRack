@@ -1,0 +1,20 @@
+services:
+  agent-val:
+    build: .
+    container_name: agent-val
+    restart: unless-stopped
+    # Must match the owner of ./data on the host, otherwise SQLite cannot write
+    # to the bind mount. Drop this line to run as root.
+    user: "1001:1001"
+    volumes:
+      - ./data:/app/data
+    # Caddy reaches the app over the shared llm_default network as agent-val:3000.
+    # The published port is only for LAN/debug access from the host.
+    ports:
+      - "127.0.0.1:3100:3000"
+    networks:
+      - llm_default
+
+networks:
+  llm_default:
+    external: true

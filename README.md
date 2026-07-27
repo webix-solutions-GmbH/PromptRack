@@ -1,36 +1,97 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Agent Model Evaluator
 
-## Getting Started
+A single-user benchmarking tool for self-hosted LLMs. Point it at one or more
+OpenAI-compatible endpoints, keep a library of prompts, run those prompts
+against a model, rate the answers, and compare runs side by side.
 
-First, run the development server:
+Stack: Next.js 16 (App Router) · TypeScript · Tailwind v4 · Drizzle ORM +
+SQLite (better-sqlite3). All state lives in a single file, `data/app.db`.
+
+## Development
+
+Node 22 (via nvm) is required — better-sqlite3 is a native module and is loaded
+against the running Node version.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+nvm use 22
+npm install
+npm run db:push   # create/update data/app.db from src/db/schema.ts
+npm run dev       # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Other scripts: `npm run lint`, `npm test` (vitest), `npm run build`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+`npm run db:push` applies `src/db/schema.ts` directly to the local database —
+the schema file is the source of truth; there are no checked-in migrations.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Production deployment
 
-## Learn More
+The app ships as a Docker image built from the multi-stage `Dockerfile`
+(`node:22-alpine`, Next.js `output: 'standalone'`).
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+docker compose up -d --build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- The compose service is `agent-val`, listening on port 3000 in the container.
+- `./data` is bind-mounted to `/app/data`, so the SQLite file lives on the host
+  and survives rebuilds. `user: "1001:1001"` in `docker-compose.yml` must match
+  the owner of `./data`.
+- It joins the **external** network `llm_default` (created by the LLM stack);
+  Caddy reverse-proxies `agent-val.ki01.webix.de` → `agent-val:3000` and puts
+  HTTP basic auth in front of it. The app itself has no authentication.
+- `127.0.0.1:3100:3000` is published for LAN/debug access from the host only.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Schema bootstrap on start
 
-## Deploy on Vercel
+The data volume can be completely empty on first start, so the schema is created
+when the container starts rather than when the image is built:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. During the image build, `drizzle-kit generate` turns `src/db/schema.ts` into
+   plain SQL under `drizzle/` (generated, not committed).
+2. `docker-entrypoint.sh` runs `scripts/init-db.mjs` before the server starts.
+   It applies every SQL file the database has not seen yet, tracked in an
+   `__app_migrations` table, and rewrites `CREATE TABLE`/`CREATE INDEX` to
+   `IF NOT EXISTS` so a database originally created with `drizzle-kit push` can
+   be mounted without conflicts.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+This was chosen over shipping drizzle-kit in the runtime image: the bootstrap
+needs nothing but `better-sqlite3`, which is already part of the standalone
+output, so the runner image carries no dev dependencies and no TypeScript.
+
+## How it works
+
+**Machines** — an OpenAI-compatible endpoint (base URL, optional API key) plus
+free-text hardware notes (CPU/RAM/GPU). "Test connection" pings the endpoint and
+"Discover models" reads `/v1/models` to record what the machine can serve.
+
+**Models** — kept per machine in `machine_models`, so a run can pick a model that
+is known to exist on the selected machine. Models that were only seen in a run,
+or entered by hand, are remembered too.
+
+**Prompts** — organised into groups. Each prompt has a title, the user message,
+an optional expected output, and an optional system prompt; reusable system
+prompts can either be appended to or overridden by the prompt's own text.
+
+**Runs** — a run executes every prompt of the selected group(s) against one
+machine and one model, streaming the responses and recording per-result metrics.
+The machine is snapshotted into the run, so deleting a machine later does not
+falsify history. Every result can be rated 👍/👎 with a note.
+
+**Compare** — pick 2–4 runs (the selection lives in the URL, e.g.
+`/compare?runs=1,5`) and get a matrix: rows are prompts, columns are runs, cells
+hold the response with its rating and speed. Rows are matched by prompt id;
+results whose prompt was deleted meanwhile fall back to matching on identical
+prompt text. A prompt only one of the runs covered shows `—` in the other
+column.
+
+## Metrics
+
+- **TTFT** — time to first token: milliseconds between sending the request and
+  the first content chunk arriving. Mostly prompt processing and queueing.
+- **tok/s** — completion tokens divided by the generation time *after* the first
+  token (`duration − TTFT`), i.e. decode speed without the prefill.
+- **duration** — total wall-clock time of the request.
+- **~estimated tokens** — a `~` prefix means the endpoint returned no usage
+  block, so the completion token count was estimated from the response length
+  (~4 characters per token). Those tok/s numbers are approximate.

@@ -16,6 +16,18 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${minutes}m ${seconds}s`;
 }
 
+/** Machine name out of a run's frozen `machine_snapshot` JSON. */
+export function snapshotMachineName(raw: string): string {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const name =
+      parsed && typeof parsed === 'object' ? (parsed as { name?: unknown }).name : undefined;
+    return typeof name === 'string' && name.length > 0 ? name : '(deleted machine)';
+  } catch {
+    return '(deleted machine)';
+  }
+}
+
 export function formatRate(tokensPerSec: number | null | undefined): string {
   if (typeof tokensPerSec !== 'number' || !Number.isFinite(tokensPerSec)) return '—';
   return `${tokensPerSec.toFixed(1)} tok/s`;

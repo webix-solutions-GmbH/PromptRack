@@ -42,3 +42,7 @@ next-env.d.ts
 
 # local sqlite database
 /data/
+
+# SQL generated from src/db/schema.ts (created by `drizzle-kit generate`,
+# regenerated inside the Docker build)
+/drizzle/

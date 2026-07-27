@@ -2,21 +2,10 @@ import Link from 'next/link';
 import { desc } from 'drizzle-orm';
 import { db } from '@/db';
 import { machines, prompts, runResults, runs } from '@/db/schema';
-import { formatDateTime, formatRate } from '@/lib/format';
+import { formatDateTime, formatRate, snapshotMachineName } from '@/lib/format';
 import { StatusBadge } from '@/components/runs/status-badge';
 
 export const dynamic = 'force-dynamic';
-
-function snapshotName(raw: string): string {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    const name =
-      parsed && typeof parsed === 'object' ? (parsed as { name?: unknown }).name : undefined;
-    return typeof name === 'string' && name.length > 0 ? name : '(deleted machine)';
-  } catch {
-    return '(deleted machine)';
-  }
-}
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
@@ -141,7 +130,7 @@ export default async function Home() {
                     {formatDateTime(run.createdAt)}
                   </td>
                   <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
-                    {snapshotName(run.machineSnapshot)}
+                    {snapshotMachineName(run.machineSnapshot)}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-zinc-600 dark:text-zinc-400">
                     {run.modelId}

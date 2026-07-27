@@ -1,0 +1,12 @@
+node_modules
+.next
+data
+data-docker-test
+drizzle
+.git
+.gitignore
+*.tsbuildinfo
+npm-debug.log*
+.env*
+.DS_Store
+README.md
