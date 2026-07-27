@@ -27,8 +27,8 @@ export class RunAlreadyExecutingError extends Error {
  * The app is a single-user, single-process tool, so an in-memory guard is
  * enough to stop a double-clicked "Resume" (or React re-mounting the driver)
  * from running the same result twice. It intentionally does not survive a
- * restart — a crashed run leaves rows in 'running', and the executor treats
- * only 'pending' rows as work, so those are visible and can be retried.
+ * restart — rows left in 'running' by a crashed process are reclaimed as
+ * 'pending' at the start of the next execution of that run.
  */
 const executing = new Set<number>();
 
@@ -91,6 +91,20 @@ export async function executeRun(
     if (!run) {
       throw new Error(`Run ${runId} not found.`);
     }
+
+    // Rows stuck in 'running' are leftovers from a crashed process — once the
+    // guard above is held, no other execution of this run can be live, so
+    // reclaim them as 'pending' and let this execution redo them.
+    await db
+      .update(runResults)
+      .set({
+        status: 'pending',
+        startedAt: null,
+        finishedAt: null,
+        responseText: null,
+        error: null,
+      })
+      .where(and(eq(runResults.runId, runId), eq(runResults.status, 'running')));
 
     const allResults = await db
       .select({ id: runResults.id, status: runResults.status })

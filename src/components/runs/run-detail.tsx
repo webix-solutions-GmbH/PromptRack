@@ -178,6 +178,13 @@ export function RunDetail({
   }, []);
 
   const pendingCount = results.filter((result) => result.status === 'pending').length;
+  // Rows stuck in 'running' while this tab is not driving are leftovers from a
+  // crashed process; the executor reclaims them as 'pending' on the next start,
+  // so offer Resume for them too (a live run in another tab answers with 409).
+  const staleRunningCount = running
+    ? 0
+    : results.filter((result) => result.status === 'running').length;
+  const resumableCount = pendingCount + staleRunningCount;
   const okCount = results.filter((result) => result.status === 'ok').length;
   const errorCount = results.filter((result) => result.status === 'error').length;
   const rates = results
@@ -216,13 +223,13 @@ export function RunDetail({
                 Stop
               </button>
             ) : (
-              pendingCount > 0 && (
+              resumableCount > 0 && (
                 <button
                   type="button"
                   onClick={() => void start()}
                   className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-zinc-50 transition-colors hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
                 >
-                  Resume ({pendingCount} pending)
+                  Resume ({resumableCount} pending)
                 </button>
               )
             )}
