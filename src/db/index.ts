@@ -14,6 +14,7 @@ const dbPath = path.join(dataDir, 'app.db');
 function createDb() {
   const sqlite = new Database(dbPath);
   sqlite.pragma('journal_mode = WAL');
+  sqlite.pragma('foreign_keys = ON');
   return drizzle(sqlite, { schema });
 }
 
