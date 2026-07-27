@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiPath } from '@/lib/base-path';
 import { formatDateTime, formatDuration, formatRate } from '@/lib/format';
 import { isRunEvent, type RunEvent, type RunStatus } from '@/lib/run-events';
+import { DeleteRunButton } from './delete-run-button';
 import { ResultCard } from './result-card';
 import { RunComment } from './run-comment';
 import { StatusBadge } from './status-badge';
@@ -238,15 +239,18 @@ export function RunDetail({
                 Stop
               </button>
             ) : (
-              resumableCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => void start()}
-                  className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-zinc-50 transition-colors hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-                >
-                  Resume ({resumableCount} pending)
-                </button>
-              )
+              <>
+                {resumableCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => void start()}
+                    className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-zinc-50 transition-colors hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+                  >
+                    Resume ({resumableCount} pending)
+                  </button>
+                )}
+                <DeleteRunButton runId={run.id} />
+              </>
             )}
           </div>
         </div>
@@ -261,6 +265,27 @@ export function RunDetail({
           <Field label="Created" value={formatDateTime(run.createdAt)} />
           <Field label="Finished" value={finishedAt ? formatDateTime(finishedAt) : '—'} />
         </div>
+
+        {run.llmInfo && (
+          <details className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
+            <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-zinc-500 transition-colors hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200">
+              LLM info
+              {run.llmInfo.server &&
+                ` — ${run.llmInfo.server}${run.llmInfo.version ? ` ${run.llmInfo.version}` : ''}`}
+            </summary>
+            <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+              {run.llmInfo.server && (
+                <Field
+                  label="Server"
+                  value={`${run.llmInfo.server}${run.llmInfo.version ? ` ${run.llmInfo.version}` : ''}`}
+                />
+              )}
+              {Object.entries(run.llmInfo.details).map(([key, value]) => (
+                <Field key={key} label={key.replace(/_/g, ' ')} value={value} />
+              ))}
+            </div>
+          </details>
+        )}
 
         <div className="flex flex-wrap items-center gap-3 border-t border-zinc-200 pt-4 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
           <span>{okCount} ok</span>

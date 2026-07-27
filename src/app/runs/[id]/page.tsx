@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation';
 import { asc, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { runResults, runs } from '@/db/schema';
+import { parseLlmInfo } from '@/lib/llm-info';
 import type { RunResultStatus, RunStatus } from '@/lib/run-events';
 import { RunDetail } from '@/components/runs/run-detail';
 import type { ResultView, RunView } from '@/components/runs/types';
@@ -82,6 +83,7 @@ export default async function RunDetailPage({
     gpu: str(snapshot.gpu),
     modelId: run.modelId,
     params: parseParams(run.params),
+    llmInfo: parseLlmInfo(run.llmInfo),
     comment: run.comment,
     groupNames: parseGroupNames(run.groupNames),
     status: run.status as RunStatus,

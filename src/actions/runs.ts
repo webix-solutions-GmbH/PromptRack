@@ -13,6 +13,8 @@ import {
   runs,
   systemPrompts,
 } from '@/db/schema';
+import { probeLlmInfo } from '@/lib/llm-info';
+import { isRunExecuting } from '@/lib/run-executor';
 import { resolveEffectiveSystemPrompt, type SystemPromptMode } from '@/lib/system-prompt';
 
 function optionalString(formData: FormData, key: string): string | null {
@@ -120,6 +122,15 @@ export async function createRun(formData: FormData) {
   const systemPromptRows = await db.select().from(systemPrompts);
   const systemPromptById = new Map(systemPromptRows.map((row) => [row.id, row]));
 
+  // Ask the endpoint about itself (server software, model metadata) and freeze
+  // the answer with the run. Best-effort: an unreachable or tight-lipped server
+  // just leaves the snapshot empty.
+  const llmInfo = await probeLlmInfo({
+    baseUrl: machine.baseUrl,
+    apiKey: machine.apiKey,
+    modelId,
+  });
+
   const now = Date.now();
 
   const [run] = await db
@@ -135,6 +146,7 @@ export async function createRun(formData: FormData) {
       }),
       modelId,
       params: params ? JSON.stringify(params) : null,
+      llmInfo: llmInfo ? JSON.stringify(llmInfo) : null,
       comment,
       groupNames: JSON.stringify(groups.map((group) => group.name)),
       status: 'pending',
@@ -252,8 +264,17 @@ export async function updateResultNote(resultId: number, note: string) {
   }
 }
 
+/**
+ * Deletes a run and (via FK cascade) all of its results. Navigation after a
+ * successful delete is the caller's job — a `redirect` here would throw inside
+ * the client's try/catch and read as a failure.
+ */
 export async function deleteRun(runId: number) {
+  if (isRunExecuting(runId)) {
+    throw new Error('This run is currently executing — stop it before deleting.');
+  }
+
   await db.delete(runs).where(eq(runs.id, runId));
   revalidatePath('/runs');
-  redirect('/runs');
+  revalidatePath('/');
 }

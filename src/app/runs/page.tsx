@@ -2,7 +2,8 @@ import Link from 'next/link';
 import { desc } from 'drizzle-orm';
 import { db } from '@/db';
 import { machines, runResults, runs } from '@/db/schema';
-import { formatDateTime, formatRate, snapshotMachineName } from '@/lib/format';
+import { formatDateTime, formatDuration, formatRate, snapshotMachineName } from '@/lib/format';
+import { DeleteRunButton } from '@/components/runs/delete-run-button';
 import { StatusBadge } from '@/components/runs/status-badge';
 import { RunsFilterBar } from '@/components/runs/runs-filter-bar';
 
@@ -38,6 +39,7 @@ export default async function RunsPage({
       runId: runResults.runId,
       status: runResults.status,
       tokensPerSec: runResults.tokensPerSec,
+      durationMs: runResults.durationMs,
       groupName: runResults.groupName,
       rating: runResults.rating,
     })
@@ -62,8 +64,10 @@ export default async function RunsPage({
       ).length,
       good: results.filter((result) => result.rating === 'good').length,
       bad: results.filter((result) => result.rating === 'bad').length,
+      unrated: results.filter((result) => !result.rating).length,
       avgRate:
         rates.length > 0 ? rates.reduce((total, rate) => total + rate, 0) / rates.length : null,
+      totalDurationMs: results.reduce((total, result) => total + (result.durationMs ?? 0), 0),
     };
   });
 
@@ -121,14 +125,18 @@ export default async function RunsPage({
               <th className="px-4 py-3">Results</th>
               <th className="px-4 py-3">Rating</th>
               <th className="px-4 py-3">Avg speed</th>
+              <th className="px-4 py-3">Total time</th>
               <th className="px-4 py-3">Comment</th>
+              <th className="px-4 py-3">
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows.length === 0 && (
               <tr>
                 <td
-                  colSpan={9}
+                  colSpan={11}
                   className="px-4 py-6 text-center text-zinc-500 dark:text-zinc-400"
                 >
                   {allRows.length === 0
@@ -137,7 +145,7 @@ export default async function RunsPage({
                 </td>
               </tr>
             )}
-            {rows.map(({ run, ok, error, pending, good, bad, avgRate }) => (
+            {rows.map(({ run, ok, error, pending, good, bad, unrated, avgRate, totalDurationMs }) => (
               <tr
                 key={run.id}
                 className="transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900"
@@ -172,12 +180,20 @@ export default async function RunsPage({
                   <span className="text-emerald-600 dark:text-emerald-400">{good}</span>
                   <span className="text-zinc-400 dark:text-zinc-500">/</span>
                   <span className="text-red-600 dark:text-red-400">{bad}</span>
+                  <span className="text-zinc-400 dark:text-zinc-500">/</span>
+                  <span className="text-zinc-500 dark:text-zinc-400">{unrated}</span>
                 </td>
                 <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
                   {formatRate(avgRate)}
                 </td>
                 <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
+                  {totalDurationMs > 0 ? formatDuration(totalDurationMs) : '—'}
+                </td>
+                <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
                   {excerpt(run.comment)}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <DeleteRunButton runId={run.id} compact />
                 </td>
               </tr>
             ))}

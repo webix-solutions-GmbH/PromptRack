@@ -1,6 +1,7 @@
 'use client';
 
 import { formatDuration, formatRate } from '@/lib/format';
+import { splitThinking } from '@/lib/thinking';
 import { ResultRating } from './result-rating';
 import { StatusBadge } from './status-badge';
 import type { ResultView } from './types';
@@ -35,6 +36,34 @@ function RatingBadge({ rating }: { rating: 'good' | 'bad' | null }) {
 
 const preClass =
   'max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300';
+
+/**
+ * Response text with any leading `<think>` block tucked behind a collapsed
+ * toggle, so reasoning models don't drown the actual answer.
+ */
+function ResponseBlock({ text, running }: { text: string | null; running: boolean }) {
+  if (text === null) {
+    return <pre className={preClass}>{running ? '…' : '—'}</pre>;
+  }
+
+  const { thinking, answer, thinkingClosed } = splitThinking(text);
+
+  return (
+    <>
+      {thinking !== null && (
+        <details>
+          <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200">
+            Thinking{thinkingClosed ? '' : '…'}
+          </summary>
+          <pre className={`${preClass} mt-1 italic`}>{thinking}</pre>
+        </details>
+      )}
+      <pre className={preClass}>
+        {answer || (running ? '…' : thinking !== null ? '(empty answer)' : '—')}
+      </pre>
+    </>
+  );
+}
 
 export function ResultCard({
   result,
@@ -119,9 +148,7 @@ export function ResultCard({
             <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
               Response
             </span>
-            <pre className={preClass}>
-              {result.responseText ?? (result.status === 'running' ? '…' : '—')}
-            </pre>
+            <ResponseBlock text={result.responseText} running={result.status === 'running'} />
           </div>
           <div className="flex min-w-0 flex-col gap-1">
             <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
@@ -136,7 +163,7 @@ export function ResultCard({
             <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
               Response
             </span>
-            <pre className={preClass}>{result.responseText ?? '…'}</pre>
+            <ResponseBlock text={result.responseText} running={result.status === 'running'} />
           </div>
         )
       )}

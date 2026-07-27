@@ -114,6 +114,8 @@ export const runs = sqliteTable('runs', {
   params: text('params'),
   comment: text('comment'),
   groupNames: text('group_names').notNull(),
+  /** JSON snapshot of endpoint/server/model metadata probed at creation time. */
+  llmInfo: text('llm_info'),
   status: text('status').notNull().default('pending'),
   createdAt: integer('created_at', { mode: 'number' }).notNull(),
   startedAt: integer('started_at', { mode: 'number' }),

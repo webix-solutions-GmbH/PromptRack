@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { formatDuration, formatRate } from '@/lib/format';
+import { splitThinking } from '@/lib/thinking';
 import type { CompareCellView, CompareRowView } from '@/lib/compare';
 
 /** Characters of a response shown before it gets clamped. */
@@ -42,7 +43,8 @@ function Cell({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const text = cell.responseText ?? '';
+  const { thinking, answer } = splitThinking(cell.responseText ?? '');
+  const text = answer;
   const isLong = text.length > CLAMP;
   const shown = expanded || !isLong ? text : `${text.slice(0, CLAMP)}…`;
   const tokenLabel =
@@ -60,6 +62,17 @@ function Cell({
           </span>
         )}
       </div>
+
+      {thinking !== null && !cell.error && (
+        <details className="text-xs text-zinc-500 dark:text-zinc-400">
+          <summary className="cursor-pointer hover:text-zinc-800 dark:hover:text-zinc-200">
+            Thinking
+          </summary>
+          <p className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] italic text-zinc-600 dark:text-zinc-400">
+            {thinking}
+          </p>
+        </details>
+      )}
 
       {cell.error ? (
         <div className="rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">

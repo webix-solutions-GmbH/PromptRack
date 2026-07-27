@@ -1,3 +1,4 @@
+import type { LlmInfo } from '@/lib/llm-info';
 import type { RunResultStatus, RunStatus } from '@/lib/run-events';
 
 /** Serializable projection of a run, handed from the page to the client driver. */
@@ -11,6 +12,7 @@ export interface RunView {
   gpu: string | null;
   modelId: string;
   params: Record<string, unknown> | null;
+  llmInfo: LlmInfo | null;
   comment: string | null;
   groupNames: string[];
   status: RunStatus;
