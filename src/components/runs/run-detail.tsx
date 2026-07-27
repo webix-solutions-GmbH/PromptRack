@@ -110,6 +110,18 @@ export function RunDetail({
     }
   }, []);
 
+  const handleRatingChange = useCallback(
+    (
+      resultId: number,
+      patch: { rating?: 'good' | 'bad' | null; ratingNote?: string | null },
+    ) => {
+      setResults((current) =>
+        current.map((result) => (result.id === resultId ? { ...result, ...patch } : result)),
+      );
+    },
+    [],
+  );
+
   const start = useCallback(async () => {
     setError(null);
     setRunning(true);
@@ -187,6 +199,8 @@ export function RunDetail({
   const resumableCount = pendingCount + staleRunningCount;
   const okCount = results.filter((result) => result.status === 'ok').length;
   const errorCount = results.filter((result) => result.status === 'error').length;
+  const goodCount = results.filter((result) => result.rating === 'good').length;
+  const badCount = results.filter((result) => result.rating === 'bad').length;
   const rates = results
     .map((result) => result.tokensPerSec)
     .filter((rate): rate is number => typeof rate === 'number');
@@ -254,6 +268,10 @@ export function RunDetail({
           <span aria-hidden>·</span>
           <span>{pendingCount} pending</span>
           <span aria-hidden>·</span>
+          <span className="text-emerald-600 dark:text-emerald-400">{goodCount} good</span>
+          <span aria-hidden>·</span>
+          <span className="text-red-600 dark:text-red-400">{badCount} bad</span>
+          <span aria-hidden>·</span>
           <span>avg {formatRate(avgRate)}</span>
           <span aria-hidden>·</span>
           <span>total {formatDuration(totalDuration)}</span>
@@ -272,7 +290,12 @@ export function RunDetail({
 
       <section className="flex flex-col gap-4">
         {results.map((result, index) => (
-          <ResultCard key={result.id} result={result} index={index + 1} />
+          <ResultCard
+            key={result.id}
+            result={result}
+            index={index + 1}
+            onRatingChange={handleRatingChange}
+          />
         ))}
       </section>
     </div>

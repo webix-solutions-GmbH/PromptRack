@@ -107,6 +107,8 @@ export default async function RunDetailPage({
     completionTokens: row.completionTokens,
     tokensPerSec: row.tokensPerSec,
     tokensEstimated: row.tokensEstimated,
+    rating: row.rating as 'good' | 'bad' | null,
+    ratingNote: row.ratingNote,
   }));
 
   return <RunDetail run={runView} results={resultViews} />;

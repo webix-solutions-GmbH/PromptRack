@@ -1,6 +1,7 @@
 'use client';
 
 import { formatDuration, formatRate } from '@/lib/format';
+import { ResultRating } from './result-rating';
 import { StatusBadge } from './status-badge';
 import type { ResultView } from './types';
 
@@ -13,10 +14,40 @@ function Chip({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** Small always-visible rating indicator, useful in collapsed/summary contexts. */
+function RatingBadge({ rating }: { rating: 'good' | 'bad' | null }) {
+  if (rating === 'good') {
+    return (
+      <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
+        👍 good
+      </span>
+    );
+  }
+  if (rating === 'bad') {
+    return (
+      <span className="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-950 dark:text-red-400">
+        👎 bad
+      </span>
+    );
+  }
+  return null;
+}
+
 const preClass =
   'max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300';
 
-export function ResultCard({ result, index }: { result: ResultView; index: number }) {
+export function ResultCard({
+  result,
+  index,
+  onRatingChange,
+}: {
+  result: ResultView;
+  index: number;
+  onRatingChange: (
+    resultId: number,
+    patch: { rating?: 'good' | 'bad' | null; ratingNote?: string | null },
+  ) => void;
+}) {
   const hasMetrics =
     result.durationMs !== null ||
     result.ttftMs !== null ||
@@ -41,8 +72,18 @@ export function ResultCard({ result, index }: { result: ResultView; index: numbe
             {result.promptTitle}
           </h3>
         </div>
-        <StatusBadge status={result.status} />
+        <div className="flex items-center gap-2">
+          <RatingBadge rating={result.rating} />
+          <StatusBadge status={result.status} />
+        </div>
       </header>
+
+      <ResultRating
+        resultId={result.id}
+        rating={result.rating}
+        ratingNote={result.ratingNote}
+        onChange={(patch) => onRatingChange(result.id, patch)}
+      />
 
       <details className="text-sm">
         <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200">

@@ -36,4 +36,6 @@ export interface ResultView {
   completionTokens: number | null;
   tokensPerSec: number | null;
   tokensEstimated: boolean;
+  rating: 'good' | 'bad' | null;
+  ratingNote: string | null;
 }

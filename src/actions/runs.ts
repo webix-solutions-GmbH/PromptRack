@@ -208,6 +208,50 @@ export async function updateRunComment(runId: number, comment: string) {
   revalidatePath(`/runs/${runId}`);
 }
 
+/**
+ * Sets or clears a single result's good/bad rating. Passing `null` clears it.
+ * `note` is optional — when omitted, the existing note is left untouched, so
+ * clicking a thumb button never wipes a note the user already saved.
+ */
+export async function rateResult(
+  resultId: number,
+  rating: 'good' | 'bad' | null,
+  note?: string | null,
+) {
+  const values: { rating: string | null; ratingNote?: string | null } = { rating };
+  if (note !== undefined) {
+    const trimmed = note?.trim() ?? '';
+    values.ratingNote = trimmed.length > 0 ? trimmed : null;
+  }
+
+  const [result] = await db
+    .update(runResults)
+    .set(values)
+    .where(eq(runResults.id, resultId))
+    .returning({ runId: runResults.runId });
+
+  if (result) {
+    revalidatePath(`/runs/${result.runId}`);
+    revalidatePath('/runs');
+    revalidatePath('/');
+  }
+}
+
+/** Saves a result's free-text rating note independently of its good/bad rating. */
+export async function updateResultNote(resultId: number, note: string) {
+  const trimmed = note.trim();
+
+  const [result] = await db
+    .update(runResults)
+    .set({ ratingNote: trimmed.length > 0 ? trimmed : null })
+    .where(eq(runResults.id, resultId))
+    .returning({ runId: runResults.runId });
+
+  if (result) {
+    revalidatePath(`/runs/${result.runId}`);
+  }
+}
+
 export async function deleteRun(runId: number) {
   await db.delete(runs).where(eq(runs.id, runId));
   revalidatePath('/runs');
