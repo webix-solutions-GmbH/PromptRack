@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "db:push": "drizzle-kit push",
+    "db:seed": "node scripts/seed-prompts.mjs",
     "test": "vitest run"
   },
   "dependencies": {
