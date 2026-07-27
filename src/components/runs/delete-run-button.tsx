@@ -37,10 +37,29 @@ export function DeleteRunButton({ runId, compact = false }: { runId: number; com
         type="button"
         onClick={handleClick}
         disabled={pending}
-        title={error ?? undefined}
-        className="text-xs font-medium text-red-600 transition-colors hover:underline disabled:opacity-50 dark:text-red-400"
+        aria-label={`Delete run #${runId}`}
+        title={error ?? 'Delete run'}
+        className={`rounded p-1 transition-colors hover:bg-red-50 disabled:opacity-50 dark:hover:bg-red-950 ${
+          error ? 'text-red-600 dark:text-red-400' : 'text-zinc-400 hover:text-red-600 dark:text-zinc-500 dark:hover:text-red-400'
+        } ${pending ? 'animate-pulse' : ''}`}
       >
-        {pending ? 'Deleting…' : error ? 'Delete failed — retry' : 'Delete'}
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="h-4 w-4"
+          aria-hidden
+        >
+          <path d="M3 6h18" />
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          <line x1="10" y1="11" x2="10" y2="17" />
+          <line x1="14" y1="11" x2="14" y2="17" />
+        </svg>
       </button>
     );
   }

@@ -2,6 +2,7 @@ import { desc } from 'drizzle-orm';
 import { db } from '@/db';
 import { systemPrompts } from '@/db/schema';
 import { createSystemPrompt } from '@/actions/system-prompts';
+import { CreateToggle } from '@/components/create-toggle';
 import { SystemPromptRow } from '@/components/system-prompts/system-prompt-row';
 
 export const dynamic = 'force-dynamic';
@@ -15,30 +16,21 @@ export default async function SystemPromptsPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-8 p-8">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-          System Prompts
-        </h1>
-        <p className="max-w-prose text-sm text-zinc-600 dark:text-zinc-400">
-          Reusable base system prompts. Individual test prompts can append to or override these.
-        </p>
-      </div>
-
-      <ul className="flex max-w-3xl flex-col gap-3">
-        {rows.length === 0 && (
-          <li className="rounded-lg border border-zinc-200 px-4 py-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-            No system prompts yet — add one below.
-          </li>
-        )}
-        {rows.map((prompt) => (
-          <SystemPromptRow key={prompt.id} prompt={prompt} />
-        ))}
-      </ul>
-
-      <section className="flex max-w-3xl flex-col gap-4 rounded-lg border border-zinc-200 p-6 dark:border-zinc-800">
-        <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-          New system prompt
-        </h2>
+      <CreateToggle
+        label="New system prompt"
+        title="New system prompt"
+        className="max-w-3xl"
+        header={
+          <div className="flex flex-col gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+              System Prompts
+            </h1>
+            <p className="max-w-prose text-sm text-zinc-600 dark:text-zinc-400">
+              Reusable base system prompts. Individual test prompts can append to or override these.
+            </p>
+          </div>
+        }
+      >
         <form action={createSystemPrompt} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1">
             <label className={labelClass} htmlFor="name">
@@ -74,7 +66,18 @@ export default async function SystemPromptsPage() {
             </button>
           </div>
         </form>
-      </section>
+      </CreateToggle>
+
+      <ul className="flex max-w-3xl flex-col gap-3">
+        {rows.length === 0 && (
+          <li className="rounded-lg border border-zinc-200 px-4 py-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            No system prompts yet — add one with “New system prompt”.
+          </li>
+        )}
+        {rows.map((prompt) => (
+          <SystemPromptRow key={prompt.id} prompt={prompt} />
+        ))}
+      </ul>
     </div>
   );
 }

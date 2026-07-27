@@ -5,6 +5,13 @@ export function formatDateTime(ms: number): string {
   });
 }
 
+/** Compact local-time ISO stamp for tables: `2026-07-27 09:46`. */
+export function formatIsoDateTime(ms: number): string {
+  const date = new Date(ms);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 /** Compact wall-clock duration: `840ms`, `3.4s`, `1m 12s`. */
 export function formatDuration(ms: number | null | undefined): string {
   if (typeof ms !== 'number' || !Number.isFinite(ms)) return '—';

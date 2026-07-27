@@ -4,6 +4,7 @@ import { db } from '@/db';
 import { machineModels, machines } from '@/db/schema';
 import { formatDateTime } from '@/lib/format';
 import { createMachine } from '@/actions/machines';
+import { CreateToggle } from '@/components/create-toggle';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,73 +31,22 @@ export default async function MachinesPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-8 p-8">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-          Machines
-        </h1>
-        <p className="max-w-prose text-sm text-zinc-600 dark:text-zinc-400">
-          OpenAI-compatible endpoints (Ollama, LM Studio, vLLM, ...) that host models to
-          benchmark.
-        </p>
-      </div>
-
-      <div className="overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
-        <table className="w-full min-w-max text-left text-sm">
-          <thead className="border-b border-zinc-200 bg-zinc-50 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-            <tr>
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Base URL</th>
-              <th className="px-4 py-3">GPU</th>
-              <th className="px-4 py-3">Models</th>
-              <th className="px-4 py-3">Created</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-            {rows.length === 0 && (
-              <tr>
-                <td
-                  colSpan={5}
-                  className="px-4 py-6 text-center text-zinc-500 dark:text-zinc-400"
-                >
-                  No machines yet — add one below.
-                </td>
-              </tr>
-            )}
-            {rows.map(({ machine, total, loaded }) => (
-              <tr
-                key={machine.id}
-                className="transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900"
-              >
-                <td className="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-50">
-                  <Link
-                    href={`/machines/${machine.id}`}
-                    className="hover:underline"
-                  >
-                    {machine.name}
-                  </Link>
-                </td>
-                <td className="px-4 py-3 font-mono text-xs text-zinc-600 dark:text-zinc-400">
-                  {machine.baseUrl}
-                </td>
-                <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
-                  {machine.gpu ?? '—'}
-                </td>
-                <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
-                  {loaded}/{total} loaded
-                </td>
-                <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
-                  {formatDateTime(machine.createdAt)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <section className="flex max-w-2xl flex-col gap-4 rounded-lg border border-zinc-200 p-6 dark:border-zinc-800">
-        <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-          New machine
-        </h2>
+      <CreateToggle
+        label="New machine"
+        title="New machine"
+        className="max-w-2xl"
+        header={
+          <div className="flex flex-col gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+              Machines
+            </h1>
+            <p className="max-w-prose text-sm text-zinc-600 dark:text-zinc-400">
+              OpenAI-compatible endpoints (Ollama, LM Studio, vLLM, ...) that host models to
+              benchmark.
+            </p>
+          </div>
+        }
+      >
         <form action={createMachine} className="flex flex-col gap-4">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-1">
@@ -175,7 +125,60 @@ export default async function MachinesPage() {
             </button>
           </div>
         </form>
-      </section>
+      </CreateToggle>
+
+      <div className="overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+        <table className="w-full min-w-max text-left text-sm">
+          <thead className="border-b border-zinc-200 bg-zinc-50 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+            <tr>
+              <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">Base URL</th>
+              <th className="px-4 py-3">GPU</th>
+              <th className="px-4 py-3">Models</th>
+              <th className="px-4 py-3">Created</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+            {rows.length === 0 && (
+              <tr>
+                <td
+                  colSpan={5}
+                  className="px-4 py-6 text-center text-zinc-500 dark:text-zinc-400"
+                >
+                  No machines yet — add one with “New machine”.
+                </td>
+              </tr>
+            )}
+            {rows.map(({ machine, total, loaded }) => (
+              <tr
+                key={machine.id}
+                className="transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900"
+              >
+                <td className="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-50">
+                  <Link
+                    href={`/machines/${machine.id}`}
+                    className="hover:underline"
+                  >
+                    {machine.name}
+                  </Link>
+                </td>
+                <td className="px-4 py-3 font-mono text-xs text-zinc-600 dark:text-zinc-400">
+                  {machine.baseUrl}
+                </td>
+                <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
+                  {machine.gpu ?? '—'}
+                </td>
+                <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
+                  {loaded}/{total} loaded
+                </td>
+                <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
+                  {formatDateTime(machine.createdAt)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
