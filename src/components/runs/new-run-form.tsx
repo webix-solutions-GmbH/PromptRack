@@ -1,7 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { createRun } from '@/actions/runs';
+import { apiPath } from '@/lib/base-path';
 
 const inputClass =
   'w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:placeholder:text-zinc-500';
@@ -27,6 +29,12 @@ export interface GroupOption {
   promptCount: number;
 }
 
+type ProbeState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'ok'; models: string[] }
+  | { status: 'error'; message: string };
+
 export function NewRunForm({
   machines,
   models,
@@ -36,17 +44,88 @@ export function NewRunForm({
   models: ModelOption[];
   groups: GroupOption[];
 }) {
+  const router = useRouter();
   const [machineId, setMachineId] = useState(machines[0] ? String(machines[0].id) : '');
   const [modelChoice, setModelChoice] = useState('');
   const [customModel, setCustomModel] = useState('');
   const [selectedGroups, setSelectedGroups] = useState<number[]>([]);
+  const [probe, setProbe] = useState<ProbeState>({ status: 'idle' });
+
+  /**
+   * Which probe is current. A slow endpoint must not overwrite the result for a
+   * machine the user has since switched away from.
+   */
+  const probeSeq = useRef(0);
+
+  /**
+   * Asks the endpoint what it is serving right now.
+   *
+   * Reuses the machine discovery route rather than a read-only variant on
+   * purpose: it upserts `machine_models` and flips `currently_loaded`, which is
+   * what makes the "Currently loaded" group below actually current — and it
+   * keeps the machine's model history up to date as a side effect. The
+   * subsequent `router.refresh()` re-runs the page query so the grouping
+   * reflects the new flags; client form state survives a refresh.
+   */
+  const detectModels = useCallback(
+    async (id: string) => {
+      if (id === '') return;
+
+      const seq = probeSeq.current + 1;
+      probeSeq.current = seq;
+      setProbe({ status: 'loading' });
+
+      try {
+        const response = await fetch(apiPath(`/api/machines/${id}/discover`), {
+          method: 'POST',
+        });
+        const data = (await response.json()) as
+          | { ok: true; discovered: number; models: string[] }
+          | { ok: false; error: string };
+
+        if (probeSeq.current !== seq) return;
+
+        if (!data.ok) {
+          setProbe({ status: 'error', message: data.error });
+          return;
+        }
+
+        setProbe({ status: 'ok', models: data.models });
+        // Exactly one served model is the common single-model-per-endpoint case
+        // (vLLM), so pick it. With several, guessing would be worse than asking.
+        if (data.models.length === 1) {
+          setModelChoice(data.models[0]);
+        }
+        router.refresh();
+      } catch {
+        if (probeSeq.current !== seq) return;
+        setProbe({ status: 'error', message: 'Could not reach the endpoint.' });
+      }
+    },
+    [router],
+  );
+
+  useEffect(() => {
+    // Querying the endpoint is exactly the external-system synchronization an
+    // effect is for; the `loading` state it sets first is the visible part of
+    // that request, and the sequence guard above handles the overlap when the
+    // machine changes mid-flight.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void detectModels(machineId);
+  }, [machineId, detectModels]);
 
   const machineModels = useMemo(
     () => models.filter((model) => String(model.machineId) === machineId),
     [models, machineId],
   );
-  const loaded = machineModels.filter((model) => model.currentlyLoaded);
-  const previouslySeen = machineModels.filter((model) => !model.currentlyLoaded);
+
+  // Until the probe answers, fall back to the flags the page was rendered with.
+  const detected = probe.status === 'ok' ? new Set(probe.models) : null;
+  const isLoaded = (model: ModelOption) =>
+    detected ? detected.has(model.modelId) : model.currentlyLoaded;
+
+  const loaded = machineModels.filter(isLoaded);
+  const previouslySeen = machineModels.filter((model) => !isLoaded(model));
 
   const modelId = modelChoice === CUSTOM ? customModel.trim() : modelChoice;
   const canSubmit =
@@ -99,9 +178,19 @@ export function NewRunForm({
         </div>
 
         <div className="flex flex-col gap-1">
-          <label className={labelClass} htmlFor="modelChoice">
-            Model *
-          </label>
+          <div className="flex items-baseline justify-between gap-2">
+            <label className={labelClass} htmlFor="modelChoice">
+              Model *
+            </label>
+            <button
+              type="button"
+              disabled={probe.status === 'loading'}
+              onClick={() => void detectModels(machineId)}
+              className="text-xs font-medium text-zinc-500 underline-offset-2 hover:underline disabled:opacity-50 dark:text-zinc-400"
+            >
+              {probe.status === 'loading' ? 'Detecting…' : 'Re-detect'}
+            </button>
+          </div>
           <select
             id="modelChoice"
             value={modelChoice}
@@ -129,6 +218,26 @@ export function NewRunForm({
             )}
             <option value={CUSTOM}>Other — type a model id…</option>
           </select>
+
+          {probe.status === 'loading' && (
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Asking the endpoint what it is serving…
+            </p>
+          )}
+          {probe.status === 'ok' && (
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              {probe.models.length === 0
+                ? 'The endpoint reports no loaded model.'
+                : probe.models.length === 1
+                  ? `Serving ${probe.models[0]} — selected.`
+                  : `${probe.models.length} models loaded — pick one.`}
+            </p>
+          )}
+          {probe.status === 'error' && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {probe.message} Previously seen models are still selectable.
+            </p>
+          )}
         </div>
       </div>
 

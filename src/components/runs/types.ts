@@ -1,5 +1,8 @@
 import type { LlmInfo } from '@/lib/llm-info';
+import type { Rating } from '@/lib/rating';
 import type { RunResultStatus, RunStatus } from '@/lib/run-events';
+import type { StoppedReason, TranscriptMessage, TurnMetrics } from '@/lib/tool-loop';
+import type { SnapshotTool, ToolChoice, ToolMode } from '@/lib/tools';
 
 /** Serializable projection of a run, handed from the page to the client driver. */
 export interface RunView {
@@ -16,6 +19,8 @@ export interface RunView {
   comment: string | null;
   groupNames: string[];
   status: RunStatus;
+  /** Set while the run is archived — hidden from the default lists. */
+  archivedAt: number | null;
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
@@ -38,6 +43,19 @@ export interface ResultView {
   completionTokens: number | null;
   tokensPerSec: number | null;
   tokensEstimated: boolean;
-  rating: 'good' | 'bad' | null;
+  rating: Rating | null;
   ratingNote: string | null;
+  /**
+   * Tool detail. `toolMode` is `'none'` and everything else is null/empty for
+   * an ordinary prompt, which is what keeps its card rendering unchanged.
+   */
+  toolMode: ToolMode;
+  toolChoice: ToolChoice | null;
+  maxTurns: number;
+  toolsSnapshot: SnapshotTool[];
+  transcript: TranscriptMessage[] | null;
+  turns: TurnMetrics[];
+  turnCount: number | null;
+  toolCallCount: number | null;
+  stoppedReason: StoppedReason | null;
 }

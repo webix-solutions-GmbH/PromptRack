@@ -22,23 +22,28 @@ npx tsc --noEmit                     # typecheck
 npm run lint                         # eslint
 npm run build                        # production build (also catches route/RSC errors)
 npm run db:push                      # drizzle-kit push — applies src/db/schema.ts to data/app.db
+npm run db:seed                      # seed toolsets + prompt groups (additive, respects deletions)
 ```
+
+`db:push` needs a TTY and will stall in a piped shell as soon as it has to ask about a table it does not know (`__app_migrations`, `__app_seeds`). Non-interactive alternative, which is also the production path: `npx drizzle-kit generate && node scripts/init-db.mjs`.
 
 Git: branch is `master` (not main); remote is Azure DevOps. Commits so far are milestone-sized with imperative messages.
 
 ## What this is
 
-Single-user LLM benchmarking web app: define test prompts (grouped, optionally with expected output), run them sequentially against OpenAI-compatible endpoints (Ollama/LM Studio/vLLM) on registered machines, measure TTFT/duration/tokens/tok-s, rate results good/bad manually, compare runs in a matrix.
+Single-user LLM benchmarking web app: define test prompts (grouped, optionally with expected output), run them sequentially against OpenAI-compatible endpoints (Ollama/LM Studio/vLLM) on registered machines, measure TTFT/duration/tokens/tok-s, rate results good/bad manually, compare runs in a matrix. A prompt can also be a **tool test**: offer the model a set of functions and either record what it wanted to call, or really execute the calls through an MCP server and loop until it answers.
 
 ## Architecture
 
 - **Stack**: Next.js 16 App Router + TypeScript + Tailwind v4, Drizzle ORM + better-sqlite3 (native module). DB file `data/app.db` (gitignored), WAL mode, singleton in `src/db/index.ts` with `foreign_keys = ON` (required for cascades). Schema push workflow, no committed migrations — `src/db/schema.ts` is the single source of truth.
-- **Mutations are Server Actions** (`src/actions/*.ts`); **Route Handlers exist only where streaming is needed**: run execution (`/api/runs/[id]/execute`, NDJSON progress stream), model discovery + connection test (`/api/machines/[id]/*`), and the dev mock LLM (`/api/mock-llm/*`).
+- **Mutations are Server Actions** (`src/actions/*.ts`); **Route Handlers exist only where streaming or a live network probe is needed**: run execution (`/api/runs/[id]/execute`, NDJSON progress stream), model discovery + connection test (`/api/machines/[id]/*`), MCP tool discovery (`/api/toolsets/[id]/discover`), and the dev mocks (`/api/mock-llm/*`, `/api/mock-mcp`).
 - **basePath `/agent-val`** (`next.config.ts`, constant in `src/lib/base-path.ts`): `next/link` and the router prefix automatically, but raw client `fetch()` calls to our own API routes MUST go through `apiPath()` from `src/lib/base-path.ts`.
 
 ### Snapshot model (the core invariant)
 
-Editing or deleting prompts, system prompts, or machines must never change how a past run displays. `createRun` (`src/actions/runs.ts`) freezes everything into `run_results` rows at creation time: prompt text, title, group name, expected output, and the **already-resolved** effective system prompt. `prompt_id`/`machine_id` FKs are kept (SET NULL on delete) only for cross-run comparison; rendering always uses the snapshots. The compare page matches rows primarily by `prompt_id`, falling back to normalized `prompt_text` equality for deleted prompts (`src/lib/compare.ts`).
+Editing or deleting prompts, system prompts, machines, or toolsets must never change how a past run displays. `createRun` (`src/actions/runs.ts`) freezes everything into `run_results` rows at creation time: prompt text, title, group name, expected output, the **already-resolved** effective system prompt, and `tools_snapshot`. `prompt_id`/`machine_id` FKs are kept (SET NULL on delete) only for cross-run comparison; rendering always uses the snapshots. The compare page matches rows primarily by `prompt_id`, falling back to normalized `prompt_text` equality for deleted prompts (`src/lib/compare.ts`).
+
+The line between frozen and live is **content vs. credentials**: prompt text, tool definitions and a manual tool's canned response travel with the run; a machine's `base_url`/`api_key` and a toolset's `mcp_url`/headers are read live at execution time so a moved endpoint doesn't break Resume.
 
 ### System prompt resolution
 
@@ -46,12 +51,61 @@ A prompt references an optional base system prompt plus a mode: `append` (base +
 
 ### Run execution pipeline
 
-`src/lib/llm.ts` (raw-fetch SSE client, no SDK) → `src/lib/run-executor.ts` (sequential loop) → execute route (NDJSON) → `src/components/runs/run-detail.tsx` (client driver).
+`src/lib/llm.ts` (raw-fetch SSE client, no SDK) → `src/lib/tool-loop.ts` (one to N turns) → `src/lib/run-executor.ts` (sequential loop over rows) → execute route (NDJSON) → `src/components/runs/run-detail.tsx` (client driver).
 
-- `llm.ts` parses SSE chunks tolerant of provider differences (usage in final empty-choices chunk vs. on last content chunk; chunks split across reads). No usage received → estimate `ceil(chars/4)`, flag `tokensEstimated` (UI shows `~`). TTFT = first non-empty content delta.
+- `llm.ts` parses SSE chunks tolerant of provider differences (usage in final empty-choices chunk vs. on last content chunk; chunks split across reads). No usage received → estimate `ceil(chars/4)` over text **plus** serialized tool calls, flag `tokensEstimated` (UI shows `~`). TTFT = first content delta **or** first tool-call fragment, whichever comes first — a tool-call-only response streams no content.
 - Executor invariants: one execution per run via module-level in-memory `Set` guard (single-process assumption) + 409 from the route; every result row is persisted the moment it finishes; errors mark the row `error` and the loop continues; abort (client disconnect) resets the in-flight row to `pending`; rows stuck in `running` from a crashed process are reclaimed to `pending` at next execution start. Run status `failed` is reserved for "every attempted result died at connection level"; partial errors still end `completed`.
 - Execution is tied to the HTTP request lifetime (`request.signal`) — closing the tab stops the run; Resume picks up remaining `pending` rows.
-- `tokens_per_sec = completionTokens / ((durationMs - ttftMs) / 1000)` — rate over the generation window, not total duration.
+- `tokens_per_sec = completionTokens / ((durationMs - ttftMs) / 1000)` — rate over the generation window, not total duration. For a multi-turn tool run the denominator is the **sum of each turn's own** generation window (`aggregate` in `tool-loop.ts`), so later prefills aren't counted as generation; for a single turn it reduces to exactly the formula above.
+
+### Tool / API calling
+
+A prompt has a `tool_mode`: `none` (classic one-shot), `definitions` (offer the tools, record the calls, execute nothing), or `execute` (run each call, feed the result back, loop to `max_turns`). It selects **any number** of toolsets, so one test can combine e.g. Odoo + websearch; duplicate tool names across selected toolsets are refused in the editor and again in `createRun`.
+
+- **Toolsets** are `manual` (tools authored in the UI, answering with `mock_response` verbatim — this is what keeps a multi-turn test deterministic) or `mcp` (tools discovered from a streamable-HTTP MCP server and really executed against it). `tools` rows follow the `machine_models` precedent: discovery upserts and **never deletes** — a tool absent from `tools/list` only flips `enabled` false.
+- **MCP is HTTP-only on purpose** (`src/lib/mcp-client.ts`, `@modelcontextprotocol/sdk`): a server is just a URL + headers, so real integrations run as their own containers on `llm_default` and nothing extra is baked into this image. Connections are per-operation, not pooled.
+- **A tool failure is never a failed row.** The error text is serialized back to the model as that tool's output — what a real agent sees, and itself worth measuring. Only connection-level `LlmError`s can fail a row, preserving `failed` = "the machine was never reachable".
+- The loop stops **before** executing calls it has no turn budget left to use, so a real ERP never gets hit for results that could not reach the model. `stopped_reason` is `stop` / `definitions_only` / `max_turns`.
+- Existing metric columns keep their meaning — `response_text` = final assistant text, `ttft_ms` = first turn's TTFT, `duration_ms`/token columns = sums over model turns only (tool wait time is excluded, and lives per call in the transcript). Tool detail is *added alongside* in `transcript_json` / `turns_json` / `turn_count` / `tool_call_count`, all null when `tool_mode = 'none'` — which is what keeps every pre-existing run rendering unchanged.
+- `run-events.ts` gains `turnStart` / `toolCall` / `toolResult`, and `delta` carries a `turn` only on tool runs, so a plain prompt's wire format is byte-identical to before. `run-detail.tsx` assembles a live transcript from those events; the finished row replaces it on `resultDone`.
+
+### Compare: two pivots
+
+`/compare` has a `mode`: `models` (the default) and `runs`. `?mode=` wins; without it a URL carrying `?runs=` stays in run mode, so old links keep their view.
+
+- **By model** (`?mode=models&model=<machineId>|<modelId>&…`, repeated params, plus `?group=` to narrow the rows) takes the **live prompts** as the rows and fills each cell with that model's **most recent `ok` result**, whichever run produced it. Columns are model × machine, keyed on the machine *id* so a rename does not split a column and one model on two boxes stays two columns — `tokens_per_sec` belongs to the hardware. Archived runs are excluded outright (no per-run selection could ask one back). Header tallies are computed over the cells **on screen**, not whole runs.
+- **By run** (`?mode=runs&runs=1,5`) is unchanged and still the only pivot that can put two runs of the *same* model side by side (quantization swap, temperature A/B, prompt rewrite) — in model mode they collapse into one column and the newest wins.
+
+Two consequences of "latest result" replacing "one run", both made visible rather than hidden:
+
+- Falling back past a **newer failed attempt** (endpoint down) must not blank a good older answer, so the cell keeps the newest `ok` row and reports the skipped one (`CompareCellView.superseded`). Every model-mode cell therefore also names its run and date — the column header no longer does.
+- A column's cells can come from runs with **different conditions** (system prompt, tools, temperature), so a difference between cells might be config rather than model. `describeRowDrift` compares prompt text / system prompt / `tools_snapshot` / tool mode / tool choice / `runs.params` (and `max_turns` only when `tool_mode = 'execute'`) across a row and the row header names whatever is not held constant. In model mode it also compares against the live prompt → `prompt edited since`. It runs in both modes.
+
+Model mode is anchored to live prompts, so a deleted prompt cannot appear in it at all — the `prompt_text` fallback matching stays a run-mode concern. Prompts in scope that no selected model has answered are counted, not rendered as an all-empty row.
+
+### Ratings
+
+Three manual verdicts plus unrated: `good` / `meh` / `bad`, all defined in `src/lib/rating.ts` (type, order, labels, colours, `countRatings`, `ratingScore`) and drawn by the single `src/components/runs/rating-badge.tsx`. `meh` means "not wrong, but not good enough" — usually a signal the *prompt* needs work rather than the model.
+
+Named `meh` and not `ok` on purpose: `ok` already means "completed without error" as a `run_results.status`, and one word meaning two things in the same table is exactly the confusion this rating exists to remove.
+
+The column is `text` with a drizzle enum, which is type-level only in SQLite — adding `meh` needed **no migration**, and pre-existing `good`/`bad` rows are untouched. `parseRating` treats any unrecognised stored value as unrated, so a legacy value can never disappear from the totals. `ratingScore` (the runs-list sort) is `good - bad`: `meh` is deliberately neutral, so an all-meh run sorts level with an unrated one.
+
+### Model detection on the new-run page
+
+Opening `/runs/new` (and switching machine) POSTs `/api/machines/[id]/discover` from the client, then `router.refresh()`. That reuses machine discovery rather than adding a read-only probe, because the point is to flip `currently_loaded` — otherwise the "Currently loaded" optgroup shows whatever the last manual Discover found. It also keeps the machine's model history fresh as a side effect. Exactly one detected model is auto-selected (the usual one-model-per-endpoint vLLM case); with several it only groups them. An unreachable endpoint degrades to a warning with previously-seen models still selectable, and a `probeSeq` ref discards a slow answer for a machine the user has since switched away from.
+
+### Archiving runs
+
+`runs.archived_at` (nullable timestamp) — deliberately **not** a `status` value, because `status` is the execution state machine Resume depends on: an archived run with pending rows has to stay `pending`, so it can be unarchived and finished. The UI still presents it as a state (amber `archived` badge next to the status badge).
+
+Archived runs are hidden from the runs list (`?archived=only` / `?archived=all` to see them), from the dashboard's stats and recent list, and from the compare run picker — except when already named in `?runs=`, so a bookmarked comparison keeps working and stays deselectable. Compare's model mode has no such exception; see above. `setRunArchived` refuses while a run is executing, like delete.
+
+### Seeding
+
+`scripts/seed-prompts.mjs` (`npm run db:seed`) seeds manual toolsets and prompt groups. Idempotency is recorded in `__app_seeds` (script-owned, like `__app_migrations`): every object is seeded at most once *ever*, so new seed entries land in groups an earlier version created while anything you deleted stays deleted. A pre-ledger database is backfilled from what is already present on the first run.
+
+Seeded canned tool responses are written to stay correct *whatever arguments the model passes* — `convert_currency` returns a rate rather than a converted amount, so the response can never contradict the call and the model still has to do the arithmetic.
 
 ### Machine/model history
 
@@ -59,7 +113,12 @@ A prompt references an optional base system prompt plus a mode: `append` (base +
 
 ### Testing
 
-Unit tests exist only where logic is pure and fiddly: `system-prompt.test.ts`, `llm.test.ts` (SSE fixtures per provider style), `compare.test.ts`. Everything else is verified against the dev server + the mock LLM endpoint: register a machine with base_url `http://localhost:3000/agent-val/api/mock-llm`; user messages containing `TRIGGER_ERROR` → 500, `TRIGGER_SLOW` → 2s TTFT delay.
+Unit tests exist only where logic is pure and fiddly: `system-prompt.test.ts`, `llm.test.ts` (SSE fixtures per provider style, including index-keyed tool-call fragments split mid-JSON), `compare.test.ts`, `tools.test.ts`, `tool-loop.test.ts` (metric aggregation).
+
+Everything else is verified against the dev server + the mocks:
+
+- **Mock LLM** — register a machine with base_url `http://localhost:3000/agent-val/api/mock-llm`. User messages containing `TRIGGER_ERROR` → 500, `TRIGGER_SLOW` → 2s TTFT delay, `TRIGGER_TOOL_LOOP` → never stops calling tools (exercises `max_turns`). When the request carries `tools` and no tool result yet, it streams a tool call for the first tool with arguments synthesized from its schema, split across chunks; once a tool result is present it answers in text quoting it.
+- **Mock MCP** — an MCP toolset pointing at `http://localhost:3000/agent-val/api/mock-mcp` serves `echo_upper` and `add_numbers`. `?hide=<tool>` drops one from `tools/list` (verifies discovery disables rather than deletes), `?fail=1` makes every call return `isError`.
 
 ## Deployment
 

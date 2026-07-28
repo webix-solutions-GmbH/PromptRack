@@ -68,7 +68,9 @@ export function RunsFilterBar({ options }: { options: RunsFilterOptions }) {
   const model = searchParams.get('model') ?? '';
   const group = searchParams.get('group') ?? '';
   const status = searchParams.get('status') ?? '';
-  const hasFilters = machineId || model || group || status;
+  // Empty means the default, which hides archived runs.
+  const archived = searchParams.get('archived') ?? '';
+  const hasFilters = machineId || model || group || status || archived;
 
   return (
     <div className="flex flex-wrap items-end gap-3">
@@ -123,6 +125,27 @@ export function RunsFilterBar({ options }: { options: RunsFilterOptions }) {
           </option>
         ))}
       </FilterSelect>
+
+      {/*
+        Not a FilterSelect: its "All" option means "no filter", whereas the
+        default here is an active choice — archived runs are hidden unless asked
+        for.
+      */}
+      <div className="flex flex-col gap-1">
+        <label className={labelClass} htmlFor="filter-archived">
+          Archived
+        </label>
+        <select
+          id="filter-archived"
+          value={archived}
+          onChange={(event) => setParam('archived', event.target.value)}
+          className={selectClass}
+        >
+          <option value="">Hidden</option>
+          <option value="only">Only archived</option>
+          <option value="all">Include archived</option>
+        </select>
+      </div>
 
       {hasFilters && (
         <button

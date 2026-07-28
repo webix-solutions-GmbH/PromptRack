@@ -1,16 +1,23 @@
 #!/usr/bin/env node
 /**
- * Seeds ready-to-run benchmark prompt groups.
+ * Seeds ready-to-run benchmark toolsets and prompt groups.
  *
  * Like `init-db.mjs` this depends on nothing but `better-sqlite3`, so it can
  * run inside the standalone container image (`node scripts/seed-prompts.mjs`)
  * as well as in development (`npm run db:seed`).
  *
- * Idempotency: a group whose name already exists in `prompt_groups` is
- * skipped entirely — re-running never duplicates or overwrites anything.
+ * Idempotency is per object and recorded in `__app_seeds`, so the script is
+ * additive *and* respects deletions: every toolset/prompt is seeded at most
+ * once ever, which means new seed entries land in groups an earlier version
+ * created, while anything you deleted afterwards stays deleted. A database that
+ * predates the ledger is backfilled on first run from what is already there.
+ * (`__app_seeds` is owned by this script, in the same spirit as
+ * `__app_migrations` in `init-db.mjs`; neither belongs in `src/db/schema.ts`.)
+ *
  * Prompts deliberately embed all instructions and data inline (no
  * `system_prompts` dependency), so each one is self-contained. A prompt may
- * carry its own `systemText`, stored as a per-prompt override system prompt.
+ * carry its own `systemText`, stored as a per-prompt override system prompt,
+ * and may reference seeded toolsets by name via `toolsets`.
  */
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -22,6 +29,102 @@ const dbPath = path.join(dataDir, 'app.db');
 // ---------------------------------------------------------------------------
 // Seed data
 // ---------------------------------------------------------------------------
+
+/**
+ * Manual toolsets: the tools are defined here and answer with a fixed canned
+ * response, so a tool test is fully deterministic and comparable across models
+ * without touching any real system.
+ *
+ * The canned responses are deliberately written to stay *correct whatever
+ * arguments the model passes* — `convert_currency` returns a rate rather than a
+ * converted amount, for instance, so the model still has to do the arithmetic
+ * and the response never contradicts the call.
+ */
+const TOOLSETS = [
+  {
+    name: 'Demo Utilities (mock)',
+    description:
+      'Canned weather / catalogue / currency / stock lookups for tool-calling tests. No real system is contacted.',
+    tools: [
+      {
+        name: 'get_weather',
+        description: 'Current weather observation for a city.',
+        parameters: {
+          type: 'object',
+          properties: {
+            city: { type: 'string', description: 'City name, e.g. "Berlin"' },
+            unit: {
+              type: 'string',
+              enum: ['celsius', 'fahrenheit'],
+              description: 'Unit for the returned temperature. Defaults to celsius.',
+            },
+          },
+          required: ['city'],
+        },
+        mockResponse: {
+          city: 'Berlin',
+          observed_at: '2026-07-27T11:00:00Z',
+          temperature_celsius: 21.4,
+          condition: 'partly cloudy',
+          wind_kph: 14,
+          humidity_percent: 58,
+        },
+      },
+      {
+        name: 'search_products',
+        description: 'Search the product catalogue. Prices are in euros.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Free-text product search' },
+            max_price: { type: 'number', description: 'Optional upper price bound in EUR' },
+          },
+          required: ['query'],
+        },
+        mockResponse: {
+          currency: 'EUR',
+          results: [
+            { sku: 'LAP-001', name: 'ThinkPad T14 Gen 5', price: 1049.0, in_stock: true },
+            { sku: 'LAP-002', name: 'Dell Latitude 5450', price: 890.0, in_stock: true },
+            { sku: 'LAP-003', name: 'HP EliteBook 645 G11', price: 979.0, in_stock: false },
+          ],
+        },
+      },
+      {
+        name: 'convert_currency',
+        description:
+          'Exchange rate between two ISO 4217 currencies. Returns the rate; the caller applies it.',
+        parameters: {
+          type: 'object',
+          properties: {
+            from_currency: { type: 'string', description: 'ISO 4217 code, e.g. "EUR"' },
+            to_currency: { type: 'string', description: 'ISO 4217 code, e.g. "USD"' },
+          },
+          required: ['from_currency', 'to_currency'],
+        },
+        mockResponse: {
+          from_currency: 'EUR',
+          to_currency: 'USD',
+          rate: 1.084,
+          as_of: '2026-07-27',
+          note: 'Multiply the EUR amount by rate to get USD.',
+        },
+      },
+      {
+        name: 'get_stock_level',
+        description: 'Warehouse stock level for one SKU.',
+        parameters: {
+          type: 'object',
+          properties: {
+            sku: { type: 'string', description: 'Product SKU, e.g. "LAP-002"' },
+          },
+          required: ['sku'],
+        },
+        mockResponse: { sku: 'LAP-002', on_hand: 17, reserved: 3, warehouse: 'WH-1' },
+      },
+    ],
+  },
+];
 
 // Shared by the two reconcile evals below — mirrors the real pipeline prompt
 // from FoundryAgentFactory.cs.
@@ -159,6 +262,42 @@ Corrected line: for i in range(len(values) - window + 1):`,
         title: 'Long-form generation',
         content: `Explain how DNS (the Domain Name System) works to a junior developer in about 300 words. Structure your answer with a short introduction, three sections with headings (the resolution steps, caching, and common record types), and a one-sentence summary at the end.`,
         expectedOutput: null,
+      },
+      {
+        title: 'Tools: pick the right one',
+        toolMode: 'definitions',
+        toolsets: ['Demo Utilities (mock)'],
+        content: `What is the current temperature in Berlin, in degrees Celsius?`,
+        expectedOutput: `Exactly one tool call: get_weather with city="Berlin".
+Passing "unit": "celsius" is fine (and slightly better); omitting unit is also correct since celsius is the documented default.
+
+Fail: calling search_products / convert_currency / get_stock_level, calling more than one tool, inventing a tool that was not offered, a wrong or empty city, or answering from memory with a made-up temperature instead of calling anything.
+Note: this prompt runs in "definitions" mode — nothing is executed, so judge the call itself, not any answer.`,
+      },
+      {
+        title: 'Tools: chain two calls and do the math',
+        toolMode: 'execute',
+        toolsets: ['Demo Utilities (mock)'],
+        maxTurns: 6,
+        content: `Our catalogue is priced in euros. Using the available tools, find the cheapest laptop we sell and tell me what it costs in US dollars. State the product name and the final USD amount rounded to the cent.`,
+        expectedOutput: `Dell Latitude 5450 — $964.76
+
+Required behaviour:
+- calls search_products (query about laptops), then convert_currency (EUR -> USD)
+- identifies 890.00 EUR (Dell Latitude 5450) as the cheapest of the three results
+- applies the returned rate itself: 890.00 x 1.084 = 964.76 exactly
+
+Fail: picking the 1049.00 or 979.00 item, only calling one of the two tools, inventing an exchange rate instead of calling convert_currency, or arithmetic that is off by more than a cent.`,
+      },
+      {
+        title: 'Tools: restraint — no call needed',
+        toolMode: 'definitions',
+        toolsets: ['Demo Utilities (mock)'],
+        content: `How many continents are there on Earth? Answer in one short sentence.`,
+        expectedOutput: `No tool call at all, plus a direct answer naming seven continents.
+
+This tests restraint: none of the offered tools (weather, product search, currency, stock) can answer a general-knowledge question, so a well-behaved model answers directly.
+Fail: any tool call — the classic over-eager failure is calling search_products with "continents" because tools were offered at all. The result card shows "0 tool calls" and stop reason "the model answered" when it passes.`,
       },
     ],
   },
@@ -440,44 +579,156 @@ function main() {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
-  const groupExists = db.prepare('SELECT id FROM prompt_groups WHERE name = ?');
+  // Ledger of what this script has ever seeded. `scope` is the group name for a
+  // prompt and empty for a toolset.
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS __app_seeds (
+       kind TEXT NOT NULL,
+       scope TEXT NOT NULL,
+       name TEXT NOT NULL,
+       seeded_at INTEGER NOT NULL,
+       PRIMARY KEY (kind, scope, name)
+     )`,
+  );
+  const wasSeeded = db.prepare(
+    'SELECT 1 FROM __app_seeds WHERE kind = ? AND scope = ? AND name = ?',
+  );
+  const markSeeded = db.prepare(
+    'INSERT OR IGNORE INTO __app_seeds (kind, scope, name, seeded_at) VALUES (?, ?, ?, ?)',
+  );
+
+  const toolsetByName = db.prepare('SELECT id FROM toolsets WHERE name = ?');
+  const insertToolset = db.prepare(
+    `INSERT INTO toolsets (name, description, kind, mcp_url, mcp_headers, created_at, updated_at)
+     VALUES (?, ?, 'manual', NULL, NULL, ?, ?)`,
+  );
+  const insertTool = db.prepare(
+    `INSERT INTO tools
+       (toolset_id, name, description, parameters_json, mock_response, enabled, source, first_seen_at, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, 1, 'manual', ?, ?)`,
+  );
+
+  const groupByName = db.prepare('SELECT id FROM prompt_groups WHERE name = ?');
   const insertGroup = db.prepare(
     'INSERT INTO prompt_groups (name, description, sort_order, created_at) VALUES (?, ?, ?, ?)',
   );
+  const promptExists = db.prepare(
+    'SELECT id FROM prompts WHERE group_id = ? AND title = ?',
+  );
   const insertPrompt = db.prepare(
     `INSERT INTO prompts
-       (group_id, title, content, expected_output, system_prompt_id, system_prompt_mode, custom_system_text, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+       (group_id, title, content, expected_output, system_prompt_id, system_prompt_mode, custom_system_text,
+        tool_mode, tool_choice, max_turns, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const linkToolset = db.prepare(
+    'INSERT INTO prompt_toolsets (prompt_id, toolset_id, sort_order) VALUES (?, ?, ?)',
   );
 
   const seedAll = db.transaction(() => {
-    GROUPS.forEach((group, groupIndex) => {
-      if (groupExists.get(group.name)) {
-        console.log(`[seed-prompts] group "${group.name}" already exists, skipping`);
-        return;
+    // Toolsets first: prompts reference them by name.
+    const toolsetIdByName = new Map();
+    for (const toolset of TOOLSETS) {
+      const existing = toolsetByName.get(toolset.name);
+      if (existing) {
+        // Present already: adopt it, and backfill the ledger for a database
+        // seeded before the ledger existed.
+        toolsetIdByName.set(toolset.name, existing.id);
+        markSeeded.run('toolset', '', toolset.name, Date.now());
+        console.log(`[seed-prompts] toolset "${toolset.name}" already exists, skipping`);
+        continue;
       }
+      if (wasSeeded.get('toolset', '', toolset.name)) {
+        console.log(`[seed-prompts] toolset "${toolset.name}" was seeded before and deleted, leaving it out`);
+        continue;
+      }
+
       const now = Date.now();
-      const { lastInsertRowid: groupId } = insertGroup.run(
-        group.name,
-        group.description,
-        groupIndex,
+      const { lastInsertRowid: toolsetId } = insertToolset.run(
+        toolset.name,
+        toolset.description,
+        now,
         now,
       );
+      for (const tool of toolset.tools) {
+        insertTool.run(
+          toolsetId,
+          tool.name,
+          tool.description,
+          JSON.stringify(tool.parameters),
+          JSON.stringify(tool.mockResponse, null, 2),
+          now,
+          now,
+        );
+      }
+      toolsetIdByName.set(toolset.name, toolsetId);
+      markSeeded.run('toolset', '', toolset.name, now);
+      console.log(
+        `[seed-prompts] created toolset "${toolset.name}" (${toolset.tools.length} tools)`,
+      );
+    }
+
+    GROUPS.forEach((group, groupIndex) => {
+      const now = Date.now();
+      let groupId = groupByName.get(group.name)?.id;
+      if (groupId === undefined) {
+        groupId = insertGroup.run(group.name, group.description, groupIndex, now).lastInsertRowid;
+        console.log(`[seed-prompts] created group "${group.name}"`);
+      }
+
+      let added = 0;
+      let skippedAsDeleted = 0;
       group.prompts.forEach((prompt, promptIndex) => {
-        insertPrompt.run(
+        if (promptExists.get(groupId, prompt.title)) {
+          // Backfill: a database seeded before the ledger existed.
+          markSeeded.run('prompt', group.name, prompt.title, now);
+          return;
+        }
+        if (wasSeeded.get('prompt', group.name, prompt.title)) {
+          // Seeded once and deleted since — that was a deliberate choice, so
+          // do not resurrect it.
+          skippedAsDeleted += 1;
+          return;
+        }
+
+        const toolMode = prompt.toolMode ?? 'none';
+        const { lastInsertRowid: promptId } = insertPrompt.run(
           groupId,
           prompt.title,
           prompt.content,
           prompt.expectedOutput,
           prompt.systemText ? 'override' : 'append',
           prompt.systemText ?? null,
+          toolMode,
+          prompt.toolChoice ?? null,
+          prompt.maxTurns ?? 6,
           (promptIndex + 1) * 10,
           now,
           now,
         );
+
+        (prompt.toolsets ?? []).forEach((name, order) => {
+          const toolsetId = toolsetIdByName.get(name);
+          if (toolsetId === undefined) {
+            // Only reachable if a seed prompt names a toolset this script does
+            // not define — a bug in the seed data rather than a user action.
+            throw new Error(
+              `prompt "${prompt.title}" references unknown toolset "${name}"`,
+            );
+          }
+          linkToolset.run(promptId, toolsetId, order);
+        });
+
+        markSeeded.run('prompt', group.name, prompt.title, now);
+        added += 1;
       });
+
+      const deletedNote =
+        skippedAsDeleted > 0 ? ` (${skippedAsDeleted} previously deleted, left out)` : '';
       console.log(
-        `[seed-prompts] created group "${group.name}" (${group.prompts.length} prompts)`,
+        added === 0
+          ? `[seed-prompts] group "${group.name}" up to date${deletedNote}`
+          : `[seed-prompts] group "${group.name}": added ${added} prompt(s)${deletedNote}`,
       );
     });
   });

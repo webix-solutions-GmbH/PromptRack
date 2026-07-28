@@ -3,6 +3,7 @@ import { desc } from 'drizzle-orm';
 import { db } from '@/db';
 import { machines, prompts, runResults, runs } from '@/db/schema';
 import { formatDateTime, formatRate, snapshotMachineName } from '@/lib/format';
+import { countRatings, RATING_META } from '@/lib/rating';
 import { StatusBadge } from '@/components/runs/status-badge';
 
 export const dynamic = 'force-dynamic';
@@ -33,10 +34,16 @@ export default async function Home() {
       .from(runResults),
   ]);
 
-  const totalGood = resultRows.filter((result) => result.rating === 'good').length;
-  const totalBad = resultRows.filter((result) => result.rating === 'bad').length;
+  // Archiving a run takes it out of the picture here too — the dashboard is a
+  // view of work in play, not an all-time total.
+  const activeRuns = runRows.filter((run) => run.archivedAt === null);
+  const activeRunIds = new Set(activeRuns.map((run) => run.id));
+  const activeResults = resultRows.filter((result) => activeRunIds.has(result.runId));
 
-  const recentRuns = runRows.slice(0, 10).map((run) => {
+  const totals = countRatings(activeResults.map((result) => result.rating));
+  const archivedCount = runRows.length - activeRuns.length;
+
+  const recentRuns = activeRuns.slice(0, 10).map((run) => {
     const results = resultRows.filter((result) => result.runId === run.id);
     const rates = results
       .map((result) => result.tokensPerSec)
@@ -46,8 +53,7 @@ export default async function Home() {
       run,
       ok: results.filter((result) => result.status === 'ok').length,
       error: results.filter((result) => result.status === 'error').length,
-      good: results.filter((result) => result.rating === 'good').length,
-      bad: results.filter((result) => result.rating === 'bad').length,
+      ...countRatings(results.map((result) => result.rating)),
       avgRate:
         rates.length > 0 ? rates.reduce((total, rate) => total + rate, 0) / rates.length : null,
     };
@@ -62,6 +68,15 @@ export default async function Home() {
           </h1>
           <p className="max-w-prose text-sm text-zinc-600 dark:text-zinc-400">
             A summary of machines, recent runs, and rated results.
+            {archivedCount > 0 && (
+              <>
+                {' '}
+                <Link href="/runs?archived=only" className="underline-offset-2 hover:underline">
+                  {archivedCount} archived run{archivedCount === 1 ? '' : 's'}
+                </Link>{' '}
+                excluded.
+              </>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -80,12 +95,13 @@ export default async function Home() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-        <StatCard label="Total runs" value={String(runRows.length)} />
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+        <StatCard label="Active runs" value={String(activeRuns.length)} />
         <StatCard label="Machines" value={String(machineRows.length)} />
         <StatCard label="Prompts" value={String(promptRows.length)} />
-        <StatCard label="Good ratings" value={String(totalGood)} />
-        <StatCard label="Bad ratings" value={String(totalBad)} />
+        <StatCard label="Good ratings" value={String(totals.good)} />
+        <StatCard label="Meh ratings" value={String(totals.meh)} />
+        <StatCard label="Bad ratings" value={String(totals.bad)} />
       </div>
 
       <section className="flex flex-col gap-4">
@@ -101,7 +117,9 @@ export default async function Home() {
                 <th className="px-4 py-3">Model</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Ok/Err</th>
-                <th className="px-4 py-3">Good/Bad</th>
+                <th className="px-4 py-3" title="good / meh / bad">
+                  Rating
+                </th>
                 <th className="px-4 py-3">Avg speed</th>
               </tr>
             </thead>
@@ -116,7 +134,7 @@ export default async function Home() {
                   </td>
                 </tr>
               )}
-              {recentRuns.map(({ run, ok, error, good, bad, avgRate }) => (
+              {recentRuns.map(({ run, ok, error, good, meh, bad, avgRate }) => (
                 <tr
                   key={run.id}
                   className="transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900"
@@ -145,10 +163,12 @@ export default async function Home() {
                       {error}
                     </span>
                   </td>
-                  <td className="px-4 py-3">
-                    <span className="text-emerald-600 dark:text-emerald-400">{good}</span>
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <span className={RATING_META.good.text}>{good}</span>
                     <span className="text-zinc-400 dark:text-zinc-500">/</span>
-                    <span className="text-red-600 dark:text-red-400">{bad}</span>
+                    <span className={RATING_META.meh.text}>{meh}</span>
+                    <span className="text-zinc-400 dark:text-zinc-500">/</span>
+                    <span className={RATING_META.bad.text}>{bad}</span>
                   </td>
                   <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
                     {formatRate(avgRate)}

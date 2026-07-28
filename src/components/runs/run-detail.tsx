@@ -3,7 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiPath } from '@/lib/base-path';
 import { formatDateTime, formatDuration, formatRate } from '@/lib/format';
+import { countRatings, RATING_META, type Rating } from '@/lib/rating';
 import { isRunEvent, type RunEvent, type RunStatus } from '@/lib/run-events';
+import type { TranscriptMessage } from '@/lib/tool-loop';
+import { ArchiveRunButton } from './archive-run-button';
 import { DeleteRunButton } from './delete-run-button';
 import { ResultCard } from './result-card';
 import { RunComment } from './run-comment';
@@ -19,6 +22,46 @@ function Field({ label, value }: { label: string; value: string }) {
       <span className="text-sm text-zinc-800 dark:text-zinc-200">{value}</span>
     </div>
   );
+}
+
+/**
+ * Applies a live event to a tool run's growing transcript.
+ *
+ * Watching an agent work is most of the value of a tool test, so the transcript
+ * is assembled from the stream rather than waiting for the finished row. The
+ * authoritative version replaces it on `resultDone`.
+ */
+function patchTranscript(
+  current: TranscriptMessage[] | null,
+  patch:
+    | { kind: 'turnStart'; turn: number }
+    | { kind: 'delta'; turn: number; text: string }
+    | { kind: 'toolCall'; turn: number; calls: NonNullable<TranscriptMessage['toolCalls']> }
+    | { kind: 'toolResult'; message: TranscriptMessage },
+): TranscriptMessage[] {
+  const messages = current ? [...current] : [];
+
+  if (patch.kind === 'toolResult') {
+    messages.push(patch.message);
+    return messages;
+  }
+
+  // Find the assistant message of this turn, creating it on first sight.
+  let index = messages.findIndex(
+    (message) => message.role === 'assistant' && message.turn === patch.turn,
+  );
+  if (index === -1) {
+    messages.push({ role: 'assistant', content: '', turn: patch.turn });
+    index = messages.length - 1;
+  }
+
+  if (patch.kind === 'delta') {
+    messages[index] = { ...messages[index], content: patch.text };
+  } else if (patch.kind === 'toolCall') {
+    messages[index] = { ...messages[index], toolCalls: patch.calls };
+  }
+
+  return messages;
 }
 
 function formatParams(params: Record<string, unknown> | null): string {
@@ -57,7 +100,33 @@ export function RunDetail({
         setResults((current) =>
           current.map((result) =>
             result.id === event.resultId
-              ? { ...result, status: 'running', responseText: '', error: null }
+              ? {
+                  ...result,
+                  status: 'running',
+                  responseText: '',
+                  error: null,
+                  transcript: null,
+                  turns: [],
+                  turnCount: null,
+                  toolCallCount: null,
+                  stoppedReason: null,
+                }
+              : result,
+          ),
+        );
+        break;
+      case 'turnStart':
+        setResults((current) =>
+          current.map((result) =>
+            result.id === event.resultId
+              ? {
+                  ...result,
+                  responseText: '',
+                  transcript: patchTranscript(result.transcript, {
+                    kind: 'turnStart',
+                    turn: event.turn,
+                  }),
+                }
               : result,
           ),
         );
@@ -65,7 +134,51 @@ export function RunDetail({
       case 'delta':
         setResults((current) =>
           current.map((result) =>
-            result.id === event.resultId ? { ...result, responseText: event.text } : result,
+            result.id === event.resultId
+              ? {
+                  ...result,
+                  responseText: event.text,
+                  transcript:
+                    event.turn === undefined
+                      ? result.transcript
+                      : patchTranscript(result.transcript, {
+                          kind: 'delta',
+                          turn: event.turn,
+                          text: event.text,
+                        }),
+                }
+              : result,
+          ),
+        );
+        break;
+      case 'toolCall':
+        setResults((current) =>
+          current.map((result) =>
+            result.id === event.resultId
+              ? {
+                  ...result,
+                  transcript: patchTranscript(result.transcript, {
+                    kind: 'toolCall',
+                    turn: event.turn,
+                    calls: event.calls,
+                  }),
+                }
+              : result,
+          ),
+        );
+        break;
+      case 'toolResult':
+        setResults((current) =>
+          current.map((result) =>
+            result.id === event.resultId
+              ? {
+                  ...result,
+                  transcript: patchTranscript(result.transcript, {
+                    kind: 'toolResult',
+                    message: event.message,
+                  }),
+                }
+              : result,
           ),
         );
         break;
@@ -79,6 +192,11 @@ export function RunDetail({
                   responseText: event.text,
                   error: null,
                   ...event.metrics,
+                  // The finished row is authoritative; the live transcript was
+                  // only ever an approximation assembled from the stream.
+                  transcript: event.transcript ?? result.transcript,
+                  turns: event.turns ?? result.turns,
+                  stoppedReason: event.stoppedReason ?? result.stoppedReason,
                 }
               : result,
           ),
@@ -97,7 +215,17 @@ export function RunDetail({
         setResults((current) =>
           current.map((result) =>
             result.id === event.resultId
-              ? { ...result, status: 'pending', responseText: null, error: null }
+              ? {
+                  ...result,
+                  status: 'pending',
+                  responseText: null,
+                  error: null,
+                  transcript: null,
+                  turns: [],
+                  turnCount: null,
+                  toolCallCount: null,
+                  stoppedReason: null,
+                }
               : result,
           ),
         );
@@ -115,7 +243,7 @@ export function RunDetail({
   const handleRatingChange = useCallback(
     (
       resultId: number,
-      patch: { rating?: 'good' | 'bad' | null; ratingNote?: string | null },
+      patch: { rating?: Rating | null; ratingNote?: string | null },
     ) => {
       setResults((current) =>
         current.map((result) => (result.id === resultId ? { ...result, ...patch } : result)),
@@ -201,8 +329,7 @@ export function RunDetail({
   const resumableCount = pendingCount + staleRunningCount;
   const okCount = results.filter((result) => result.status === 'ok').length;
   const errorCount = results.filter((result) => result.status === 'error').length;
-  const goodCount = results.filter((result) => result.rating === 'good').length;
-  const badCount = results.filter((result) => result.rating === 'bad').length;
+  const ratings = countRatings(results.map((result) => result.rating));
   const rates = results
     .map((result) => result.tokensPerSec)
     .filter((rate): rate is number => typeof rate === 'number');
@@ -223,6 +350,7 @@ export function RunDetail({
                 Run #{run.id}
               </h1>
               <StatusBadge status={runStatus} />
+              {run.archivedAt !== null && <StatusBadge status="archived" />}
             </div>
             <p className="font-mono text-sm text-zinc-600 dark:text-zinc-400">
               {run.modelId} @ {run.machineName}
@@ -249,6 +377,7 @@ export function RunDetail({
                     Resume ({resumableCount} pending)
                   </button>
                 )}
+                <ArchiveRunButton runId={run.id} archived={run.archivedAt !== null} />
                 <DeleteRunButton runId={run.id} />
               </>
             )}
@@ -294,9 +423,13 @@ export function RunDetail({
           <span aria-hidden>·</span>
           <span>{pendingCount} pending</span>
           <span aria-hidden>·</span>
-          <span className="text-emerald-600 dark:text-emerald-400">{goodCount} good</span>
+          <span className={RATING_META.good.text}>{ratings.good} good</span>
           <span aria-hidden>·</span>
-          <span className="text-red-600 dark:text-red-400">{badCount} bad</span>
+          <span className={RATING_META.meh.text}>{ratings.meh} meh</span>
+          <span aria-hidden>·</span>
+          <span className={RATING_META.bad.text}>{ratings.bad} bad</span>
+          <span aria-hidden>·</span>
+          <span>{ratings.unrated} unrated</span>
           <span aria-hidden>·</span>
           <span>avg {formatRate(avgRate)}</span>
           <span aria-hidden>·</span>

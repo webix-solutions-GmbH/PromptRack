@@ -3,55 +3,51 @@
 import { useCallback } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
-  MAX_COMPARE_RUNS,
-  parseRunIds,
-  serializeRunIds,
-  type CompareRunView,
+  MAX_COMPARE_MODELS,
+  parseModelColumnKeys,
+  type ModelColumnView,
 } from '@/lib/compare';
 import { formatDateTime, formatRate } from '@/lib/format';
 import { RATING_META } from '@/lib/rating';
-import { StatusBadge } from '@/components/runs/status-badge';
 
 /**
- * Checkbox list of comparable runs. The selection lives in `?runs=1,5,7`, so a
- * comparison is always linkable/bookmarkable.
+ * Checkbox list of model columns (model × machine). The selection lives in
+ * repeated `?model=` params, so a comparison stays linkable — and `mode` is
+ * pinned here so the page never falls back to run mode on a click.
  */
-export function RunPicker({ runs }: { runs: CompareRunView[] }) {
+export function ModelPicker({ columns }: { columns: ModelColumnView[] }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  const selected = parseRunIds(searchParams.get('runs') ?? undefined);
+  const selected = parseModelColumnKeys(searchParams.getAll('model'));
 
   const push = useCallback(
-    (ids: number[]) => {
+    (keys: string[]) => {
       const params = new URLSearchParams(searchParams.toString());
-      if (ids.length > 0) {
-        params.set('runs', serializeRunIds(ids));
-      } else {
-        params.delete('runs');
-      }
-      const query = params.toString();
-      router.push(query.length > 0 ? `${pathname}?${query}` : pathname, { scroll: false });
+      params.set('mode', 'models');
+      params.delete('model');
+      for (const key of keys) params.append('model', key);
+      router.push(`${pathname}?${params.toString()}`, { scroll: false });
     },
     [pathname, router, searchParams],
   );
 
   const toggle = useCallback(
-    (id: number) => {
-      if (selected.includes(id)) {
-        push(selected.filter((selectedId) => selectedId !== id));
-      } else if (selected.length < MAX_COMPARE_RUNS) {
-        push([...selected, id]);
+    (key: string) => {
+      if (selected.includes(key)) {
+        push(selected.filter((selectedKey) => selectedKey !== key));
+      } else if (selected.length < MAX_COMPARE_MODELS) {
+        push([...selected, key]);
       }
     },
     [push, selected],
   );
 
-  if (runs.length === 0) {
+  if (columns.length === 0) {
     return (
       <div className="rounded-lg border border-zinc-200 p-6 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-        No completed runs yet — finish a run first, then come back to compare.
+        No results yet — finish a run first, then come back to compare.
       </div>
     );
   }
@@ -60,11 +56,11 @@ export function RunPicker({ runs }: { runs: CompareRunView[] }) {
     <section className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-          Select runs to compare
+          Select models to compare
         </h2>
         <div className="flex items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400">
           <span>
-            {selected.length} of {MAX_COMPARE_RUNS} selected
+            {selected.length} of {MAX_COMPARE_MODELS} selected
           </span>
           {selected.length > 0 && (
             <button
@@ -83,27 +79,28 @@ export function RunPicker({ runs }: { runs: CompareRunView[] }) {
           <thead className="sticky top-0 border-b border-zinc-200 bg-zinc-50 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
             <tr>
               <th className="px-4 py-3">Compare</th>
-              <th className="px-4 py-3">Run</th>
               <th className="px-4 py-3">Model</th>
               <th className="px-4 py-3">Machine</th>
-              <th className="px-4 py-3">Created</th>
-              <th className="px-4 py-3">Groups</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3" title="good / meh / bad">
+              <th className="px-4 py-3" title="Distinct prompts with a usable result">
+                Prompts
+              </th>
+              <th className="px-4 py-3">Runs</th>
+              <th className="px-4 py-3">Latest run</th>
+              <th className="px-4 py-3" title="good / meh / bad over all results">
                 Rating
               </th>
               <th className="px-4 py-3">Avg speed</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-            {runs.map((run) => {
-              const isSelected = selected.includes(run.id);
-              const isDisabled = !isSelected && selected.length >= MAX_COMPARE_RUNS;
+            {columns.map((column) => {
+              const isSelected = selected.includes(column.key);
+              const isDisabled = !isSelected && selected.length >= MAX_COMPARE_MODELS;
 
               return (
                 <tr
-                  key={run.id}
-                  onClick={() => !isDisabled && toggle(run.id)}
+                  key={column.key}
+                  onClick={() => !isDisabled && toggle(column.key)}
                   className={`cursor-pointer transition-colors ${
                     isSelected
                       ? 'bg-zinc-100 dark:bg-zinc-900'
@@ -117,42 +114,36 @@ export function RunPicker({ runs }: { runs: CompareRunView[] }) {
                       type="checkbox"
                       checked={isSelected}
                       disabled={isDisabled}
-                      onChange={() => toggle(run.id)}
+                      onChange={() => toggle(column.key)}
                       onClick={(event) => event.stopPropagation()}
-                      aria-label={`Compare run #${run.id}`}
+                      aria-label={`Compare ${column.modelId} on ${column.machineName}`}
                       className="h-4 w-4 accent-zinc-900 dark:accent-zinc-100"
                     />
                   </td>
-                  <td className="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-50">
-                    #{run.id}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-zinc-600 dark:text-zinc-400">
-                    {run.modelId}
+                  <td className="px-4 py-3 font-mono text-xs font-medium text-zinc-900 dark:text-zinc-50">
+                    {column.modelId}
                   </td>
                   <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
-                    {run.machineName}
+                    {column.machineName}
                   </td>
                   <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
-                    {formatDateTime(run.createdAt)}
+                    {column.promptCount}
                   </td>
                   <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
-                    {run.groupNames.length > 0 ? run.groupNames.join(', ') : '—'}
+                    {column.runCount}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
+                    {formatDateTime(column.latestRunAt)}
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex flex-wrap items-center gap-1">
-                      <StatusBadge status={run.status} />
-                      {run.archived && <StatusBadge status="archived" />}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={RATING_META.good.text}>{run.good}</span>
+                    <span className={RATING_META.good.text}>{column.good}</span>
                     <span className="text-zinc-400 dark:text-zinc-500">/</span>
-                    <span className={RATING_META.meh.text}>{run.meh}</span>
+                    <span className={RATING_META.meh.text}>{column.meh}</span>
                     <span className="text-zinc-400 dark:text-zinc-500">/</span>
-                    <span className={RATING_META.bad.text}>{run.bad}</span>
+                    <span className={RATING_META.bad.text}>{column.bad}</span>
                   </td>
                   <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
-                    {formatRate(run.avgRate)}
+                    {formatRate(column.avgRate)}
                   </td>
                 </tr>
               );

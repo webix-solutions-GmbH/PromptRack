@@ -1,13 +1,11 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { db } from '@/db';
-import { machines, runResults, runs } from '@/db/schema';
-import {
-  LlmError,
-  computeTokensPerSec,
-  streamChatCompletion,
-  type ChatMessage,
-} from './llm';
+import { machines, runResults, runs, toolsets } from '@/db/schema';
+import { LlmError } from './llm';
+import { callMcpTool, parseMcpHeaders, type McpServer } from './mcp-client';
 import type { RunEvent, RunStatus } from './run-events';
+import { runToolLoop, type ToolExecutor } from './tool-loop';
+import { parseToolArguments, parseToolsSnapshot, type SnapshotTool, type ToolChoice, type ToolMode } from './tools';
 
 /** How often, at most, a `delta` event is pushed to the client. */
 export const DELTA_THROTTLE_MS = 250;
@@ -70,6 +68,74 @@ function errorMessage(err: unknown): string {
 }
 
 /**
+ * Builds the executor for a result's MCP tools.
+ *
+ * The endpoint and its auth are credentials, so they are read live here rather
+ * than taken from the frozen snapshot — the same tradeoff already made for a
+ * machine's `base_url`. Returns null when the snapshot has no MCP tools, in
+ * which case nothing needs to be looked up at all.
+ */
+async function buildMcpExecutor(snapshot: SnapshotTool[]): Promise<ToolExecutor | null> {
+  const toolsetIds = [
+    ...new Set(snapshot.filter((entry) => entry.source === 'mcp').map((entry) => entry.toolsetId)),
+  ];
+  if (toolsetIds.length === 0) return null;
+
+  const rows = await db
+    .select({ id: toolsets.id, mcpUrl: toolsets.mcpUrl, mcpHeaders: toolsets.mcpHeaders })
+    .from(toolsets)
+    .where(inArray(toolsets.id, toolsetIds));
+
+  const serverById = new Map<number, McpServer>();
+  for (const row of rows) {
+    if (!row.mcpUrl) continue;
+    serverById.set(row.id, { url: row.mcpUrl, headers: parseMcpHeaders(row.mcpHeaders) });
+  }
+
+  const toolsetIdByName = new Map(
+    snapshot.map((entry) => [entry.definition.function.name, entry.toolsetId]),
+  );
+
+  return async (call, signal) => {
+    const toolsetId = toolsetIdByName.get(call.function.name);
+    const server = toolsetId === undefined ? undefined : serverById.get(toolsetId);
+    if (!server) {
+      // The toolset was deleted, switched to manual, or lost its URL after the
+      // run was created. The model hears about it and can react.
+      return {
+        content: JSON.stringify({
+          error: `The MCP server for "${call.function.name}" is no longer configured.`,
+        }),
+        isError: true,
+      };
+    }
+
+    // Arguments were already validated by the loop; parse again for the typed
+    // object the MCP call needs.
+    const parsed = parseToolArguments(call.function.arguments);
+    return callMcpTool(server, call.function.name, parsed.ok ? parsed.value : {}, signal);
+  };
+}
+
+/**
+ * Everything a half-written result must give up when it goes back to 'pending'
+ * — kept in one place so a new output column cannot be forgotten in one of the
+ * three rollback paths (stale 'running' reclaim, pre-attempt reset, abort).
+ */
+const RESET_TO_PENDING = {
+  status: 'pending',
+  startedAt: null,
+  finishedAt: null,
+  responseText: null,
+  error: null,
+  transcriptJson: null,
+  turnsJson: null,
+  turnCount: null,
+  toolCallCount: null,
+  stoppedReason: null,
+} as const;
+
+/**
  * Executes every still-pending result of a run, sequentially.
  *
  * Each result is written to the database the moment it finishes, so a crash or
@@ -97,13 +163,7 @@ export async function executeRun(
     // reclaim them as 'pending' and let this execution redo them.
     await db
       .update(runResults)
-      .set({
-        status: 'pending',
-        startedAt: null,
-        finishedAt: null,
-        responseText: null,
-        error: null,
-      })
+      .set(RESET_TO_PENDING)
       .where(and(eq(runResults.runId, runId), eq(runResults.status, 'running')));
 
     const allResults = await db
@@ -166,13 +226,7 @@ export async function executeRun(
 
       await db
         .update(runResults)
-        .set({
-          status: 'running',
-          startedAt: Date.now(),
-          finishedAt: null,
-          responseText: null,
-          error: null,
-        })
+        .set({ ...RESET_TO_PENDING, status: 'running', startedAt: Date.now() })
         .where(eq(runResults.id, resultId));
 
       emit({
@@ -182,50 +236,72 @@ export async function executeRun(
         total,
       });
 
-      const messages: ChatMessage[] = [];
-      if (result.systemPromptText && result.systemPromptText.trim().length > 0) {
-        messages.push({ role: 'system', content: result.systemPromptText });
-      }
-      messages.push({ role: 'user', content: result.promptText });
+      const snapshot = parseToolsSnapshot(result.toolsSnapshot);
+      const toolRun = snapshot.length > 0 && result.toolMode !== 'none';
+      const executeTool =
+        result.toolMode === 'execute' ? await buildMcpExecutor(snapshot) : null;
 
       let lastDeltaAt = 0;
       const startedAt = Date.now();
       attempted += 1;
 
       try {
-        const metrics = await streamChatCompletion({
+        const outcome = await runToolLoop({
           baseUrl: endpoint.baseUrl,
           apiKey: endpoint.apiKey,
           model: run.modelId,
-          messages,
           params,
           signal: requestSignal,
-          onDelta: (_delta, textSoFar) => {
+          systemPrompt: result.systemPromptText,
+          userMessage: result.promptText,
+          snapshot,
+          toolMode: result.toolMode as ToolMode,
+          toolChoice: result.toolChoice as ToolChoice | null,
+          maxTurns: result.maxTurns,
+          ...(executeTool ? { executeTool } : {}),
+          onTurnStart: (turn) => {
+            if (!toolRun) return;
+            // Each turn streams its own text, so the throttle window restarts
+            // with it — otherwise a turn that begins right after a delta would
+            // stay silent until the throttle expired.
+            lastDeltaAt = 0;
+            emit({ type: 'turnStart', resultId, turn });
+          },
+          onDelta: (turn, textSoFar) => {
             const now = Date.now();
             if (now - lastDeltaAt < DELTA_THROTTLE_MS) return;
             lastDeltaAt = now;
-            emit({ type: 'delta', resultId, text: textSoFar });
+            // A plain prompt emits exactly the event shape it always did.
+            emit(
+              toolRun
+                ? { type: 'delta', resultId, text: textSoFar, turn }
+                : { type: 'delta', resultId, text: textSoFar },
+            );
           },
+          onToolCalls: (turn, calls) => emit({ type: 'toolCall', resultId, turn, calls }),
+          onToolResult: (turn, message) =>
+            emit({ type: 'toolResult', resultId, turn, message }),
         });
-
-        const tokensPerSec = computeTokensPerSec(
-          metrics.completionTokens,
-          metrics.durationMs,
-          metrics.ttftMs,
-        );
 
         await db
           .update(runResults)
           .set({
             status: 'ok',
-            responseText: metrics.text,
+            responseText: outcome.text,
             error: null,
-            durationMs: metrics.durationMs,
-            ttftMs: metrics.ttftMs,
-            promptTokens: metrics.promptTokens,
-            completionTokens: metrics.completionTokens,
-            tokensPerSec,
-            tokensEstimated: metrics.tokensEstimated,
+            durationMs: outcome.durationMs,
+            ttftMs: outcome.ttftMs,
+            promptTokens: outcome.promptTokens,
+            completionTokens: outcome.completionTokens,
+            tokensPerSec: outcome.tokensPerSec,
+            tokensEstimated: outcome.tokensEstimated,
+            // Only tool runs carry transcript detail; a plain prompt keeps
+            // these null so its result card renders exactly as it always did.
+            transcriptJson: toolRun ? JSON.stringify(outcome.transcript) : null,
+            turnsJson: toolRun ? JSON.stringify(outcome.turns) : null,
+            turnCount: toolRun ? outcome.turns.length : null,
+            toolCallCount: toolRun ? outcome.toolCallCount : null,
+            stoppedReason: toolRun ? outcome.stoppedReason : null,
             finishedAt: Date.now(),
           })
           .where(eq(runResults.id, resultId));
@@ -234,15 +310,24 @@ export async function executeRun(
         emit({
           type: 'resultDone',
           resultId,
-          text: metrics.text,
+          text: outcome.text,
           metrics: {
-            durationMs: metrics.durationMs,
-            ttftMs: metrics.ttftMs,
-            promptTokens: metrics.promptTokens,
-            completionTokens: metrics.completionTokens,
-            tokensPerSec,
-            tokensEstimated: metrics.tokensEstimated,
+            durationMs: outcome.durationMs,
+            ttftMs: outcome.ttftMs,
+            promptTokens: outcome.promptTokens,
+            completionTokens: outcome.completionTokens,
+            tokensPerSec: outcome.tokensPerSec,
+            tokensEstimated: outcome.tokensEstimated,
+            turnCount: toolRun ? outcome.turns.length : null,
+            toolCallCount: toolRun ? outcome.toolCallCount : null,
           },
+          ...(toolRun
+            ? {
+                transcript: outcome.transcript,
+                turns: outcome.turns,
+                stoppedReason: outcome.stoppedReason,
+              }
+            : {}),
         });
       } catch (err) {
         const isAbort =
@@ -253,13 +338,7 @@ export async function executeRun(
           // "Resume" picks it up again instead of leaving a half-written row.
           await db
             .update(runResults)
-            .set({
-              status: 'pending',
-              startedAt: null,
-              finishedAt: null,
-              responseText: null,
-              error: null,
-            })
+            .set(RESET_TO_PENDING)
             .where(eq(runResults.id, resultId));
 
           attempted -= 1;

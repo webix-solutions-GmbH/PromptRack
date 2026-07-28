@@ -1,8 +1,16 @@
 import { asc } from 'drizzle-orm';
 import { db } from '@/db';
-import { promptGroups, prompts, systemPrompts } from '@/db/schema';
+import {
+  promptGroups,
+  promptToolsets,
+  prompts,
+  systemPrompts,
+  tools,
+  toolsets,
+} from '@/db/schema';
 import { GroupSidebar } from '@/components/prompts/group-sidebar';
 import { PromptsPanel } from '@/components/prompts/prompts-panel';
+import type { ToolsetOption } from '@/components/prompts/prompt-editor';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,6 +50,33 @@ export default async function PromptsPage({
     content: sp.content,
   }));
 
+  const toolsetRows = await db.select().from(toolsets).orderBy(asc(toolsets.name));
+  const toolRows = await db.select().from(tools).orderBy(asc(tools.name));
+  const linkRows = await db
+    .select()
+    .from(promptToolsets)
+    .orderBy(asc(promptToolsets.sortOrder));
+
+  const toolsetOptions: ToolsetOption[] = toolsetRows.map((toolset) => ({
+    id: toolset.id,
+    name: toolset.name,
+    kind: toolset.kind,
+    tools: toolRows
+      .filter((tool) => tool.toolsetId === toolset.id)
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        enabled: tool.enabled,
+      })),
+  }));
+
+  const toolsetIdsByPrompt: Record<number, number[]> = {};
+  for (const link of linkRows) {
+    const list = toolsetIdsByPrompt[link.promptId] ?? [];
+    list.push(link.toolsetId);
+    toolsetIdsByPrompt[link.promptId] = list;
+  }
+
   return (
     <div className="flex flex-1 flex-col gap-8 p-8">
       <div className="flex flex-col gap-2">
@@ -64,6 +99,8 @@ export default async function PromptsPage({
               groupId={selectedGroup.id}
               prompts={promptsForGroup}
               systemPrompts={systemPromptOptions}
+              toolsets={toolsetOptions}
+              toolsetIdsByPrompt={toolsetIdsByPrompt}
             />
           ) : (
             <div className="rounded-lg border border-zinc-200 px-6 py-12 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">

@@ -1,13 +1,21 @@
 import { describeFetchError } from './fetch-error';
+import type { ToolChoice, ToolDefinition } from './tools';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+/** One function call requested by the model, as it goes back on the wire. */
+export interface ToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
 }
+
+export type ChatMessage =
+  | { role: 'system' | 'user'; content: string }
+  | { role: 'assistant'; content: string; tool_calls?: ToolCall[] }
+  | { role: 'tool'; content: string; tool_call_id: string; name?: string };
 
 export type LlmErrorKind =
   /** The endpoint could not be reached at all (DNS, refused, reset, ...). */
@@ -43,13 +51,20 @@ export class LlmError extends Error {
 
 export interface StreamMetrics {
   text: string;
-  /** Time to first *content* token, in ms. Null if nothing was streamed. */
+  /**
+   * Time to the first piece of output, in ms — a content token or the first
+   * fragment of a tool call. Null if nothing was streamed.
+   */
   ttftMs: number | null;
   durationMs: number;
   promptTokens: number | null;
   completionTokens: number;
   /** True when the endpoint sent no usage block and tokens were estimated. */
   tokensEstimated: boolean;
+  /** Function calls the model asked for, in the order it emitted them. */
+  toolCalls: ToolCall[];
+  /** `stop`, `tool_calls`, `length`, ... as reported by the endpoint. */
+  finishReason: string | null;
 }
 
 export interface StreamChatCompletionOptions {
@@ -57,6 +72,10 @@ export interface StreamChatCompletionOptions {
   apiKey?: string | null;
   model: string;
   messages: ChatMessage[];
+  /** Tool definitions to offer. Omitted from the request when empty. */
+  tools?: ToolDefinition[] | null;
+  /** Omitted from the request when null — the server keeps its own default. */
+  toolChoice?: ToolChoice | null;
   /** Extra body fields merged into the request (temperature, max_tokens, ...). */
   params?: Record<string, unknown> | null;
   /** Hard limit for the whole request. Defaults to 5 minutes. */
@@ -136,6 +155,134 @@ function readDeltaContent(payload: unknown): string | null {
   return typeof content === 'string' && content.length > 0 ? content : null;
 }
 
+/** One `delta.tool_calls[]` entry, before fragments are stitched together. */
+interface ToolCallFragment {
+  /** Slot the fragment belongs to. Null when the endpoint omits `index`. */
+  index: number | null;
+  id: string | null;
+  name: string | null;
+  argumentsFragment: string | null;
+}
+
+function readDeltaToolCalls(payload: unknown): ToolCallFragment[] {
+  const choices = (payload as { choices?: unknown }).choices;
+  if (!Array.isArray(choices) || choices.length === 0) return [];
+
+  const first = choices[0];
+  if (!first || typeof first !== 'object') return [];
+
+  const delta = (first as { delta?: unknown }).delta;
+  if (!delta || typeof delta !== 'object') return [];
+
+  const entries = (delta as { tool_calls?: unknown }).tool_calls;
+  if (!Array.isArray(entries)) return [];
+
+  const fragments: ToolCallFragment[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+
+    const index = (entry as { index?: unknown }).index;
+    const id = (entry as { id?: unknown }).id;
+    const fn = (entry as { function?: unknown }).function;
+    const name =
+      fn && typeof fn === 'object' ? (fn as { name?: unknown }).name : undefined;
+    const args =
+      fn && typeof fn === 'object' ? (fn as { arguments?: unknown }).arguments : undefined;
+
+    fragments.push({
+      index: typeof index === 'number' ? index : null,
+      id: typeof id === 'string' && id.length > 0 ? id : null,
+      name: typeof name === 'string' && name.length > 0 ? name : null,
+      argumentsFragment: typeof args === 'string' ? args : null,
+    });
+  }
+  return fragments;
+}
+
+interface PartialToolCall {
+  index: number;
+  id: string | null;
+  name: string;
+  arguments: string;
+}
+
+/**
+ * Stitches streamed `tool_calls` fragments back into whole calls.
+ *
+ * Endpoints differ as much here as they do over usage. vLLM streams one entry
+ * per call keyed by `index`, with `function.arguments` arriving as string
+ * fragments that can be split anywhere — including mid-JSON. Others send a
+ * finished call in a single chunk, and a few omit `index` entirely, in which
+ * case the call's `id` (or arrival order) has to stand in for it.
+ */
+class ToolCallAccumulator {
+  private readonly slots = new Map<number, PartialToolCall>();
+  private readonly indexById = new Map<string, number>();
+
+  get size(): number {
+    return this.slots.size;
+  }
+
+  add(fragment: ToolCallFragment): void {
+    const index = this.slotFor(fragment);
+    let slot = this.slots.get(index);
+    if (!slot) {
+      slot = { index, id: null, name: '', arguments: '' };
+      this.slots.set(index, slot);
+    }
+
+    if (fragment.id !== null) {
+      slot.id = fragment.id;
+      this.indexById.set(fragment.id, index);
+    }
+    // A name can also arrive in fragments, so append rather than replace.
+    if (fragment.name !== null) slot.name += fragment.name;
+    if (fragment.argumentsFragment !== null) slot.arguments += fragment.argumentsFragment;
+  }
+
+  private slotFor(fragment: ToolCallFragment): number {
+    if (fragment.index !== null) return fragment.index;
+    if (fragment.id !== null) {
+      const known = this.indexById.get(fragment.id);
+      if (known !== undefined) return known;
+      return this.slots.size;
+    }
+    // No index and no id: the only sane reading is "the call in flight".
+    return this.slots.size === 0 ? 0 : this.slots.size - 1;
+  }
+
+  /** Materializes the calls in index order, synthesizing any missing ids. */
+  toToolCalls(): ToolCall[] {
+    return [...this.slots.values()]
+      .sort((a, b) => a.index - b.index)
+      .filter((slot) => slot.name.length > 0)
+      .map((slot) => ({
+        id: slot.id ?? `call_${slot.index}`,
+        type: 'function' as const,
+        function: { name: slot.name, arguments: slot.arguments },
+      }));
+  }
+}
+
+/** Characters a tool call contributes when tokens have to be estimated. */
+function toolCallChars(calls: ToolCall[]): number {
+  return calls.reduce(
+    (total, call) => total + call.function.name.length + call.function.arguments.length,
+    0,
+  );
+}
+
+function readFinishReason(payload: unknown): string | null {
+  const choices = (payload as { choices?: unknown }).choices;
+  if (!Array.isArray(choices) || choices.length === 0) return null;
+
+  const first = choices[0];
+  if (!first || typeof first !== 'object') return null;
+
+  const reason = (first as { finish_reason?: unknown }).finish_reason;
+  return typeof reason === 'string' && reason.length > 0 ? reason : null;
+}
+
 function readStreamedError(payload: unknown): string | null {
   if (!payload || typeof payload !== 'object') return null;
   const error = (payload as { error?: unknown }).error;
@@ -172,16 +319,23 @@ export async function consumeChatCompletionStream(
   let text = '';
   let ttftMs: number | null = null;
   let usage: UsageLike | null = null;
+  let finishReason: string | null = null;
   let done = false;
+  const toolCalls = new ToolCallAccumulator();
+
+  /** What a single `data:` payload contributed beyond text and tool calls. */
+  interface EventOutcome {
+    usage: UsageLike | null;
+    finishReason: string | null;
+  }
 
   /**
-   * Processes one `data:` payload and returns the usage block it carried, if
-   * any. Usage is returned rather than assigned to the closed-over `usage`
-   * variable so the caller owns that assignment — TypeScript keeps narrowing a
-   * `let` that is only written from inside a callback, which would type the
-   * post-loop read as `null`.
+   * Processes one `data:` payload. Usage and finish reason are returned rather
+   * than assigned to the closed-over variables so the caller owns those
+   * assignments — TypeScript keeps narrowing a `let` that is only written from
+   * inside a callback, which would type the post-loop read as `null`.
    */
-  const handleEvent = (payload: string): UsageLike | null => {
+  const handleEvent = (payload: string): EventOutcome | null => {
     if (payload === DONE_SENTINEL) {
       done = true;
       return null;
@@ -211,16 +365,32 @@ export async function consumeChatCompletionStream(
       options.onDelta?.(content, text);
     }
 
+    // A tool-call-only response never streams content, so the first fragment of
+    // a call is what TTFT has to measure in that case.
+    for (const fragment of readDeltaToolCalls(parsed)) {
+      if (ttftMs === null) {
+        ttftMs = now() - options.startedAt;
+      }
+      toolCalls.add(fragment);
+    }
+
     // Usage may arrive on a final choices-less chunk (vLLM, LM Studio with
     // stream_options) or piggybacked on the last content chunk (Ollama).
-    return readUsage(parsed);
+    return { usage: readUsage(parsed), finishReason: readFinishReason(parsed) };
   };
 
+  // Both loops assign `usage`/`finishReason` inline rather than through a
+  // helper: an assignment made inside another closure would put TypeScript's
+  // narrowing right back where the `handleEvent` return value avoids it.
   for await (const chunk of chunks) {
     const result = parseSSEChunk(buffer, chunk);
     buffer = result.buffer;
     for (const event of result.events) {
-      usage = handleEvent(event) ?? usage;
+      const outcome = handleEvent(event);
+      if (outcome) {
+        usage = outcome.usage ?? usage;
+        finishReason = outcome.finishReason ?? finishReason;
+      }
       if (done) break;
     }
     if (done) break;
@@ -230,7 +400,11 @@ export async function consumeChatCompletionStream(
     // Stream ended without a trailing newline — flush whatever is left.
     const result = parseSSEChunk(buffer, '\n');
     for (const event of result.events) {
-      usage = handleEvent(event) ?? usage;
+      const outcome = handleEvent(event);
+      if (outcome) {
+        usage = outcome.usage ?? usage;
+        finishReason = outcome.finishReason ?? finishReason;
+      }
       if (done) break;
     }
     buffer = '';
@@ -239,6 +413,7 @@ export async function consumeChatCompletionStream(
   const durationMs = now() - options.startedAt;
   const reportedCompletion = usage?.completionTokens ?? null;
   const tokensEstimated = reportedCompletion === null;
+  const calls = toolCalls.toToolCalls();
 
   return {
     text,
@@ -246,9 +421,11 @@ export async function consumeChatCompletionStream(
     durationMs,
     promptTokens: usage?.promptTokens ?? null,
     completionTokens: tokensEstimated
-      ? Math.ceil(text.length / 4)
+      ? Math.ceil((text.length + toolCallChars(calls)) / 4)
       : (reportedCompletion as number),
     tokensEstimated,
+    toolCalls: calls,
+    finishReason,
   };
 }
 
@@ -390,6 +567,14 @@ export async function streamChatCompletion(
           messages: opts.messages,
           stream: true,
           stream_options: { include_usage: true },
+          // Sending an empty `tools` array makes some servers unhappy, and
+          // `tool_choice` is meaningless without it — omit both unless asked.
+          ...(opts.tools && opts.tools.length > 0
+            ? {
+                tools: opts.tools,
+                ...(opts.toolChoice ? { tool_choice: opts.toolChoice } : {}),
+              }
+            : {}),
           ...(opts.params ?? {}),
         }),
         signal: controller.signal,

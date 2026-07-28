@@ -23,6 +23,16 @@ function contentChunk(content: string, extra: Record<string, unknown> = {}): str
   });
 }
 
+/** One `delta.tool_calls` chunk, in whatever partial shape a server sends. */
+function toolCallChunk(entries: Record<string, unknown>[]): string {
+  return sse({
+    id: 'chatcmpl-1',
+    object: 'chat.completion.chunk',
+    model: 'test-model',
+    choices: [{ index: 0, delta: { tool_calls: entries }, finish_reason: null }],
+  });
+}
+
 const DONE = 'data: [DONE]\n\n';
 
 /**
@@ -221,6 +231,219 @@ describe('consumeChatCompletionStream', () => {
     expect(result.ttftMs).toBeNull();
     expect(result.completionTokens).toBe(0);
     expect(result.tokensEstimated).toBe(true);
+    expect(result.toolCalls).toEqual([]);
+    expect(result.finishReason).toBeNull();
+  });
+
+  it('reports no tool calls for a plain text response', async () => {
+    const { chunks, now } = streamOf([contentChunk('just prose'), DONE]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.toolCalls).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool calls
+// ---------------------------------------------------------------------------
+
+describe('consumeChatCompletionStream — tool calls', () => {
+  it('stitches the vLLM shape: one index-keyed slot, arguments in fragments', async () => {
+    const fixture = [
+      sse({ choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] }),
+      toolCallChunk([
+        { index: 0, id: 'call_abc', type: 'function', function: { name: 'search', arguments: '' } },
+      ]),
+      toolCallChunk([{ index: 0, function: { arguments: '{"q":' } }]),
+      toolCallChunk([{ index: 0, function: { arguments: '"laptops"}' } }]),
+      sse({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }),
+      sse({ choices: [], usage: { prompt_tokens: 40, completion_tokens: 12 } }),
+      DONE,
+    ];
+    const { chunks, now } = streamOf(fixture);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.toolCalls).toEqual([
+      {
+        id: 'call_abc',
+        type: 'function',
+        function: { name: 'search', arguments: '{"q":"laptops"}' },
+      },
+    ]);
+    expect(result.text).toBe('');
+    expect(result.finishReason).toBe('tool_calls');
+    expect(result.completionTokens).toBe(12);
+  });
+
+  it('measures ttft from the first tool-call fragment when no content is streamed', async () => {
+    const fixture = [
+      sse({ choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] }),
+      toolCallChunk([{ index: 0, id: 'call_1', function: { name: 'ping', arguments: '{}' } }]),
+      DONE,
+    ];
+    const { chunks, now } = streamOf(fixture);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    // The role-only chunk is not output; the tool-call chunk at 200ms is.
+    expect(result.ttftMs).toBe(200);
+  });
+
+  it('estimates tokens from the tool call when there is no text and no usage', async () => {
+    const args = '{"query":"a"}';
+    const { chunks, now } = streamOf([
+      toolCallChunk([{ index: 0, id: 'c1', function: { name: 'search', arguments: args } }]),
+      DONE,
+    ]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.tokensEstimated).toBe(true);
+    expect(result.completionTokens).toBe(Math.ceil(('search'.length + args.length) / 4));
+  });
+
+  it('accepts a whole call delivered in a single chunk', async () => {
+    const { chunks, now } = streamOf([
+      toolCallChunk([
+        {
+          index: 0,
+          id: 'call_one_shot',
+          type: 'function',
+          function: { name: 'get_time', arguments: '{}' },
+        },
+      ]),
+      DONE,
+    ]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.toolCalls).toEqual([
+      { id: 'call_one_shot', type: 'function', function: { name: 'get_time', arguments: '{}' } },
+    ]);
+  });
+
+  it('keeps parallel calls apart and returns them in index order', async () => {
+    const { chunks, now } = streamOf([
+      toolCallChunk([
+        { index: 0, id: 'a', function: { name: 'first', arguments: '{"x"' } },
+        { index: 1, id: 'b', function: { name: 'second', arguments: '{"y"' } },
+      ]),
+      toolCallChunk([{ index: 1, function: { arguments: ':2}' } }]),
+      toolCallChunk([{ index: 0, function: { arguments: ':1}' } }]),
+      DONE,
+    ]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.toolCalls).toEqual([
+      { id: 'a', type: 'function', function: { name: 'first', arguments: '{"x":1}' } },
+      { id: 'b', type: 'function', function: { name: 'second', arguments: '{"y":2}' } },
+    ]);
+  });
+
+  it('falls back to the call id when the endpoint omits index', async () => {
+    const { chunks, now } = streamOf([
+      toolCallChunk([{ id: 'x1', function: { name: 'alpha', arguments: '{"a"' } }]),
+      toolCallChunk([{ id: 'x2', function: { name: 'beta', arguments: '{"b"' } }]),
+      toolCallChunk([{ id: 'x1', function: { arguments: ':1}' } }]),
+      toolCallChunk([{ id: 'x2', function: { arguments: ':2}' } }]),
+      DONE,
+    ]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.toolCalls).toEqual([
+      { id: 'x1', type: 'function', function: { name: 'alpha', arguments: '{"a":1}' } },
+      { id: 'x2', type: 'function', function: { name: 'beta', arguments: '{"b":2}' } },
+    ]);
+  });
+
+  it('appends to the call in flight when neither index nor id is sent', async () => {
+    const { chunks, now } = streamOf([
+      toolCallChunk([{ function: { name: 'lonely', arguments: '{"k"' } }]),
+      toolCallChunk([{ function: { arguments: ':true}' } }]),
+      DONE,
+    ]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.toolCalls).toEqual([
+      { id: 'call_0', type: 'function', function: { name: 'lonely', arguments: '{"k":true}' } },
+    ]);
+  });
+
+  it('synthesizes an id when the endpoint never sends one', async () => {
+    const { chunks, now } = streamOf([
+      toolCallChunk([{ index: 3, function: { name: 'nameless_id', arguments: '{}' } }]),
+      DONE,
+    ]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.toolCalls[0].id).toBe('call_3');
+  });
+
+  it('stitches a tool-call payload split across network reads', async () => {
+    const full = toolCallChunk([
+      { index: 0, id: 'split', function: { name: 'search', arguments: '{"q":"mid-json"}' } },
+    ]);
+    const cut = Math.floor(full.length / 2);
+    const { chunks, now } = streamOf([full.slice(0, cut), full.slice(cut), DONE]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.toolCalls[0].function.arguments).toBe('{"q":"mid-json"}');
+  });
+
+  it('keeps malformed arguments verbatim — parsing them is the caller’s job', async () => {
+    const { chunks, now } = streamOf([
+      toolCallChunk([{ index: 0, id: 'bad', function: { name: 'oops', arguments: '{"q": ' } }]),
+      DONE,
+    ]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.toolCalls[0].function.arguments).toBe('{"q": ');
+  });
+
+  it('drops a slot that never received a function name', async () => {
+    const { chunks, now } = streamOf([
+      toolCallChunk([{ index: 0, id: 'no_name', type: 'function' }]),
+      DONE,
+    ]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.toolCalls).toEqual([]);
+  });
+
+  it('reassembles a name that itself arrived in fragments', async () => {
+    const { chunks, now } = streamOf([
+      toolCallChunk([{ index: 0, id: 'n', function: { name: 'sea' } }]),
+      toolCallChunk([{ index: 0, function: { name: 'rch', arguments: '{}' } }]),
+      DONE,
+    ]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.toolCalls[0].function.name).toBe('search');
+  });
+
+  it('captures content and tool calls together', async () => {
+    const { chunks, now } = streamOf([
+      contentChunk('Let me look that up. '),
+      toolCallChunk([{ index: 0, id: 'both', function: { name: 'search', arguments: '{}' } }]),
+      sse({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }),
+      DONE,
+    ]);
+
+    const result = await consumeChatCompletionStream(chunks, { startedAt: 0, now });
+
+    expect(result.text).toBe('Let me look that up. ');
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.ttftMs).toBe(100);
   });
 });
 

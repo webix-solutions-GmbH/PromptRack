@@ -2,6 +2,7 @@ import {
   sqliteTable,
   text,
   integer,
+  primaryKey,
   real,
   unique,
 } from 'drizzle-orm/sqlite-core';
@@ -64,6 +65,65 @@ export type SystemPrompt = typeof systemPrompts.$inferSelect;
 export type NewSystemPrompt = typeof systemPrompts.$inferInsert;
 
 // ---------------------------------------------------------------------------
+// toolsets
+// ---------------------------------------------------------------------------
+/**
+ * A named bundle of tools a prompt can be run with. `manual` toolsets are
+ * authored here and answer from `tools.mockResponse`; `mcp` toolsets import
+ * their tools from an MCP server over HTTP and execute against it.
+ */
+export const toolsets = sqliteTable('toolsets', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  description: text('description'),
+  kind: text('kind', { enum: ['manual', 'mcp'] })
+    .notNull()
+    .default('manual'),
+  mcpUrl: text('mcp_url'),
+  /** JSON object of extra request headers (auth), sent with every MCP call. */
+  mcpHeaders: text('mcp_headers'),
+  createdAt: integer('created_at', { mode: 'number' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'number' }).notNull(),
+});
+
+export type Toolset = typeof toolsets.$inferSelect;
+export type NewToolset = typeof toolsets.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// tools
+// ---------------------------------------------------------------------------
+/**
+ * One callable function. Like `machine_models`, MCP-discovered rows are
+ * upserted and never deleted — a tool that disappears from `tools/list` only
+ * flips `enabled` false, so past runs can still explain what they sent.
+ */
+export const tools = sqliteTable(
+  'tools',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    toolsetId: integer('toolset_id')
+      .notNull()
+      .references(() => toolsets.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    description: text('description'),
+    /** JSON Schema for the function's arguments. */
+    parametersJson: text('parameters_json').notNull().default('{}'),
+    /** Canned output returned instead of calling anything (manual toolsets). */
+    mockResponse: text('mock_response'),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    source: text('source', { enum: ['manual', 'mcp'] })
+      .notNull()
+      .default('manual'),
+    firstSeenAt: integer('first_seen_at', { mode: 'number' }).notNull(),
+    lastSeenAt: integer('last_seen_at', { mode: 'number' }).notNull(),
+  },
+  (table) => [unique().on(table.toolsetId, table.name)],
+);
+
+export type Tool = typeof tools.$inferSelect;
+export type NewTool = typeof tools.$inferInsert;
+
+// ---------------------------------------------------------------------------
 // prompt_groups
 // ---------------------------------------------------------------------------
 export const promptGroups = sqliteTable('prompt_groups', {
@@ -93,6 +153,17 @@ export const prompts = sqliteTable('prompts', {
   }),
   systemPromptMode: text('system_prompt_mode').notNull().default('append'),
   customSystemText: text('custom_system_text'),
+  /**
+   * 'none' keeps the classic one-shot behaviour, 'definitions' sends the tool
+   * definitions and records what the model wanted to call without executing,
+   * 'execute' runs the full loop.
+   */
+  toolMode: text('tool_mode', { enum: ['none', 'definitions', 'execute'] })
+    .notNull()
+    .default('none'),
+  /** Null leaves `tool_choice` out of the request entirely. */
+  toolChoice: text('tool_choice', { enum: ['auto', 'required', 'none'] }),
+  maxTurns: integer('max_turns').notNull().default(6),
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: integer('created_at', { mode: 'number' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'number' }).notNull(),
@@ -100,6 +171,27 @@ export const prompts = sqliteTable('prompts', {
 
 export type Prompt = typeof prompts.$inferSelect;
 export type NewPrompt = typeof prompts.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// prompt_toolsets
+// ---------------------------------------------------------------------------
+/** Which toolsets a prompt pulls in. A prompt may combine several sources. */
+export const promptToolsets = sqliteTable(
+  'prompt_toolsets',
+  {
+    promptId: integer('prompt_id')
+      .notNull()
+      .references(() => prompts.id, { onDelete: 'cascade' }),
+    toolsetId: integer('toolset_id')
+      .notNull()
+      .references(() => toolsets.id, { onDelete: 'cascade' }),
+    sortOrder: integer('sort_order').notNull().default(0),
+  },
+  (table) => [primaryKey({ columns: [table.promptId, table.toolsetId] })],
+);
+
+export type PromptToolset = typeof promptToolsets.$inferSelect;
+export type NewPromptToolset = typeof promptToolsets.$inferInsert;
 
 // ---------------------------------------------------------------------------
 // runs
@@ -117,6 +209,13 @@ export const runs = sqliteTable('runs', {
   /** JSON snapshot of endpoint/server/model metadata probed at creation time. */
   llmInfo: text('llm_info'),
   status: text('status').notNull().default('pending'),
+  /**
+   * When the run was archived, or null. Deliberately *not* a `status` value:
+   * status is the execution state machine (pending → running → completed /
+   * failed) that Resume depends on, so a half-finished run has to stay
+   * `pending` while archived. The UI still presents archiving as a state.
+   */
+  archivedAt: integer('archived_at', { mode: 'number' }),
   createdAt: integer('created_at', { mode: 'number' }).notNull(),
   startedAt: integer('started_at', { mode: 'number' }),
   finishedAt: integer('finished_at', { mode: 'number' }),
@@ -142,8 +241,29 @@ export const runResults = sqliteTable('run_results', {
   promptText: text('prompt_text').notNull(),
   expectedOutput: text('expected_output'),
   systemPromptText: text('system_prompt_text'),
+  /**
+   * Tool configuration frozen at run creation. `toolsSnapshot` is the exact
+   * JSON array of definitions sent to the model — editing or deleting a
+   * toolset afterwards can never rewrite what a past run asked for.
+   */
+  toolsSnapshot: text('tools_snapshot'),
+  toolMode: text('tool_mode', { enum: ['none', 'definitions', 'execute'] })
+    .notNull()
+    .default('none'),
+  toolChoice: text('tool_choice', { enum: ['auto', 'required', 'none'] }),
+  maxTurns: integer('max_turns').notNull().default(6),
   status: text('status').notNull().default('pending'),
+  /** Final assistant text — unchanged meaning, tool runs or not. */
   responseText: text('response_text'),
+  /** Full message array of a tool run (assistant, tool_calls, tool results). */
+  transcriptJson: text('transcript_json'),
+  /** Per-turn metrics array; the columns below are its aggregates. */
+  turnsJson: text('turns_json'),
+  turnCount: integer('turn_count'),
+  toolCallCount: integer('tool_call_count'),
+  stoppedReason: text('stopped_reason', {
+    enum: ['stop', 'max_turns', 'definitions_only'],
+  }),
   error: text('error'),
   durationMs: integer('duration_ms'),
   ttftMs: integer('ttft_ms'),
@@ -153,7 +273,8 @@ export const runResults = sqliteTable('run_results', {
   tokensEstimated: integer('tokens_estimated', { mode: 'boolean' })
     .notNull()
     .default(false),
-  rating: text('rating'),
+  /** Manual verdict: `good`, `meh` (not wrong but not good enough) or `bad`. */
+  rating: text('rating', { enum: ['good', 'meh', 'bad'] }),
   ratingNote: text('rating_note'),
   startedAt: integer('started_at', { mode: 'number' }),
   finishedAt: integer('finished_at', { mode: 'number' }),

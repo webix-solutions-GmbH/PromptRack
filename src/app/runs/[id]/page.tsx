@@ -3,7 +3,10 @@ import { asc, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { runResults, runs } from '@/db/schema';
 import { parseLlmInfo } from '@/lib/llm-info';
+import { parseRating } from '@/lib/rating';
 import type { RunResultStatus, RunStatus } from '@/lib/run-events';
+import { parseTranscript, parseTurns, type StoppedReason } from '@/lib/tool-loop';
+import { parseToolsSnapshot, type ToolChoice, type ToolMode } from '@/lib/tools';
 import { RunDetail } from '@/components/runs/run-detail';
 import type { ResultView, RunView } from '@/components/runs/types';
 
@@ -87,6 +90,7 @@ export default async function RunDetailPage({
     comment: run.comment,
     groupNames: parseGroupNames(run.groupNames),
     status: run.status as RunStatus,
+    archivedAt: run.archivedAt,
     createdAt: run.createdAt,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
@@ -109,8 +113,17 @@ export default async function RunDetailPage({
     completionTokens: row.completionTokens,
     tokensPerSec: row.tokensPerSec,
     tokensEstimated: row.tokensEstimated,
-    rating: row.rating as 'good' | 'bad' | null,
+    rating: parseRating(row.rating),
     ratingNote: row.ratingNote,
+    toolMode: row.toolMode as ToolMode,
+    toolChoice: row.toolChoice as ToolChoice | null,
+    maxTurns: row.maxTurns,
+    toolsSnapshot: parseToolsSnapshot(row.toolsSnapshot),
+    transcript: parseTranscript(row.transcriptJson),
+    turns: parseTurns(row.turnsJson),
+    turnCount: row.turnCount,
+    toolCallCount: row.toolCallCount,
+    stoppedReason: row.stoppedReason as StoppedReason | null,
   }));
 
   return <RunDetail run={runView} results={resultViews} />;

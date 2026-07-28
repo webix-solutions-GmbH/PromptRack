@@ -1,31 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { formatDuration, formatRate } from '@/lib/format';
+import Link from 'next/link';
+import { formatDateTime, formatDuration, formatRate } from '@/lib/format';
 import { splitThinking } from '@/lib/thinking';
 import { MarkdownResponse } from '@/components/markdown-response';
-import type { CompareCellView, CompareRowView } from '@/lib/compare';
+import { RatingBadge } from '@/components/runs/rating-badge';
+import { describeRowDrift, type CompareCellView, type CompareRowView } from '@/lib/compare';
 
 /** Characters of a response shown before it gets clamped. */
 const CLAMP = 320;
-
-function RatingBadge({ rating }: { rating: 'good' | 'bad' | null }) {
-  const style =
-    rating === 'good'
-      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400'
-      : rating === 'bad'
-        ? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400'
-        : 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400';
-  const label = rating === 'good' ? '👍 good' : rating === 'bad' ? '👎 bad' : 'unrated';
-
-  return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${style}`}
-    >
-      {label}
-    </span>
-  );
-}
 
 function Chip({ children }: { children: React.ReactNode }) {
   return (
@@ -39,10 +23,13 @@ function Cell({
   cell,
   expanded,
   onToggle,
+  showProvenance,
 }: {
   cell: CompareCellView;
   expanded: boolean;
   onToggle: () => void;
+  /** Model mode: the run behind a cell is no longer named by its column header. */
+  showProvenance: boolean;
 }) {
   const { thinking, answer } = splitThinking(cell.responseText ?? '');
   const text = answer;
@@ -56,7 +43,7 @@ function Cell({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <RatingBadge rating={cell.rating} />
+        <RatingBadge rating={cell.rating} showUnrated />
         {cell.status !== 'ok' && (
           <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
             {cell.status}
@@ -97,6 +84,20 @@ function Cell({
         </button>
       )}
 
+      {cell.turnCount !== null && (
+        <div className="flex flex-col gap-1 rounded-md border border-indigo-200 bg-indigo-50 p-2 dark:border-indigo-900 dark:bg-indigo-950/40">
+          <span className="text-[11px] font-medium text-indigo-700 dark:text-indigo-300">
+            {cell.turnCount} turn{cell.turnCount === 1 ? '' : 's'} · {cell.toolCallCount ?? 0} tool
+            call{cell.toolCallCount === 1 ? '' : 's'}
+          </span>
+          {cell.toolCallNames.length > 0 && (
+            <span className="break-words font-mono text-[11px] text-indigo-900 dark:text-indigo-200">
+              {cell.toolCallNames.join(' → ')}
+            </span>
+          )}
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-1">
         <Chip>{formatRate(cell.tokensPerSec)}</Chip>
         <Chip>{formatDuration(cell.durationMs)}</Chip>
@@ -106,6 +107,25 @@ function Cell({
       {cell.ratingNote && (
         <p className="text-xs italic text-zinc-500 dark:text-zinc-400">{cell.ratingNote}</p>
       )}
+
+      {showProvenance && (
+        <div className="flex flex-col gap-1 text-[11px] text-zinc-500 dark:text-zinc-500">
+          <span>
+            <Link
+              href={`/runs/${cell.runId}`}
+              className="font-medium underline-offset-2 hover:underline"
+            >
+              run #{cell.runId}
+            </Link>{' '}
+            · {formatDateTime(cell.runCreatedAt)}
+          </span>
+          {cell.superseded && (
+            <span className="text-amber-600 dark:text-amber-400">
+              newer attempt ({cell.superseded.status}) in run #{cell.superseded.runId} skipped
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -114,11 +134,25 @@ function Cell({
  * One prompt row of the compare matrix. Client-side only for the expand/collapse
  * state: the whole row can be expanded at once, or a single cell on its own.
  */
-export function CompareRow({ row }: { row: CompareRowView }) {
+export function CompareRow({
+  row,
+  anchoredToLivePrompt = false,
+}: {
+  row: CompareRowView;
+  /**
+   * Model mode: `row.promptText` is the live prompt rather than a snapshot, so
+   * "edited since every compared run" becomes detectable.
+   */
+  anchoredToLivePrompt?: boolean;
+}) {
   const [expandAll, setExpandAll] = useState(false);
   const [expandedCells, setExpandedCells] = useState<Record<number, boolean>>({});
 
   const anyLong = row.cells.some((cell) => (cell?.responseText?.length ?? 0) > CLAMP);
+  const drift = describeRowDrift(
+    row.cells,
+    anchoredToLivePrompt ? row.promptText : undefined,
+  );
 
   return (
     <tr className="align-top">
@@ -142,6 +176,14 @@ export function CompareRow({ row }: { row: CompareRowView }) {
               {row.promptText}
             </p>
           </details>
+          {drift.length > 0 && (
+            <p
+              className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300"
+              title="These cells were not produced under identical conditions, so a difference between them may not be the model."
+            >
+              differs across cells: {drift.join(', ')}
+            </p>
+          )}
           {anyLong && (
             <button
               type="button"
@@ -167,6 +209,7 @@ export function CompareRow({ row }: { row: CompareRowView }) {
           ) : (
             <Cell
               cell={cell}
+              showProvenance={anchoredToLivePrompt}
               expanded={expandAll !== Boolean(expandedCells[index])}
               onToggle={() =>
                 setExpandedCells((current) => ({ ...current, [index]: !current[index] }))

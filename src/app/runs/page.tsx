@@ -3,7 +3,9 @@ import { desc } from 'drizzle-orm';
 import { db } from '@/db';
 import { machines, runResults, runs } from '@/db/schema';
 import { formatDuration, formatIsoDateTime, formatRate, snapshotMachineName } from '@/lib/format';
+import { countRatings, ratingScore, RATING_META } from '@/lib/rating';
 import { LinkedRow } from '@/components/linked-row';
+import { ArchiveRunButton } from '@/components/runs/archive-run-button';
 import { DeleteRunButton } from '@/components/runs/delete-run-button';
 import { SortableHeader } from '@/components/runs/sortable-header';
 import { StatusBadge } from '@/components/runs/status-badge';
@@ -34,6 +36,8 @@ export default async function RunsPage({
   const modelFilter = firstParam(sp.model);
   const groupFilter = firstParam(sp.group);
   const statusFilter = firstParam(sp.status);
+  // Archived runs are hidden unless explicitly asked for.
+  const archivedFilter = firstParam(sp.archived);
 
   const runRows = await db.select().from(runs).orderBy(desc(runs.createdAt), desc(runs.id));
   const resultRows = await db
@@ -64,9 +68,7 @@ export default async function RunsPage({
       pending: results.filter(
         (result) => result.status === 'pending' || result.status === 'running',
       ).length,
-      good: results.filter((result) => result.rating === 'good').length,
-      bad: results.filter((result) => result.rating === 'bad').length,
-      unrated: results.filter((result) => !result.rating).length,
+      ...countRatings(results.map((result) => result.rating)),
       avgRate:
         rates.length > 0 ? rates.reduce((total, rate) => total + rate, 0) / rates.length : null,
       totalDurationMs: results.reduce((total, result) => total + (result.durationMs ?? 0), 0),
@@ -74,6 +76,10 @@ export default async function RunsPage({
   });
 
   const filteredRows = allRows.filter(({ run, groupNames }) => {
+    const isArchived = run.archivedAt !== null;
+    if (archivedFilter === 'only' ? !isArchived : archivedFilter !== 'all' && isArchived) {
+      return false;
+    }
     if (machineIdFilter !== null && String(run.machineId ?? '') !== machineIdFilter) {
       return false;
     }
@@ -82,6 +88,8 @@ export default async function RunsPage({
     if (statusFilter !== null && run.status !== statusFilter) return false;
     return true;
   });
+
+  const archivedCount = allRows.filter(({ run }) => run.archivedAt !== null).length;
 
   const sortKey = firstParam(sp.sort) ?? 'created';
   const sortDir = firstParam(sp.dir) === 'asc' ? 1 : -1;
@@ -97,7 +105,7 @@ export default async function RunsPage({
       case 'status':
         return row.run.status;
       case 'rating':
-        return row.good - row.bad;
+        return ratingScore(row);
       case 'speed':
         return row.avgRate ?? -1;
       case 'time':
@@ -135,6 +143,18 @@ export default async function RunsPage({
           <p className="max-w-prose text-sm text-zinc-600 dark:text-zinc-400">
             Each run executes the prompts of one or more groups against a single machine and
             model.
+            {archivedCount > 0 && archivedFilter === null && (
+              <>
+                {' '}
+                <Link
+                  href="/runs?archived=only"
+                  className="underline-offset-2 hover:underline"
+                >
+                  {archivedCount} archived run{archivedCount === 1 ? '' : 's'} hidden
+                </Link>
+                .
+              </>
+            )}
           </p>
         </div>
         <Link
@@ -168,7 +188,7 @@ export default async function RunsPage({
                 <SortableHeader label="Status" sortKey="status" firstDir="asc" />
               </th>
               <th className="px-2 py-3">Results</th>
-              <th className="px-2 py-3">
+              <th className="px-2 py-3" title="good / meh / bad / unrated">
                 <SortableHeader label="Rating" sortKey="rating" />
               </th>
               <th className="px-2 py-3">
@@ -196,7 +216,7 @@ export default async function RunsPage({
                 </td>
               </tr>
             )}
-            {rows.map(({ run, groupNames, ok, error, pending, good, bad, unrated, avgRate, totalDurationMs }) => (
+            {rows.map(({ run, groupNames, ok, error, pending, good, meh, bad, unrated, avgRate, totalDurationMs }) => (
               <LinkedRow
                 key={run.id}
                 href={`/runs/${run.id}`}
@@ -224,7 +244,10 @@ export default async function RunsPage({
                   </div>
                 </td>
                 <td className="px-2 py-3">
-                  <StatusBadge status={run.status} />
+                  <div className="flex flex-wrap items-center gap-1">
+                    <StatusBadge status={run.status} />
+                    {run.archivedAt !== null && <StatusBadge status="archived" />}
+                  </div>
                 </td>
                 <td className="px-2 py-3 text-zinc-600 dark:text-zinc-400">
                   <span className="text-emerald-600 dark:text-emerald-400">{ok} ok</span>
@@ -235,10 +258,12 @@ export default async function RunsPage({
                   {' · '}
                   <span>{pending} pending</span>
                 </td>
-                <td className="px-2 py-3">
-                  <span className="text-emerald-600 dark:text-emerald-400">{good}</span>
+                <td className="whitespace-nowrap px-2 py-3">
+                  <span className={RATING_META.good.text}>{good}</span>
                   <span className="text-zinc-400 dark:text-zinc-500">/</span>
-                  <span className="text-red-600 dark:text-red-400">{bad}</span>
+                  <span className={RATING_META.meh.text}>{meh}</span>
+                  <span className="text-zinc-400 dark:text-zinc-500">/</span>
+                  <span className={RATING_META.bad.text}>{bad}</span>
                   <span className="text-zinc-400 dark:text-zinc-500">/</span>
                   <span className="text-zinc-500 dark:text-zinc-400">{unrated}</span>
                 </td>
@@ -252,7 +277,14 @@ export default async function RunsPage({
                   {excerpt(run.comment)}
                 </td>
                 <td className="px-2 py-3 text-right">
-                  <DeleteRunButton runId={run.id} compact />
+                  <div className="flex items-center justify-end gap-1">
+                    <ArchiveRunButton
+                      runId={run.id}
+                      archived={run.archivedAt !== null}
+                      compact
+                    />
+                    <DeleteRunButton runId={run.id} compact />
+                  </div>
                 </td>
               </LinkedRow>
             ))}

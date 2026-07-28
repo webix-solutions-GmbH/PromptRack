@@ -5,8 +5,13 @@ import { useRouter } from 'next/navigation';
 import type { Prompt } from '@/db/schema';
 import { createPrompt, deletePrompt, updatePrompt } from '@/actions/prompts';
 import { resolveEffectiveSystemPrompt, type SystemPromptMode } from '@/lib/system-prompt';
+import { DEFAULT_MAX_TURNS } from '@/lib/tools';
 import { formatDateTime } from '@/lib/format';
-import { PromptEditor, type SystemPromptOption } from './prompt-editor';
+import {
+  PromptEditor,
+  type SystemPromptOption,
+  type ToolsetOption,
+} from './prompt-editor';
 
 function asMode(value: string): SystemPromptMode {
   return value === 'override' ? 'override' : 'append';
@@ -16,10 +21,14 @@ export function PromptsPanel({
   groupId,
   prompts,
   systemPrompts,
+  toolsets,
+  toolsetIdsByPrompt,
 }: {
   groupId: number;
   prompts: Prompt[];
   systemPrompts: SystemPromptOption[];
+  toolsets: ToolsetOption[];
+  toolsetIdsByPrompt: Record<number, number[]>;
 }) {
   const router = useRouter();
   const [editingId, setEditingId] = useState<number | 'new' | null>(null);
@@ -69,8 +78,13 @@ export function PromptsPanel({
             systemPromptId: '',
             systemPromptMode: 'append',
             customSystemText: '',
+            toolMode: 'none',
+            toolChoice: '',
+            maxTurns: DEFAULT_MAX_TURNS,
+            toolsetIds: [],
           }}
           systemPromptOptions={systemPrompts}
+          toolsetOptions={toolsets}
           submitLabel="Create prompt"
           onCancel={() => setEditingId(null)}
           onSubmit={async (formData) => {
@@ -102,8 +116,13 @@ export function PromptsPanel({
                     systemPromptId: prompt.systemPromptId ? String(prompt.systemPromptId) : '',
                     systemPromptMode: asMode(prompt.systemPromptMode),
                     customSystemText: prompt.customSystemText ?? '',
+                    toolMode: prompt.toolMode,
+                    toolChoice: prompt.toolChoice ?? '',
+                    maxTurns: prompt.maxTurns,
+                    toolsetIds: toolsetIdsByPrompt[prompt.id] ?? [],
                   }}
                   systemPromptOptions={systemPrompts}
+                  toolsetOptions={toolsets}
                   submitLabel="Save changes"
                   onCancel={() => setEditingId(null)}
                   onSubmit={async (formData) => {
@@ -173,6 +192,20 @@ export function PromptsPanel({
                 <span>
                   {base ? base.name : 'no base prompt'} ({prompt.systemPromptMode})
                 </span>
+                {prompt.toolMode !== 'none' && (
+                  <>
+                    <span aria-hidden>·</span>
+                    <span className="inline-flex items-center rounded-full bg-indigo-100 px-2 py-0.5 font-medium text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
+                      tools: {prompt.toolMode}
+                      {prompt.toolMode === 'execute' ? ` (max ${prompt.maxTurns} turns)` : ''}
+                    </span>
+                    <span>
+                      {(toolsetIdsByPrompt[prompt.id] ?? [])
+                        .map((id) => toolsets.find((toolset) => toolset.id === id)?.name ?? '?')
+                        .join(', ') || 'no toolset'}
+                    </span>
+                  </>
+                )}
               </div>
 
               <details className="text-xs text-zinc-500 dark:text-zinc-400">

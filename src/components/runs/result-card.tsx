@@ -3,9 +3,12 @@
 import { formatDuration, formatRate } from '@/lib/format';
 import { splitThinking } from '@/lib/thinking';
 import { MarkdownResponse } from '@/components/markdown-response';
+import { RatingBadge } from './rating-badge';
 import { ResultRating } from './result-rating';
 import { StatusBadge } from './status-badge';
+import { ToolTranscript } from './tool-transcript';
 import type { ResultView } from './types';
+import type { Rating } from '@/lib/rating';
 
 function Chip({ label, value }: { label: string; value: string }) {
   return (
@@ -14,25 +17,6 @@ function Chip({ label, value }: { label: string; value: string }) {
       <span className="font-mono text-zinc-700 dark:text-zinc-300">{value}</span>
     </span>
   );
-}
-
-/** Small always-visible rating indicator, useful in collapsed/summary contexts. */
-function RatingBadge({ rating }: { rating: 'good' | 'bad' | null }) {
-  if (rating === 'good') {
-    return (
-      <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
-        👍 good
-      </span>
-    );
-  }
-  if (rating === 'bad') {
-    return (
-      <span className="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-950 dark:text-red-400">
-        👎 bad
-      </span>
-    );
-  }
-  return null;
 }
 
 const preClass =
@@ -81,7 +65,7 @@ export function ResultCard({
   index: number;
   onRatingChange: (
     resultId: number,
-    patch: { rating?: 'good' | 'bad' | null; ratingNote?: string | null },
+    patch: { rating?: Rating | null; ratingNote?: string | null },
   ) => void;
 }) {
   const hasMetrics =
@@ -97,6 +81,9 @@ export function ResultCard({
           result.promptTokens !== null ? ` / ${result.promptTokens} in` : ''
         }`;
 
+  const isToolRun = result.toolMode !== 'none';
+  const hasTranscript = isToolRun && (result.transcript?.length ?? 0) > 0;
+
   return (
     <article className="flex flex-col gap-3 rounded-lg border border-zinc-200 p-5 dark:border-zinc-800">
       <header className="flex flex-wrap items-center justify-between gap-2">
@@ -109,6 +96,11 @@ export function ResultCard({
           </h3>
         </div>
         <div className="flex items-center gap-2">
+          {isToolRun && (
+            <span className="inline-flex items-center rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
+              tools: {result.toolMode}
+            </span>
+          )}
           <RatingBadge rating={result.rating} />
           <StatusBadge status={result.status} />
         </div>
@@ -123,7 +115,7 @@ export function ResultCard({
 
       <details className="text-sm">
         <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200">
-          Prompt &amp; system prompt
+          Prompt &amp; system prompt{isToolRun ? ' & tools' : ''}
         </summary>
         <div className="mt-2 flex flex-col gap-3">
           <div className="flex flex-col gap-1">
@@ -140,6 +132,24 @@ export function ResultCard({
               {result.systemPromptText ?? '(no system message)'}
             </pre>
           </div>
+          {isToolRun && (
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                Tools offered ({result.toolsSnapshot.length}) · tool_choice{' '}
+                {result.toolChoice ?? 'server default'} · max {result.maxTurns} turns
+              </span>
+              {/* The frozen definitions, exactly as the request carried them. */}
+              <pre className={preClass}>
+                {result.toolsSnapshot.length === 0
+                  ? '(none)'
+                  : JSON.stringify(
+                      result.toolsSnapshot.map((entry) => entry.definition),
+                      null,
+                      2,
+                    )}
+              </pre>
+            </div>
+          )}
         </div>
       </details>
 
@@ -149,7 +159,33 @@ export function ResultCard({
         </div>
       )}
 
-      {result.expectedOutput ? (
+      {/*
+        A tool run's answer only makes sense as a conversation, so the
+        transcript replaces the single response block and expected output moves
+        underneath it rather than beside it.
+      */}
+      {hasTranscript ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+              Conversation
+            </span>
+            <ToolTranscript
+              transcript={result.transcript ?? []}
+              turns={result.turns}
+              stoppedReason={result.stoppedReason}
+            />
+          </div>
+          {result.expectedOutput && (
+            <div className="flex min-w-0 flex-col gap-1">
+              <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                Expected output
+              </span>
+              <pre className={preClass}>{result.expectedOutput}</pre>
+            </div>
+          )}
+        </div>
+      ) : result.expectedOutput ? (
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <div className="flex min-w-0 flex-col gap-1">
             <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
@@ -181,6 +217,10 @@ export function ResultCard({
           <Chip label="ttft" value={formatDuration(result.ttftMs)} />
           {tokenLabel && <Chip label="tokens" value={tokenLabel} />}
           <Chip label="speed" value={formatRate(result.tokensPerSec)} />
+          {result.turnCount !== null && <Chip label="turns" value={String(result.turnCount)} />}
+          {result.toolCallCount !== null && (
+            <Chip label="tool calls" value={String(result.toolCallCount)} />
+          )}
         </div>
       )}
     </article>

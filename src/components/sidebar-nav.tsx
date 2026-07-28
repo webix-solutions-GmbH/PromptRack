@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { href: "/", label: "Dashboard" },
   { href: "/machines", label: "Machines" },
   { href: "/system-prompts", label: "System Prompts" },
+  { href: "/toolsets", label: "Toolsets" },
   { href: "/prompts", label: "Prompts" },
   { href: "/runs", label: "Runs" },
   { href: "/compare", label: "Compare" },

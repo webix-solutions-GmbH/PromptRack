@@ -2,22 +2,10 @@
 
 import { useState, useTransition } from 'react';
 import { rateResult, updateResultNote } from '@/actions/runs';
+import { RATINGS, RATING_META, type Rating } from '@/lib/rating';
 
 const thumbBase =
   'inline-flex h-7 w-7 items-center justify-center rounded-md border text-sm transition-colors disabled:opacity-50';
-
-const thumbUpClass = {
-  active:
-    'border-emerald-600 bg-emerald-600 text-white dark:border-emerald-500 dark:bg-emerald-500',
-  inactive:
-    'border-zinc-300 text-zinc-500 hover:border-emerald-400 hover:text-emerald-600 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-emerald-500 dark:hover:text-emerald-400',
-};
-
-const thumbDownClass = {
-  active: 'border-red-600 bg-red-600 text-white dark:border-red-500 dark:bg-red-500',
-  inactive:
-    'border-zinc-300 text-zinc-500 hover:border-red-400 hover:text-red-600 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-red-500 dark:hover:text-red-400',
-};
 
 export function ResultRating({
   resultId,
@@ -26,17 +14,18 @@ export function ResultRating({
   onChange,
 }: {
   resultId: number;
-  rating: 'good' | 'bad' | null;
+  rating: Rating | null;
   ratingNote: string | null;
   /** Lets the parent keep its own result list (and live counts) in sync. */
-  onChange: (patch: { rating?: 'good' | 'bad' | null; ratingNote?: string | null }) => void;
+  onChange: (patch: { rating?: Rating | null; ratingNote?: string | null }) => void;
 }) {
   const [noteValue, setNoteValue] = useState(ratingNote ?? '');
   const [showNote, setShowNote] = useState((ratingNote ?? '').length > 0);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  function setRating(next: 'good' | 'bad') {
+  function setRating(next: Rating) {
+    // Clicking the active rating clears it, so a mis-click is one click to undo.
     const value = rating === next ? null : next;
     setError(null);
     onChange({ rating: value });
@@ -65,26 +54,25 @@ export function ResultRating({
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          aria-label="Good result"
-          aria-pressed={rating === 'good'}
-          disabled={pending}
-          onClick={() => setRating('good')}
-          className={`${thumbBase} ${rating === 'good' ? thumbUpClass.active : thumbUpClass.inactive}`}
-        >
-          👍
-        </button>
-        <button
-          type="button"
-          aria-label="Bad result"
-          aria-pressed={rating === 'bad'}
-          disabled={pending}
-          onClick={() => setRating('bad')}
-          className={`${thumbBase} ${rating === 'bad' ? thumbDownClass.active : thumbDownClass.inactive}`}
-        >
-          👎
-        </button>
+        {RATINGS.map((value) => {
+          const meta = RATING_META[value];
+          const isActive = rating === value;
+
+          return (
+            <button
+              key={value}
+              type="button"
+              aria-label={meta.description}
+              title={meta.description}
+              aria-pressed={isActive}
+              disabled={pending}
+              onClick={() => setRating(value)}
+              className={`${thumbBase} ${isActive ? meta.button.active : meta.button.inactive}`}
+            >
+              {meta.emoji}
+            </button>
+          );
+        })}
         <button
           type="button"
           onClick={() => setShowNote((current) => !current)}
