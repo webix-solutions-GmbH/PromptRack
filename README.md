@@ -92,6 +92,61 @@ results whose prompt was deleted meanwhile fall back to matching on identical
 prompt text. A prompt only one of the runs covered shows `—` in the other
 column.
 
+## MCP API
+
+The app is also an **MCP server**, so an agent (Claude Code, for instance) can
+push the system prompts and prompts of another project straight in, start a run,
+and read the measurements back — instead of copying someone else's prompts into
+the web UI by hand.
+
+- Endpoint: `POST /agent-val/api/mcp` (streamable HTTP, stateless).
+- Auth: one API key in the `MCP_API_KEY` environment variable, sent as the
+  `x-api-key` header (or `Authorization: Bearer <key>`). **Without the variable
+  set the endpoint refuses every request** — these tools write.
+- `x-api-key` is checked before `Authorization` on purpose: in production Caddy
+  also wants HTTP basic auth for `/agent-val*`, and both credentials have to fit
+  in one request.
+
+```bash
+# in .env next to docker-compose.yml (gitignored)
+MCP_API_KEY=$(openssl rand -hex 24)
+```
+
+Register it with Claude Code — production (behind Caddy basic auth) and dev:
+
+```bash
+claude mcp add --transport http agent-val https://ki01.webix.de/agent-val/api/mcp \
+  --header "x-api-key: $MCP_API_KEY" \
+  --header "Authorization: Basic $(printf 'user:password' | base64)"
+
+MCP_API_KEY=dev-key npm run dev
+claude mcp add --transport http agent-val-dev http://localhost:3000/agent-val/api/mcp \
+  --header "x-api-key: dev-key"
+```
+
+Tools, all named for what they do to the app's own concepts:
+
+| | |
+| --- | --- |
+| Authoring | `list_prompt_groups`, `create_prompt_group`, `list_system_prompts`, `create_system_prompt`, `update_system_prompt`, `list_prompts`, `get_prompt`, `create_prompt`, `update_prompt`, `delete_prompt` |
+| Reference | `list_toolsets`, `list_machines` |
+| Running | `create_run`, `execute_run` |
+| Results | `list_runs`, `get_run`, `get_run_result` |
+
+Notes:
+
+- `create_prompt` covers tool tests too (`tool_mode`, `tool_choice`, `max_turns`,
+  `toolsets`), and refuses the same combinations the prompt editor refuses.
+- Anything the app relates by name — group, system prompt, toolset, machine —
+  can be referenced by **name or numeric id**.
+- `execute_run` (and `create_run` with `execute: true`) starts the run in the
+  background and returns at once, because a run outlives any tool-call timeout.
+  Poll `get_run` for progress; it also doubles as Resume, since only pending rows
+  are executed.
+- Machines, toolsets and their tools are *not* writable over MCP: an endpoint
+  with an API key and an MCP server URL are credentials, configured in the UI.
+- Ratings stay manual as well — the verdict is the point of the whole exercise.
+
 ## Metrics
 
 - **TTFT** — time to first token: milliseconds between sending the request and

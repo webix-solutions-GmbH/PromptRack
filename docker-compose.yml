@@ -8,6 +8,10 @@ services:
     user: "1001:1001"
     volumes:
       - ./data:/app/data
+    environment:
+      # API key for the MCP endpoint (/agent-val/api/mcp). Put it in a .env file
+      # next to this one; unset means the endpoint refuses every request.
+      - MCP_API_KEY=${MCP_API_KEY:-}
     # Caddy reaches the app over the shared llm_default network as agent-val:3000.
     # The published port is only for LAN/debug access from the host.
     ports:
