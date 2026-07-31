@@ -8,7 +8,6 @@ import type { RunResultStatus } from '@/lib/run-events';
 import { parseTranscript } from '@/lib/tool-loop';
 import type { ToolChoice, ToolMode } from '@/lib/tools';
 import {
-  MAX_COMPARE_RUNS,
   MIN_COMPARE_MODELS,
   MIN_COMPARE_RUNS,
   buildCompareMatrix,
@@ -55,19 +54,19 @@ function transcriptToolCallNames(raw: string | null): string[] {
 }
 
 /**
- * A `/compare` link that keeps the current query except for one param.
+ * A `/results` link that keeps the current query except for one param.
  *
- * Every compare link is built this way so switching pivot or group never drops
- * the rest of the selection.
+ * Every link on this page is built this way so switching pivot or group never
+ * drops the rest of the selection.
  */
-function compareHref(sp: SearchParams, key: string, values: string[]): string {
+function resultsHref(sp: SearchParams, key: string, values: string[]): string {
   const params = new URLSearchParams();
   for (const [name, value] of Object.entries(sp)) {
     if (name === key || value === undefined) continue;
     for (const item of Array.isArray(value) ? value : [value]) params.append(name, item);
   }
   for (const value of values) params.append(key, value);
-  return `/compare?${params.toString()}`;
+  return `/results?${params.toString()}`;
 }
 
 /**
@@ -112,7 +111,7 @@ function toCell(
   };
 }
 
-export default async function ComparePage({
+export default async function ResultsPage({
   searchParams,
 }: {
   searchParams: Promise<SearchParams>;
@@ -252,7 +251,7 @@ export default async function ComparePage({
       key: 'all',
       label: 'All',
       count: null,
-      href: compareHref(sp, 'group', []),
+      href: resultsHref(sp, 'group', []),
       active: selectedGroupIds.length === 0,
     },
     ...groupOptions.map((group) => {
@@ -265,7 +264,7 @@ export default async function ComparePage({
         key: String(group.id),
         label: group.name,
         count: group.promptCount,
-        href: compareHref(sp, 'group', next.map(String)),
+        href: resultsHref(sp, 'group', next.map(String)),
         active,
       };
     }),
@@ -339,40 +338,26 @@ export default async function ComparePage({
     <div className="flex flex-1 flex-col gap-8 p-8">
       <div className="flex flex-col gap-3">
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-          Compare
+          Results
         </h1>
 
         <div className="flex w-fit gap-1 rounded-lg border border-zinc-200 p-1 dark:border-zinc-800">
-          <Link href={compareHref(sp, 'mode', ['models'])} className={tab(isModels)}>
+          <Link href={resultsHref(sp, 'mode', ['models'])} className={tab(isModels)}>
             By model
           </Link>
-          <Link href={compareHref(sp, 'mode', ['runs'])} className={tab(!isModels)}>
+          <Link href={resultsHref(sp, 'mode', ['runs'])} className={tab(!isModels)}>
             By run
           </Link>
         </div>
 
-        <p className="max-w-prose text-sm text-zinc-600 dark:text-zinc-400">
-          {isModels ? (
-            <>
-              Rows are your prompts, columns are models: each cell is that model&apos;s most
-              recent result for the prompt, whichever run produced it. A model is a model ×
-              machine pair, because speed belongs to the hardware. Archived runs are ignored.
-            </>
-          ) : (
-            <>
-              Put {MIN_COMPARE_RUNS}–{MAX_COMPARE_RUNS} specific runs side by side: rows are
-              prompts, columns are runs — the pivot to use for two runs of the same model.
-              {hiddenArchivedCount > 0 && (
-                <>
-                  {' '}
-                  {hiddenArchivedCount} archived run{hiddenArchivedCount === 1 ? ' is' : 's are'}{' '}
-                  not listed below.
-                </>
-              )}
-            </>
-          )}{' '}
-          The selection lives in the URL, so a comparison can be bookmarked or shared.
-        </p>
+        {/* No blurb: the pickers and column headers say what the table is. The
+            only thing the UI cannot show on its own is what it left out. */}
+        {!isModels && hiddenArchivedCount > 0 && (
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+            {hiddenArchivedCount} archived run{hiddenArchivedCount === 1 ? ' is' : 's are'} not
+            listed below.
+          </p>
+        )}
       </div>
 
       {isModels ? (
@@ -386,13 +371,16 @@ export default async function ComparePage({
 
       {columnCount < minColumns ? (
         <div className="rounded-lg border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
-          Select at least {minColumns} {isModels ? 'models' : 'runs'} above to build the comparison
-          matrix.
+          {isModels
+            ? 'Select a model above to see its results — or several to compare them.'
+            : `Select at least ${MIN_COMPARE_RUNS} runs above to build the comparison matrix.`}
         </div>
       ) : rows.length === 0 ? (
         <div className="rounded-lg border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
           {isModels
-            ? 'None of the prompts in scope has a result from the selected models yet.'
+            ? `None of the prompts in scope has a result from the selected ${
+                columnCount === 1 ? 'model' : 'models'
+              } yet.`
             : 'The selected runs have no results to compare.'}
         </div>
       ) : (
@@ -400,7 +388,8 @@ export default async function ComparePage({
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
               {rows.length} prompt{rows.length === 1 ? '' : 's'} × {columnCount}{' '}
-              {isModels ? 'models' : 'runs'}
+              {isModels ? 'model' : 'run'}
+              {columnCount === 1 ? '' : 's'}
             </h2>
             {isModels && modelMatrix.uncoveredPrompts > 0 && (
               <span className="text-xs text-zinc-500 dark:text-zinc-400">

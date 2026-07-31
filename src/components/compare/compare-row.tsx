@@ -153,6 +153,9 @@ export function CompareRow({
     row.cells,
     anchoredToLivePrompt ? row.promptText : undefined,
   );
+  // With a single cell there is nothing to differ *across*: the only drift the
+  // check can report is the live prompt having moved on from that one result.
+  const single = row.cells.filter((cell) => cell !== null).length < 2;
 
   return (
     <tr className="align-top">
@@ -179,9 +182,13 @@ export function CompareRow({
           {drift.length > 0 && (
             <p
               className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300"
-              title="These cells were not produced under identical conditions, so a difference between them may not be the model."
+              title={
+                single
+                  ? 'This result was not produced under the conditions the prompt now carries.'
+                  : 'These cells were not produced under identical conditions, so a difference between them may not be the model.'
+              }
             >
-              differs across cells: {drift.join(', ')}
+              {single ? drift.join(', ') : `differs across cells: ${drift.join(', ')}`}
             </p>
           )}
           {anyLong && (

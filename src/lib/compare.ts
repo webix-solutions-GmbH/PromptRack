@@ -27,7 +27,13 @@ export const MIN_COMPARE_RUNS = 2;
 export type CompareMode = 'runs' | 'models';
 
 export const MAX_COMPARE_MODELS = 6;
-export const MIN_COMPARE_MODELS = 2;
+/**
+ * One model is a valid selection: the same prompt × model matrix with a single
+ * column is exactly "show me everything this model answered", which is the
+ * cheapest way to review a model's results across all of its runs. Run mode
+ * still needs two — a single run is already its own detail page.
+ */
+export const MIN_COMPARE_MODELS = 1;
 
 /** Reads an explicit `?mode=` value; `null` leaves the default to the caller. */
 export function parseCompareMode(raw: string | string[] | undefined): CompareMode | null {

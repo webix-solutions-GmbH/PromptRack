@@ -69,9 +69,9 @@ A prompt has a `tool_mode`: `none` (classic one-shot), `definitions` (offer the 
 - Existing metric columns keep their meaning — `response_text` = final assistant text, `ttft_ms` = first turn's TTFT, `duration_ms`/token columns = sums over model turns only (tool wait time is excluded, and lives per call in the transcript). Tool detail is *added alongside* in `transcript_json` / `turns_json` / `turn_count` / `tool_call_count`, all null when `tool_mode = 'none'` — which is what keeps every pre-existing run rendering unchanged.
 - `run-events.ts` gains `turnStart` / `toolCall` / `toolResult`, and `delta` carries a `turn` only on tool runs, so a plain prompt's wire format is byte-identical to before. `run-detail.tsx` assembles a live transcript from those events; the finished row replaces it on `resultDone`.
 
-### Compare: two pivots
+### Results (`/results`): two pivots
 
-`/compare` has a `mode`: `models` (the default) and `runs`. `?mode=` wins; without it a URL carrying `?runs=` stays in run mode, so old links keep their view.
+`/results` has a `mode`: `models` (the default) and `runs`. `?mode=` wins; without it a URL carrying `?runs=` stays in run mode, so old links keep their view. The page was called *Compare* and lived at `/compare`, which is now a 307 redirect in `next.config.ts` (query values pass through, so bookmarked selections survive) — it was renamed because **one model is a valid selection** (`MIN_COMPARE_MODELS = 1`): the same matrix with a single column is "show me everything this model answered", which is the cheapest review of a model across all of its runs. Run mode still needs two, since a single run is already its own detail page. The page carries no explanatory blurb; the pickers and column headers are the explanation, and the only sentence left is the one thing the UI cannot show — how many archived runs the picker is hiding.
 
 - **By model** (`?mode=models&model=<machineId>|<modelId>&…`, repeated params, plus `?group=` to narrow the rows) takes the **live prompts** as the rows and fills each cell with that model's **most recent `ok` result**, whichever run produced it. Columns are model × machine, keyed on the machine *id* so a rename does not split a column and one model on two boxes stays two columns — `tokens_per_sec` belongs to the hardware. Archived runs are excluded outright (no per-run selection could ask one back). Header tallies are computed over the cells **on screen**, not whole runs.
 - **By run** (`?mode=runs&runs=1,5`) is unchanged and still the only pivot that can put two runs of the *same* model side by side (quantization swap, temperature A/B, prompt rewrite) — in model mode they collapse into one column and the newest wins.
@@ -79,7 +79,7 @@ A prompt has a `tool_mode`: `none` (classic one-shot), `definitions` (offer the 
 Two consequences of "latest result" replacing "one run", both made visible rather than hidden:
 
 - Falling back past a **newer failed attempt** (endpoint down) must not blank a good older answer, so the cell keeps the newest `ok` row and reports the skipped one (`CompareCellView.superseded`). Every model-mode cell therefore also names its run and date — the column header no longer does.
-- A column's cells can come from runs with **different conditions** (system prompt, tools, temperature), so a difference between cells might be config rather than model. `describeRowDrift` compares prompt text / system prompt / `tools_snapshot` / tool mode / tool choice / `runs.params` (and `max_turns` only when `tool_mode = 'execute'`) across a row and the row header names whatever is not held constant. In model mode it also compares against the live prompt → `prompt edited since`. It runs in both modes.
+- A column's cells can come from runs with **different conditions** (system prompt, tools, temperature), so a difference between cells might be config rather than model. `describeRowDrift` compares prompt text / system prompt / `tools_snapshot` / tool mode / tool choice / `runs.params` (and `max_turns` only when `tool_mode = 'execute'`) across a row and the row header names whatever is not held constant. In model mode it also compares against the live prompt → `prompt edited since`. It runs in both modes; with a single cell in the row the "differs across cells:" prefix is dropped, because `prompt edited since` is then the only thing it can report.
 
 Model mode is anchored to live prompts, so a deleted prompt cannot appear in it at all — the `prompt_text` fallback matching stays a run-mode concern. Prompts in scope that no selected model has answered are counted, not rendered as an all-empty row.
 
@@ -99,7 +99,7 @@ Opening `/runs/new` (and switching machine) POSTs `/api/machines/[id]/discover` 
 
 `runs.archived_at` (nullable timestamp) — deliberately **not** a `status` value, because `status` is the execution state machine Resume depends on: an archived run with pending rows has to stay `pending`, so it can be unarchived and finished. The UI still presents it as a state (amber `archived` badge next to the status badge).
 
-Archived runs are hidden from the runs list (`?archived=only` / `?archived=all` to see them), from the dashboard's stats and recent list, and from the compare run picker — except when already named in `?runs=`, so a bookmarked comparison keeps working and stays deselectable. Compare's model mode has no such exception; see above. `setRunArchived` refuses while a run is executing, like delete.
+Archived runs are hidden from the runs list (`?archived=only` / `?archived=all` to see them), from the dashboard's stats and recent list, and from the results page's run picker — except when already named in `?runs=`, so a bookmarked comparison keeps working and stays deselectable. Model mode has no such exception; see above. `setRunArchived` refuses while a run is executing, like delete.
 
 ### This app as an MCP server
 

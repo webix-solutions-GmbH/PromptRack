@@ -85,12 +85,21 @@ machine and one model, streaming the responses and recording per-result metrics.
 The machine is snapshotted into the run, so deleting a machine later does not
 falsify history. Every result can be rated 👍/👎 with a note.
 
-**Compare** — pick 2–4 runs (the selection lives in the URL, e.g.
-`/compare?runs=1,5`) and get a matrix: rows are prompts, columns are runs, cells
-hold the response with its rating and speed. Rows are matched by prompt id;
-results whose prompt was deleted meanwhile fall back to matching on identical
-prompt text. A prompt only one of the runs covered shows `—` in the other
-column.
+**Results** — a prompt × column matrix, cells holding the response with its
+rating and speed. Two pivots, both selected in the URL so a view can be
+bookmarked:
+
+- *By model* (the default, e.g. `/results?mode=models&model=3|google/gemma-3-27b-it`)
+  — rows are your live prompts, one column per model × machine, each cell that
+  model's most recent usable result whatever run produced it. **One model is a
+  complete selection**: a single column is how you review one model on its own.
+- *By run* (e.g. `/results?mode=runs&runs=1,5`) — 2–4 hand-picked runs side by
+  side, the only pivot that can put two runs of the *same* model next to each
+  other. Rows are matched by prompt id; results whose prompt was deleted
+  meanwhile fall back to matching on identical prompt text. A prompt only one of
+  the runs covered shows `—` in the other column.
+
+The old `/compare` URL redirects here, query and all.
 
 ## MCP API
 

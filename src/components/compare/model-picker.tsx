@@ -12,8 +12,11 @@ import { RATING_META } from '@/lib/rating';
 
 /**
  * Checkbox list of model columns (model × machine). The selection lives in
- * repeated `?model=` params, so a comparison stays linkable — and `mode` is
- * pinned here so the page never falls back to run mode on a click.
+ * repeated `?model=` params, so a view stays linkable — and `mode` is pinned
+ * here so the page never falls back to run mode on a click.
+ *
+ * One model is a complete selection (see `MIN_COMPARE_MODELS`), so nothing here
+ * pushes towards picking a second.
  */
 export function ModelPicker({ columns }: { columns: ModelColumnView[] }) {
   const router = useRouter();
@@ -47,7 +50,7 @@ export function ModelPicker({ columns }: { columns: ModelColumnView[] }) {
   if (columns.length === 0) {
     return (
       <div className="rounded-lg border border-zinc-200 p-6 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-        No results yet — finish a run first, then come back to compare.
+        No results yet — finish a run first, then come back.
       </div>
     );
   }
@@ -56,7 +59,7 @@ export function ModelPicker({ columns }: { columns: ModelColumnView[] }) {
     <section className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-          Select models to compare
+          Select one model to review, or several to compare
         </h2>
         <div className="flex items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400">
           <span>
@@ -78,7 +81,7 @@ export function ModelPicker({ columns }: { columns: ModelColumnView[] }) {
         <table className="w-full min-w-max text-left text-sm">
           <thead className="sticky top-0 border-b border-zinc-200 bg-zinc-50 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
             <tr>
-              <th className="px-4 py-3">Compare</th>
+              <th className="px-4 py-3">Show</th>
               <th className="px-4 py-3">Model</th>
               <th className="px-4 py-3">Machine</th>
               <th className="px-4 py-3" title="Distinct prompts with a usable result">
@@ -116,7 +119,7 @@ export function ModelPicker({ columns }: { columns: ModelColumnView[] }) {
                       disabled={isDisabled}
                       onChange={() => toggle(column.key)}
                       onClick={(event) => event.stopPropagation()}
-                      aria-label={`Compare ${column.modelId} on ${column.machineName}`}
+                      aria-label={`Show ${column.modelId} on ${column.machineName}`}
                       className="h-4 w-4 accent-zinc-900 dark:accent-zinc-100"
                     />
                   </td>

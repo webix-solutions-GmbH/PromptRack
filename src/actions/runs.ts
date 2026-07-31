@@ -170,7 +170,7 @@ export async function setRunArchived(runId: number, archived: boolean) {
 
   revalidatePath('/runs');
   revalidatePath(`/runs/${runId}`);
-  revalidatePath('/compare');
+  revalidatePath('/results');
   revalidatePath('/');
 }
 

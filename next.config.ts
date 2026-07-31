@@ -12,6 +12,11 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/*": ["node_modules/better-sqlite3/prebuilds/**"],
   },
+  // `/compare` became `/results` once the page could also show one model on its
+  // own; query values are passed through, so bookmarked selections survive.
+  async redirects() {
+    return [{ source: "/compare", destination: "/results", permanent: false }];
+  },
 };
 
 export default nextConfig;

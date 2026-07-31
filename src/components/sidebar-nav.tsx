@@ -10,7 +10,7 @@ const NAV_ITEMS = [
   { href: "/toolsets", label: "Toolsets" },
   { href: "/prompts", label: "Prompts" },
   { href: "/runs", label: "Runs" },
-  { href: "/compare", label: "Compare" },
+  { href: "/results", label: "Results" },
 ] as const;
 
 export function SidebarNav() {
