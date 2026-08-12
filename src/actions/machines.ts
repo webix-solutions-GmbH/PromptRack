@@ -2,19 +2,17 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { and, eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { machineModels, machines } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import {
+  createMachine as createMachineRow,
+  deleteMachine as deleteMachineRow,
+  touchMachineModel,
+  updateMachine as updateMachineRow,
+} from '@/db/repo/machines';
+import { optionalString } from '@/lib/form-data';
 
 function normalizeBaseUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, '');
-}
-
-function optionalString(formData: FormData, key: string): string | null {
-  const value = formData.get(key);
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 function requiredMachineFields(formData: FormData) {
@@ -45,72 +43,45 @@ function requiredMachineFields(formData: FormData) {
 }
 
 export async function createMachine(formData: FormData) {
+  const scope = await currentScope();
   const fields = requiredMachineFields(formData);
   const now = new Date();
 
-  const [row] = await db
-    .insert(machines)
-    .values({
-      ...fields,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning({ id: machines.id });
+  const row = await createMachineRow(scope, { ...fields, createdAt: now, updatedAt: now });
 
   revalidatePath('/machines');
   redirect(`/machines/${row.id}`);
 }
 
 export async function updateMachine(id: number, formData: FormData) {
+  const scope = await currentScope();
   const fields = requiredMachineFields(formData);
 
-  await db
-    .update(machines)
-    .set({
-      ...fields,
-      updatedAt: new Date(),
-    })
-    .where(eq(machines.id, id));
+  await updateMachineRow(scope, id, { ...fields, updatedAt: new Date() });
 
   revalidatePath('/machines');
   revalidatePath(`/machines/${id}`);
 }
 
 export async function deleteMachine(id: number) {
-  await db.delete(machines).where(eq(machines.id, id));
+  const scope = await currentScope();
+  await deleteMachineRow(scope, id);
   revalidatePath('/machines');
 }
 
 export async function addManualModel(machineId: number, formData: FormData) {
+  const scope = await currentScope();
   const modelId = optionalString(formData, 'modelId');
   if (!modelId) {
     throw new Error('Model id is required.');
   }
 
-  const now = new Date();
-
-  const [existing] = await db
-    .select({ id: machineModels.id })
-    .from(machineModels)
-    .where(and(eq(machineModels.machineId, machineId), eq(machineModels.modelId, modelId)));
-
-  if (existing) {
-    // Row already exists (previously discovered or added manually) — just
-    // bump last_seen_at, leave currently_loaded and source untouched.
-    await db
-      .update(machineModels)
-      .set({ lastSeenAt: now })
-      .where(eq(machineModels.id, existing.id));
-  } else {
-    await db.insert(machineModels).values({
-      machineId,
-      modelId,
-      source: 'manual',
-      currentlyLoaded: false,
-      firstSeenAt: now,
-      lastSeenAt: now,
-    });
-  }
+  await touchMachineModel(scope, {
+    machineId,
+    modelId,
+    source: 'manual',
+    at: new Date(),
+  });
 
   revalidatePath(`/machines/${machineId}`);
 }

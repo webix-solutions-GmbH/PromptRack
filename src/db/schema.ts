@@ -6,6 +6,7 @@ import {
   boolean,
   timestamp,
   doublePrecision,
+  index,
   primaryKey,
   unique,
 } from 'drizzle-orm/pg-core';
@@ -228,56 +229,63 @@ export type NewRun = typeof runs.$inferInsert;
 // ---------------------------------------------------------------------------
 // run_results
 // ---------------------------------------------------------------------------
-export const runResults = pgTable('run_results', {
-  id: serial('id').primaryKey(),
-  runId: integer('run_id')
-    .notNull()
-    .references(() => runs.id, { onDelete: 'cascade' }),
-  promptId: integer('prompt_id').references(() => prompts.id, {
-    onDelete: 'set null',
-  }),
-  sortOrder: integer('sort_order').notNull().default(0),
-  groupName: text('group_name').notNull(),
-  promptTitle: text('prompt_title').notNull(),
-  promptText: text('prompt_text').notNull(),
-  expectedOutput: text('expected_output'),
-  systemPromptText: text('system_prompt_text'),
-  /**
-   * Tool configuration frozen at run creation. `toolsSnapshot` is the exact
-   * JSON array of definitions sent to the model — editing or deleting a
-   * toolset afterwards can never rewrite what a past run asked for.
-   */
-  toolsSnapshot: text('tools_snapshot'),
-  toolMode: text('tool_mode', { enum: ['none', 'definitions', 'execute'] })
-    .notNull()
-    .default('none'),
-  toolChoice: text('tool_choice', { enum: ['auto', 'required', 'none'] }),
-  maxTurns: integer('max_turns').notNull().default(6),
-  status: text('status').notNull().default('pending'),
-  /** Final assistant text — unchanged meaning, tool runs or not. */
-  responseText: text('response_text'),
-  /** Full message array of a tool run (assistant, tool_calls, tool results). */
-  transcriptJson: text('transcript_json'),
-  /** Per-turn metrics array; the columns below are its aggregates. */
-  turnsJson: text('turns_json'),
-  turnCount: integer('turn_count'),
-  toolCallCount: integer('tool_call_count'),
-  stoppedReason: text('stopped_reason', {
-    enum: ['stop', 'max_turns', 'definitions_only'],
-  }),
-  error: text('error'),
-  durationMs: integer('duration_ms'),
-  ttftMs: integer('ttft_ms'),
-  promptTokens: integer('prompt_tokens'),
-  completionTokens: integer('completion_tokens'),
-  tokensPerSec: doublePrecision('tokens_per_sec'),
-  tokensEstimated: boolean('tokens_estimated').notNull().default(false),
-  /** Manual verdict: `good`, `meh` (not wrong but not good enough) or `bad`. */
-  rating: text('rating', { enum: ['good', 'meh', 'bad'] }),
-  ratingNote: text('rating_note'),
-  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
-  finishedAt: timestamp('finished_at', { withTimezone: true, mode: 'date' }),
-});
+export const runResults = pgTable(
+  'run_results',
+  {
+    id: serial('id').primaryKey(),
+    runId: integer('run_id')
+      .notNull()
+      .references(() => runs.id, { onDelete: 'cascade' }),
+    promptId: integer('prompt_id').references(() => prompts.id, {
+      onDelete: 'set null',
+    }),
+    sortOrder: integer('sort_order').notNull().default(0),
+    groupName: text('group_name').notNull(),
+    promptTitle: text('prompt_title').notNull(),
+    promptText: text('prompt_text').notNull(),
+    expectedOutput: text('expected_output'),
+    systemPromptText: text('system_prompt_text'),
+    /**
+     * Tool configuration frozen at run creation. `toolsSnapshot` is the exact
+     * JSON array of definitions sent to the model — editing or deleting a
+     * toolset afterwards can never rewrite what a past run asked for.
+     */
+    toolsSnapshot: text('tools_snapshot'),
+    toolMode: text('tool_mode', { enum: ['none', 'definitions', 'execute'] })
+      .notNull()
+      .default('none'),
+    toolChoice: text('tool_choice', { enum: ['auto', 'required', 'none'] }),
+    maxTurns: integer('max_turns').notNull().default(6),
+    status: text('status').notNull().default('pending'),
+    /** Final assistant text — unchanged meaning, tool runs or not. */
+    responseText: text('response_text'),
+    /** Full message array of a tool run (assistant, tool_calls, tool results). */
+    transcriptJson: text('transcript_json'),
+    /** Per-turn metrics array; the columns below are its aggregates. */
+    turnsJson: text('turns_json'),
+    turnCount: integer('turn_count'),
+    toolCallCount: integer('tool_call_count'),
+    stoppedReason: text('stopped_reason', {
+      enum: ['stop', 'max_turns', 'definitions_only'],
+    }),
+    error: text('error'),
+    durationMs: integer('duration_ms'),
+    ttftMs: integer('ttft_ms'),
+    promptTokens: integer('prompt_tokens'),
+    completionTokens: integer('completion_tokens'),
+    tokensPerSec: doublePrecision('tokens_per_sec'),
+    tokensEstimated: boolean('tokens_estimated').notNull().default(false),
+    /** Manual verdict: `good`, `meh` (not wrong but not good enough) or `bad`. */
+    rating: text('rating', { enum: ['good', 'meh', 'bad'] }),
+    ratingNote: text('rating_note'),
+    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+    finishedAt: timestamp('finished_at', { withTimezone: true, mode: 'date' }),
+  },
+  (table) => [
+    index('run_results_run_id_idx').on(table.runId),
+    index('run_results_prompt_id_idx').on(table.promptId),
+  ],
+);
 
 export type RunResult = typeof runResults.$inferSelect;
 export type NewRunResult = typeof runResults.$inferInsert;

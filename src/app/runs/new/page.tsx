@@ -1,27 +1,17 @@
 import Link from 'next/link';
-import { asc, desc } from 'drizzle-orm';
-import { db } from '@/db';
-import { machineModels, machines, promptGroups, prompts } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { listMachineModels, listMachines } from '@/db/repo/machines';
+import { listGroups, promptCountsByGroup } from '@/db/repo/prompts';
 import { NewRunForm } from '@/components/runs/new-run-form';
 
 export const dynamic = 'force-dynamic';
 
 export default async function NewRunPage() {
-  const machineRows = await db.select().from(machines).orderBy(asc(machines.name));
-  const modelRows = await db
-    .select()
-    .from(machineModels)
-    .orderBy(desc(machineModels.currentlyLoaded), desc(machineModels.lastSeenAt));
-  const groupRows = await db
-    .select()
-    .from(promptGroups)
-    .orderBy(asc(promptGroups.sortOrder), asc(promptGroups.name));
-  const promptRows = await db.select({ groupId: prompts.groupId }).from(prompts);
-
-  const counts: Record<number, number> = {};
-  for (const prompt of promptRows) {
-    counts[prompt.groupId] = (counts[prompt.groupId] ?? 0) + 1;
-  }
+  const scope = await currentScope();
+  const machineRows = await listMachines(scope, 'name');
+  const modelRows = await listMachineModels(scope, { order: 'loaded-first' });
+  const groupRows = await listGroups(scope, 'sort-name');
+  const counts = await promptCountsByGroup(scope);
 
   return (
     <div className="flex flex-1 flex-col gap-8 p-8">
@@ -56,7 +46,7 @@ export default async function NewRunPage() {
         groups={groupRows.map((group) => ({
           id: group.id,
           name: group.name,
-          promptCount: counts[group.id] ?? 0,
+          promptCount: counts.get(group.id) ?? 0,
         }))}
       />
     </div>

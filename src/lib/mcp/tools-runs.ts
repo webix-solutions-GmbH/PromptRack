@@ -14,9 +14,19 @@
  */
 
 import { revalidatePath } from 'next/cache';
-import { and, asc, desc, eq, isNull } from 'drizzle-orm';
-import { db } from '@/db';
-import { machineModels, machines, promptGroups, runResults, runs } from '@/db/schema';
+import { currentScope, type Scope } from '@/db/scope';
+import { listLoadedModels, listMachineModels, listMachines as listMachineRows } from '@/db/repo/machines';
+import { listGroups } from '@/db/repo/prompts';
+import {
+  getRun as getRunRow,
+  getRunResult as getRunResultRow,
+  listResultRatings,
+  listResultStatuses,
+  listRunResults,
+  listRuns as listRunRows,
+  rateResult,
+  runResultTallies,
+} from '@/db/repo/runs';
 import { parseLlmInfo } from '@/lib/llm-info';
 import { countRatings, type Rating } from '@/lib/rating';
 import { createRunRecord } from '@/lib/run-create';
@@ -74,8 +84,8 @@ function startBackgroundExecution(runId: number) {
   });
 }
 
-async function loadRun(runId: number) {
-  const [run] = await db.select().from(runs).where(eq(runs.id, runId));
+async function loadRun(scope: Scope, runId: number) {
+  const run = await getRunRow(scope, runId);
   if (!run) {
     throw new McpToolError(`No run with id ${runId}.`);
   }
@@ -94,6 +104,37 @@ function summarizeResults(rows: { status: string; rating: string | null }[]) {
   };
 }
 
+/** The same shape as {@link summarizeResults}, out of a SQL aggregate. */
+function summaryFromTally(
+  tally:
+    | {
+        total: number;
+        ok: number;
+        error: number;
+        pending: number;
+        running: number;
+        good: number;
+        meh: number;
+        bad: number;
+        unrated: number;
+      }
+    | undefined,
+) {
+  return {
+    total: tally?.total ?? 0,
+    ok: tally?.ok ?? 0,
+    error: tally?.error ?? 0,
+    pending: tally?.pending ?? 0,
+    running: tally?.running ?? 0,
+    ratings: {
+      good: tally?.good ?? 0,
+      meh: tally?.meh ?? 0,
+      bad: tally?.bad ?? 0,
+      unrated: tally?.unrated ?? 0,
+    },
+  };
+}
+
 const listMachines: McpToolSpec = {
   name: 'list_machines',
   description:
@@ -101,11 +142,9 @@ const listMachines: McpToolSpec = {
   readOnly: true,
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
-    const rows = await db.select().from(machines).orderBy(asc(machines.name));
-    const modelRows = await db
-      .select()
-      .from(machineModels)
-      .orderBy(desc(machineModels.lastSeenAt));
+    const scope = await currentScope();
+    const rows = await listMachineRows(scope, 'name');
+    const modelRows = await listMachineModels(scope);
 
     return {
       machines: rows.map((machine) => ({
@@ -161,7 +200,8 @@ const createRunTool: McpToolSpec = {
     required: ['machine', 'groups'],
   },
   handler: async (args: ToolArgs) => {
-    const machineRows = await db.select().from(machines);
+    const scope = await currentScope();
+    const machineRows = await listMachineRows(scope, 'name');
     const machine = resolveRowRef(requireRowRef(args, 'machine'), machineRows, 'machine');
 
     const groupRefs = optionalRowRefList(args, 'groups');
@@ -169,19 +209,14 @@ const createRunTool: McpToolSpec = {
       throw new McpToolError('"groups" must name at least one prompt group.');
     }
 
-    const groupRows = await db.select().from(promptGroups);
+    const groupRows = await listGroups(scope, 'sort-id');
     const groupIds = groupRefs.map(
       (ref) => resolveRowRef(ref, groupRows, 'prompt group').id,
     );
 
     let modelId = optionalString(args, 'model');
     if (!modelId) {
-      const loaded = await db
-        .select()
-        .from(machineModels)
-        .where(
-          and(eq(machineModels.machineId, machine.id), eq(machineModels.currentlyLoaded, true)),
-        );
+      const loaded = await listLoadedModels(scope, machine.id);
 
       if (loaded.length === 1) {
         modelId = loaded[0].modelId;
@@ -216,7 +251,7 @@ const createRunTool: McpToolSpec = {
 
     let created;
     try {
-      created = await createRunRecord({
+      created = await createRunRecord(scope, {
         machineId: machine.id,
         modelId,
         groupIds,
@@ -262,17 +297,15 @@ const executeRunTool: McpToolSpec = {
     required: ['run_id'],
   },
   handler: async (args: ToolArgs) => {
+    const scope = await currentScope();
     const runId = requireInteger(args, 'run_id');
-    const run = await loadRun(runId);
+    const run = await loadRun(scope, runId);
 
     if (await isRunExecuting(runId)) {
       throw new McpToolError(`Run ${runId} is already executing.`);
     }
 
-    const rows = await db
-      .select({ status: runResults.status })
-      .from(runResults)
-      .where(eq(runResults.runId, runId));
+    const rows = await listResultStatuses(scope, runId);
 
     const pending = rows.filter(
       (row) => row.status === 'pending' || row.status === 'running',
@@ -332,40 +365,32 @@ const listRuns: McpToolSpec = {
     const modelFilter = optionalString(args, 'model');
     const limit = Math.max(1, optionalInteger(args, 'limit') ?? DEFAULT_RUN_LIMIT);
 
-    const conditions = [];
-    if (status) conditions.push(eq(runs.status, status));
-    if (archived === 'exclude') conditions.push(isNull(runs.archivedAt));
+    const scope = await currentScope();
 
-    const query = db.select().from(runs).orderBy(desc(runs.createdAt), desc(runs.id));
-    const rows = await (conditions.length > 0 ? query.where(and(...conditions)) : query);
+    // Status and the archived vocabulary go into SQL. The model substring stays
+    // in JS: it is applied before the limit, so pushing it down would need
+    // LIKE-escaping the user's value for no gain at this table size.
+    const rows = await listRunRows(scope, {
+      ...(status ? { status } : {}),
+      archived,
+      ...(modelFilter ? {} : { limit }),
+    });
 
-    const filtered = rows
-      .filter((run) => (archived === 'only' ? run.archivedAt !== null : true))
-      .filter((run) =>
-        modelFilter ? run.modelId.toLowerCase().includes(modelFilter.toLowerCase()) : true,
-      )
-      .slice(0, limit);
+    const filtered = (
+      modelFilter
+        ? rows.filter((run) => run.modelId.toLowerCase().includes(modelFilter.toLowerCase()))
+        : rows
+    ).slice(0, limit);
 
-    const resultRows =
-      filtered.length > 0
-        ? await db
-            .select({
-              runId: runResults.runId,
-              status: runResults.status,
-              rating: runResults.rating,
-              tokensPerSec: runResults.tokensPerSec,
-            })
-            .from(runResults)
-        : [];
+    const tallies = await runResultTallies(
+      scope,
+      filtered.map((run) => run.id),
+    );
 
     return {
       count: filtered.length,
       runs: filtered.map((run) => {
-        const own = resultRows.filter((row) => row.runId === run.id);
-        const rates = own
-          .map((row) => row.tokensPerSec)
-          .filter((value): value is number => typeof value === 'number');
-
+        const tally = tallies.get(run.id);
         const machine = parseJson<{ name?: string }>(run.machineSnapshot);
 
         return {
@@ -380,11 +405,11 @@ const listRuns: McpToolSpec = {
           groups: parseJson<string[]>(run.groupNames) ?? [],
           status: run.status,
           archived: run.archivedAt !== null,
-          results: summarizeResults(own),
+          results: summaryFromTally(tally),
           avg_tokens_per_sec:
-            rates.length > 0
-              ? Number((rates.reduce((sum, value) => sum + value, 0) / rates.length).toFixed(2))
-              : null,
+            tally?.avgRate === null || tally?.avgRate === undefined
+              ? null
+              : Number(tally.avgRate.toFixed(2)),
         };
       }),
     };
@@ -417,8 +442,9 @@ const getRun: McpToolSpec = {
     required: ['run_id'],
   },
   handler: async (args: ToolArgs) => {
+    const scope = await currentScope();
     const runId = requireInteger(args, 'run_id');
-    const run = await loadRun(runId);
+    const run = await loadRun(scope, runId);
     const includeResponses = optionalBoolean(args, 'include_responses', true);
     const maxChars = optionalInteger(args, 'max_response_chars') ?? DEFAULT_RESPONSE_CHARS;
     const ratingFilter = optionalEnum(args, 'rating', [
@@ -428,11 +454,7 @@ const getRun: McpToolSpec = {
       'unrated',
     ] as const);
 
-    const rows = await db
-      .select()
-      .from(runResults)
-      .where(eq(runResults.runId, runId))
-      .orderBy(asc(runResults.sortOrder), asc(runResults.id));
+    const rows = await listRunResults(scope, runId);
 
     const machine = parseJson<Record<string, unknown>>(run.machineSnapshot);
     const visible = rows.filter((row) => {
@@ -524,7 +546,7 @@ const getRunResult: McpToolSpec = {
   },
   handler: async (args: ToolArgs) => {
     const id = requireInteger(args, 'result_id');
-    const [row] = await db.select().from(runResults).where(eq(runResults.id, id));
+    const row = await getRunResultRow(await currentScope(), id);
     if (!row) {
       throw new McpToolError(`No run result with id ${id}.`);
     }
@@ -637,22 +659,15 @@ const setRatingTool: McpToolSpec = {
       throw new McpToolError(`"rating" is required and must be one of: ${RATING_ARGS.join(', ')}.`);
     }
 
-    const [row] = await db
-      .select({
-        id: runResults.id,
-        runId: runResults.runId,
-        title: runResults.promptTitle,
-        status: runResults.status,
-      })
-      .from(runResults)
-      .where(eq(runResults.id, resultId));
+    const scope = await currentScope();
+    const row = await getRunResultRow(scope, resultId);
 
     if (!row) {
       throw new McpToolError(`No run result with id ${resultId}.`);
     }
     if (row.status === 'pending' || row.status === 'running') {
       throw new McpToolError(
-        `Result ${resultId} ("${row.title}") is still ${row.status}, so there is nothing to judge yet. Poll get_run until it reports ok or error.`,
+        `Result ${resultId} ("${row.promptTitle}") is still ${row.status}, so there is nothing to judge yet. Poll get_run until it reports ok or error.`,
       );
     }
 
@@ -663,18 +678,14 @@ const setRatingTool: McpToolSpec = {
       values.ratingNote = optionalText(args, 'note');
     }
 
-    const [updated] = await db
-      .update(runResults)
-      .set(values)
-      .where(eq(runResults.id, resultId))
-      .returning({ rating: runResults.rating, ratingNote: runResults.ratingNote });
+    const updated = await rateResult(scope, resultId, values);
+    if (!updated) {
+      throw new McpToolError(`No run result with id ${resultId}.`);
+    }
 
     // The run's tally, so a grading loop can watch its own progress (and spot
     // what it has not reached yet) without a second call.
-    const siblings = await db
-      .select({ rating: runResults.rating })
-      .from(runResults)
-      .where(eq(runResults.runId, row.runId));
+    const siblings = await listResultRatings(scope, row.runId);
 
     revalidateRuns(row.runId);
 
@@ -682,7 +693,7 @@ const setRatingTool: McpToolSpec = {
       result: {
         result_id: row.id,
         run_id: row.runId,
-        title: row.title,
+        title: row.promptTitle,
         status: row.status,
         rating: updated.rating,
         rating_note: updated.ratingNote,

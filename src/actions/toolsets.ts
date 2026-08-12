@@ -1,17 +1,18 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { tools, toolsets } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import {
+  createTool as createToolRow,
+  createToolset as createToolsetRow,
+  deleteTool as deleteToolRow,
+  deleteToolset as deleteToolsetRow,
+  setToolEnabled as setToolEnabledRow,
+  updateTool as updateToolRow,
+  updateToolset as updateToolsetRow,
+} from '@/db/repo/toolsets';
 import { validateParameterSchema, validateToolName } from '@/lib/tools';
-
-function optionalString(formData: FormData, key: string): string | null {
-  const value = formData.get(key);
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
+import { optionalString } from '@/lib/form-data';
 
 /**
  * A toolset's editable fields. `mcp` toolsets need a reachable endpoint; a
@@ -61,9 +62,8 @@ function toolsetFields(formData: FormData) {
 
 export async function createToolset(formData: FormData) {
   const fields = toolsetFields(formData);
-  const now = new Date();
 
-  await db.insert(toolsets).values({ ...fields, createdAt: now, updatedAt: now });
+  await createToolsetRow(await currentScope(), { ...fields, now: new Date() });
   revalidatePath('/toolsets');
   revalidatePath('/prompts');
 }
@@ -71,10 +71,7 @@ export async function createToolset(formData: FormData) {
 export async function updateToolset(id: number, formData: FormData) {
   const fields = toolsetFields(formData);
 
-  await db
-    .update(toolsets)
-    .set({ ...fields, updatedAt: new Date() })
-    .where(eq(toolsets.id, id));
+  await updateToolsetRow(await currentScope(), id, { ...fields, now: new Date() });
 
   revalidatePath('/toolsets');
   revalidatePath('/prompts');
@@ -85,7 +82,7 @@ export async function updateToolset(id: number, formData: FormData) {
  * touches `run_results` — a past run renders from its own frozen snapshot.
  */
 export async function deleteToolset(id: number) {
-  await db.delete(toolsets).where(eq(toolsets.id, id));
+  await deleteToolsetRow(await currentScope(), id);
   revalidatePath('/toolsets');
   revalidatePath('/prompts');
 }
@@ -112,28 +109,28 @@ function toolFields(formData: FormData) {
   };
 }
 
-/** Turns a unique-constraint violation into something a user can act on. */
+/**
+ * Turns a unique-constraint violation into something a user can act on.
+ *
+ * Postgres reports it as `duplicate key value violates unique constraint`; the
+ * SQLite wording is kept so a database restored from the pre-Postgres era, or a
+ * future driver swap, still produces the readable message rather than a raw
+ * driver dump.
+ */
 function describeToolWriteError(err: unknown, name: string): Error {
   const message = err instanceof Error ? err.message : '';
-  if (/UNIQUE constraint failed/i.test(message)) {
+  if (/duplicate key value violates unique constraint|UNIQUE constraint failed/i.test(message)) {
     return new Error(`This toolset already has a tool called "${name}".`);
   }
   return err instanceof Error ? err : new Error('Failed to save tool.');
 }
 
 export async function createTool(toolsetId: number, formData: FormData) {
+  const scope = await currentScope();
   const fields = toolFields(formData);
-  const now = new Date();
 
   try {
-    await db.insert(tools).values({
-      ...fields,
-      toolsetId,
-      source: 'manual',
-      enabled: true,
-      firstSeenAt: now,
-      lastSeenAt: now,
-    });
+    await createToolRow(scope, toolsetId, { ...fields, now: new Date() });
   } catch (err) {
     throw describeToolWriteError(err, fields.name);
   }
@@ -142,13 +139,11 @@ export async function createTool(toolsetId: number, formData: FormData) {
 }
 
 export async function updateTool(id: number, formData: FormData) {
+  const scope = await currentScope();
   const fields = toolFields(formData);
 
   try {
-    await db
-      .update(tools)
-      .set({ ...fields, lastSeenAt: new Date() })
-      .where(eq(tools.id, id));
+    await updateToolRow(scope, id, { ...fields, now: new Date() });
   } catch (err) {
     throw describeToolWriteError(err, fields.name);
   }
@@ -157,7 +152,7 @@ export async function updateTool(id: number, formData: FormData) {
 }
 
 export async function deleteTool(id: number) {
-  await db.delete(tools).where(eq(tools.id, id));
+  await deleteToolRow(await currentScope(), id);
   revalidatePath('/toolsets');
 }
 
@@ -167,6 +162,6 @@ export async function deleteTool(id: number) {
  * `machine_models` treats models the same way.
  */
 export async function setToolEnabled(id: number, enabled: boolean) {
-  await db.update(tools).set({ enabled }).where(eq(tools.id, id));
+  await setToolEnabledRow(await currentScope(), id, enabled);
   revalidatePath('/toolsets');
 }

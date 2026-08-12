@@ -13,16 +13,27 @@
  */
 
 import { revalidatePath } from 'next/cache';
-import { asc, eq, inArray } from 'drizzle-orm';
-import { db } from '@/db';
+import type { Prompt } from '@/db/schema';
+import { currentScope, type Scope } from '@/db/scope';
 import {
-  promptGroups,
-  promptToolsets,
-  prompts,
-  systemPrompts,
-  tools,
-  toolsets,
-} from '@/db/schema';
+  createGroup,
+  createPrompt as createPromptRow,
+  deletePrompt as deletePromptRow,
+  getPrompt as getPromptRow,
+  listGroups,
+  listPromptToolsetViews,
+  listPrompts as listPromptRows,
+  listToolsetLinks,
+  promptCountsByGroup,
+  replaceToolsetLinks,
+  updatePrompt as updatePromptRow,
+} from '@/db/repo/prompts';
+import {
+  createSystemPrompt as createSystemPromptRow,
+  listSystemPrompts as listSystemPromptRows,
+  updateSystemPrompt as updateSystemPromptRow,
+} from '@/db/repo/system-prompts';
+import { listTools, listToolsets as listToolsetRows } from '@/db/repo/toolsets';
 import { resolveEffectiveSystemPrompt, type SystemPromptMode } from '@/lib/system-prompt';
 import {
   collectToolNameCollisions,
@@ -66,39 +77,32 @@ function revalidateAuthoring() {
 // Shared lookups
 // ---------------------------------------------------------------------------
 
-async function allGroups() {
-  return db
-    .select()
-    .from(promptGroups)
-    .orderBy(asc(promptGroups.sortOrder), asc(promptGroups.id));
+async function allGroups(scope: Scope) {
+  return listGroups(scope, 'sort-id');
 }
 
-async function allSystemPrompts() {
-  return db.select().from(systemPrompts).orderBy(asc(systemPrompts.name));
+async function allSystemPrompts(scope: Scope) {
+  return listSystemPromptRows(scope, 'name');
 }
 
-async function allToolsets() {
-  return db.select().from(toolsets).orderBy(asc(toolsets.name));
+async function allToolsets(scope: Scope) {
+  return listToolsetRows(scope);
 }
 
-async function resolveGroup(ref: RowRef) {
-  return resolveRowRef(ref, await allGroups(), 'prompt group');
+async function resolveGroup(scope: Scope, ref: RowRef) {
+  return resolveRowRef(ref, await allGroups(scope), 'prompt group');
 }
 
-async function resolveSystemPrompt(ref: RowRef) {
-  return resolveRowRef(ref, await allSystemPrompts(), 'system prompt');
+async function resolveSystemPrompt(scope: Scope, ref: RowRef) {
+  return resolveRowRef(ref, await allSystemPrompts(scope), 'system prompt');
 }
 
 /** Resolves toolset refs and reports which of their tools are usable. */
-async function resolveToolsets(refs: RowRef[]) {
-  const rows = await allToolsets();
+async function resolveToolsets(scope: Scope, refs: RowRef[]) {
+  const rows = await allToolsets(scope);
   const resolved = refs.map((ref) => resolveRowRef(ref, rows, 'toolset'));
 
-  const ids = resolved.map((row) => row.id);
-  const toolRows =
-    ids.length > 0
-      ? await db.select().from(tools).where(inArray(tools.toolsetId, ids))
-      : [];
+  const toolRows = await listTools(scope, { toolsetIds: resolved.map((row) => row.id) });
 
   return resolved.map((toolset) => ({
     ...toolset,
@@ -110,7 +114,7 @@ async function resolveToolsets(refs: RowRef[]) {
  * The tool configuration a prompt would send, checked the way the editor checks
  * it. Returns nothing; throws with the fix when the combination is unusable.
  */
-async function assertToolConfig(toolMode: ToolMode, toolsetRefs: RowRef[]) {
+async function assertToolConfig(scope: Scope, toolMode: ToolMode, toolsetRefs: RowRef[]) {
   if (toolMode === 'none') return;
 
   if (toolsetRefs.length === 0) {
@@ -119,7 +123,7 @@ async function assertToolConfig(toolMode: ToolMode, toolsetRefs: RowRef[]) {
     );
   }
 
-  const resolved = await resolveToolsets(toolsetRefs);
+  const resolved = await resolveToolsets(scope, toolsetRefs);
   const offered = resolved.flatMap((toolset) =>
     toolset.tools.filter((tool) => tool.enabled).map((tool) => ({ name: tool.name })),
   );
@@ -140,16 +144,6 @@ async function assertToolConfig(toolMode: ToolMode, toolsetRefs: RowRef[]) {
   }
 }
 
-/** Rewrites a prompt's toolset links, like the editor's save does. */
-async function replaceToolsetLinks(promptId: number, toolsetIds: number[]) {
-  await db.delete(promptToolsets).where(eq(promptToolsets.promptId, promptId));
-  if (toolsetIds.length === 0) return;
-
-  await db.insert(promptToolsets).values(
-    toolsetIds.map((toolsetId, index) => ({ promptId, toolsetId, sortOrder: index })),
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Prompt views
 // ---------------------------------------------------------------------------
@@ -164,27 +158,18 @@ interface PromptViewOptions {
  * so a client can check what a run would actually send without reimplementing
  * append/override itself.
  */
-async function promptViews(rows: (typeof prompts.$inferSelect)[], options: PromptViewOptions) {
+async function promptViews(scope: Scope, rows: Prompt[], options: PromptViewOptions) {
   if (rows.length === 0) return [];
 
-  const groups = await allGroups();
+  const groups = await allGroups(scope);
   const groupById = new Map(groups.map((group) => [group.id, group]));
-  const systemPromptRows = await allSystemPrompts();
+  const systemPromptRows = await allSystemPrompts(scope);
   const systemPromptById = new Map(systemPromptRows.map((row) => [row.id, row]));
 
-  const promptIds = rows.map((row) => row.id);
-  const links = await db
-    .select({
-      promptId: promptToolsets.promptId,
-      toolsetId: toolsets.id,
-      name: toolsets.name,
-      kind: toolsets.kind,
-      sortOrder: promptToolsets.sortOrder,
-    })
-    .from(promptToolsets)
-    .innerJoin(toolsets, eq(promptToolsets.toolsetId, toolsets.id))
-    .where(inArray(promptToolsets.promptId, promptIds))
-    .orderBy(asc(promptToolsets.promptId), asc(promptToolsets.sortOrder));
+  const links = await listPromptToolsetViews(
+    scope,
+    rows.map((row) => row.id),
+  );
 
   return rows.map((row) => {
     const base = row.systemPromptId
@@ -230,12 +215,12 @@ async function promptViews(rows: (typeof prompts.$inferSelect)[], options: Promp
   });
 }
 
-async function promptViewById(id: number) {
-  const [row] = await db.select().from(prompts).where(eq(prompts.id, id));
+async function promptViewById(scope: Scope, id: number) {
+  const row = await getPromptRow(scope, id);
   if (!row) {
     throw new McpToolError(`No prompt with id ${id}.`);
   }
-  const [view] = await promptViews([row], { includeContent: true, maxContentChars: 0 });
+  const [view] = await promptViews(scope, [row], { includeContent: true, maxContentChars: 0 });
   return view;
 }
 
@@ -250,17 +235,16 @@ const listPromptGroups: McpToolSpec = {
   readOnly: true,
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
-    const groups = await allGroups();
-    const promptRows = await db
-      .select({ id: prompts.id, groupId: prompts.groupId })
-      .from(prompts);
+    const scope = await currentScope();
+    const groups = await allGroups(scope);
+    const counts = await promptCountsByGroup(scope);
 
     return {
       groups: groups.map((group) => ({
         id: group.id,
         name: group.name,
         description: group.description,
-        prompt_count: promptRows.filter((row) => row.groupId === group.id).length,
+        prompt_count: counts.get(group.id) ?? 0,
         created_at: group.createdAt.getTime(),
       })),
     };
@@ -283,10 +267,11 @@ const createPromptGroup: McpToolSpec = {
     required: ['name'],
   },
   handler: async (args: ToolArgs) => {
+    const scope = await currentScope();
     const name = requireString(args, 'name');
     const description = optionalString(args, 'description');
 
-    const existing = (await allGroups()).find(
+    const existing = (await allGroups(scope)).find(
       (group) => group.name.trim().toLowerCase() === name.toLowerCase(),
     );
     if (existing) {
@@ -300,10 +285,7 @@ const createPromptGroup: McpToolSpec = {
       };
     }
 
-    const [row] = await db
-      .insert(promptGroups)
-      .values({ name, description, sortOrder: 0, createdAt: new Date() })
-      .returning({ id: promptGroups.id });
+    const row = await createGroup(scope, { name, description, now: new Date() });
 
     revalidateAuthoring();
     return { created: true, group: { id: row.id, name, description } };
@@ -317,7 +299,7 @@ const listSystemPrompts: McpToolSpec = {
   readOnly: true,
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
-    const rows = await allSystemPrompts();
+    const rows = await allSystemPrompts(await currentScope());
     return {
       system_prompts: rows.map((row) => ({
         id: row.id,
@@ -343,10 +325,11 @@ const createSystemPrompt: McpToolSpec = {
     required: ['name', 'content'],
   },
   handler: async (args: ToolArgs) => {
+    const scope = await currentScope();
     const name = requireString(args, 'name');
     const content = requireText(args, 'content');
 
-    const existing = (await allSystemPrompts()).find(
+    const existing = (await allSystemPrompts(scope)).find(
       (row) => row.name.trim().toLowerCase() === name.toLowerCase(),
     );
     if (existing) {
@@ -355,11 +338,7 @@ const createSystemPrompt: McpToolSpec = {
       );
     }
 
-    const now = new Date();
-    const [row] = await db
-      .insert(systemPrompts)
-      .values({ name, content, createdAt: now, updatedAt: now })
-      .returning({ id: systemPrompts.id });
+    const row = await createSystemPromptRow(scope, { name, content, now: new Date() });
 
     revalidateAuthoring();
     return { system_prompt: { id: row.id, name, content } };
@@ -383,14 +362,12 @@ const updateSystemPrompt: McpToolSpec = {
     required: ['system_prompt'],
   },
   handler: async (args: ToolArgs) => {
-    const target = await resolveSystemPrompt(requireRowRef(args, 'system_prompt'));
+    const scope = await currentScope();
+    const target = await resolveSystemPrompt(scope, requireRowRef(args, 'system_prompt'));
     const name = hasKey(args, 'name') ? requireString(args, 'name') : target.name;
     const content = hasKey(args, 'content') ? requireText(args, 'content') : target.content;
 
-    await db
-      .update(systemPrompts)
-      .set({ name, content, updatedAt: new Date() })
-      .where(eq(systemPrompts.id, target.id));
+    await updateSystemPromptRow(scope, target.id, { name, content, now: new Date() });
 
     revalidateAuthoring();
     return { system_prompt: { id: target.id, name, content } };
@@ -404,8 +381,9 @@ const listToolsets: McpToolSpec = {
   readOnly: true,
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
-    const rows = await allToolsets();
-    const toolRows = await db.select().from(tools).orderBy(asc(tools.name));
+    const scope = await currentScope();
+    const rows = await allToolsets(scope);
+    const toolRows = await listTools(scope);
 
     return {
       toolsets: rows.map((toolset) => ({
@@ -449,21 +427,13 @@ const listPrompts: McpToolSpec = {
     },
   },
   handler: async (args: ToolArgs) => {
+    const scope = await currentScope();
     const groupRef = optionalRowRef(args, 'group');
-    const group = groupRef ? await resolveGroup(groupRef) : null;
+    const group = groupRef ? await resolveGroup(scope, groupRef) : null;
 
-    const rows = group
-      ? await db
-          .select()
-          .from(prompts)
-          .where(eq(prompts.groupId, group.id))
-          .orderBy(asc(prompts.sortOrder), asc(prompts.id))
-      : await db
-          .select()
-          .from(prompts)
-          .orderBy(asc(prompts.groupId), asc(prompts.sortOrder), asc(prompts.id));
+    const rows = await listPromptRows(scope, group ? { groupId: group.id } : {});
 
-    const views = await promptViews(rows, {
+    const views = await promptViews(scope, rows, {
       includeContent: optionalBoolean(args, 'include_content', true),
       maxContentChars: optionalInteger(args, 'max_content_chars') ?? 0,
     });
@@ -482,7 +452,7 @@ const getPrompt: McpToolSpec = {
     required: ['prompt_id'],
   },
   handler: async (args: ToolArgs) => ({
-    prompt: await promptViewById(requireInteger(args, 'prompt_id')),
+    prompt: await promptViewById(await currentScope(), requireInteger(args, 'prompt_id')),
   }),
 };
 
@@ -541,12 +511,15 @@ const createPrompt: McpToolSpec = {
     required: ['group', 'title', 'content'],
   },
   handler: async (args: ToolArgs) => {
-    const group = await resolveGroup(requireRowRef(args, 'group'));
+    const scope = await currentScope();
+    const group = await resolveGroup(scope, requireRowRef(args, 'group'));
     const title = requireString(args, 'title');
     const content = requireText(args, 'content');
     const expectedOutput = optionalText(args, 'expected_output');
     const systemPromptRef = optionalRowRef(args, 'system_prompt');
-    const systemPrompt = systemPromptRef ? await resolveSystemPrompt(systemPromptRef) : null;
+    const systemPrompt = systemPromptRef
+      ? await resolveSystemPrompt(scope, systemPromptRef)
+      : null;
     const systemPromptMode =
       optionalEnum(args, 'system_prompt_mode', SYSTEM_PROMPT_MODES) ?? 'append';
     const customSystemText = optionalText(args, 'custom_system_text');
@@ -555,36 +528,35 @@ const createPrompt: McpToolSpec = {
     const maxTurns = normalizeMaxTurns(optionalInteger(args, 'max_turns'));
     const toolsetRefs = optionalRowRefList(args, 'toolsets') ?? [];
 
-    await assertToolConfig(toolMode, toolsetRefs);
-    const resolvedToolsets = toolsetRefs.length > 0 ? await resolveToolsets(toolsetRefs) : [];
+    await assertToolConfig(scope, toolMode, toolsetRefs);
+    const resolvedToolsets =
+      toolsetRefs.length > 0 ? await resolveToolsets(scope, toolsetRefs) : [];
 
     const now = new Date();
-    const [row] = await db
-      .insert(prompts)
-      .values({
-        groupId: group.id,
-        title,
-        content,
-        expectedOutput,
-        systemPromptId: systemPrompt?.id ?? null,
-        systemPromptMode,
-        customSystemText,
-        toolMode: toolMode as ToolMode,
-        toolChoice: toolChoice as ToolChoice | null,
-        maxTurns,
-        sortOrder: 0,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning({ id: prompts.id });
+    const row = await createPromptRow(scope, {
+      groupId: group.id,
+      title,
+      content,
+      expectedOutput,
+      systemPromptId: systemPrompt?.id ?? null,
+      systemPromptMode,
+      customSystemText,
+      toolMode: toolMode as ToolMode,
+      toolChoice: toolChoice as ToolChoice | null,
+      maxTurns,
+      sortOrder: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
 
     await replaceToolsetLinks(
+      scope,
       row.id,
       resolvedToolsets.map((toolset) => toolset.id),
     );
 
     revalidateAuthoring();
-    return { prompt: await promptViewById(row.id) };
+    return { prompt: await promptViewById(scope, row.id) };
   },
 };
 
@@ -618,16 +590,17 @@ const updatePrompt: McpToolSpec = {
     required: ['prompt_id'],
   },
   handler: async (args: ToolArgs) => {
+    const scope = await currentScope();
     const id = requireInteger(args, 'prompt_id');
-    const [existing] = await db.select().from(prompts).where(eq(prompts.id, id));
+    const existing = await getPromptRow(scope, id);
     if (!existing) {
       throw new McpToolError(`No prompt with id ${id}.`);
     }
 
-    const values: Partial<typeof prompts.$inferInsert> = { updatedAt: new Date() };
+    const values: Partial<Prompt> = { updatedAt: new Date() };
 
     if (hasKey(args, 'group')) {
-      values.groupId = (await resolveGroup(requireRowRef(args, 'group'))).id;
+      values.groupId = (await resolveGroup(scope, requireRowRef(args, 'group'))).id;
     }
     if (hasKey(args, 'title')) values.title = requireString(args, 'title');
     if (hasKey(args, 'content')) values.content = requireText(args, 'content');
@@ -636,7 +609,7 @@ const updatePrompt: McpToolSpec = {
     }
     if (hasKey(args, 'system_prompt')) {
       const ref = optionalRowRef(args, 'system_prompt');
-      values.systemPromptId = ref ? (await resolveSystemPrompt(ref)).id : null;
+      values.systemPromptId = ref ? (await resolveSystemPrompt(scope, ref)).id : null;
     }
     if (hasKey(args, 'system_prompt_mode')) {
       values.systemPromptMode =
@@ -664,28 +637,25 @@ const updatePrompt: McpToolSpec = {
     if (toolsetRefs !== null) {
       effectiveRefs = toolsetRefs;
     } else {
-      const links = await db
-        .select({ toolsetId: promptToolsets.toolsetId })
-        .from(promptToolsets)
-        .where(eq(promptToolsets.promptId, id))
-        .orderBy(asc(promptToolsets.sortOrder));
+      const links = await listToolsetLinks(scope, [id]);
       effectiveRefs = links.map((link) => ({ kind: 'id' as const, id: link.toolsetId }));
     }
 
-    await assertToolConfig(effectiveMode, effectiveRefs);
+    await assertToolConfig(scope, effectiveMode, effectiveRefs);
 
-    await db.update(prompts).set(values).where(eq(prompts.id, id));
+    await updatePromptRow(scope, id, values);
 
     if (toolsetRefs !== null) {
-      const resolved = toolsetRefs.length > 0 ? await resolveToolsets(toolsetRefs) : [];
+      const resolved = toolsetRefs.length > 0 ? await resolveToolsets(scope, toolsetRefs) : [];
       await replaceToolsetLinks(
+        scope,
         id,
         resolved.map((toolset) => toolset.id),
       );
     }
 
     revalidateAuthoring();
-    return { prompt: await promptViewById(id) };
+    return { prompt: await promptViewById(scope, id) };
   },
 };
 
@@ -700,16 +670,14 @@ const deletePrompt: McpToolSpec = {
     required: ['prompt_id'],
   },
   handler: async (args: ToolArgs) => {
+    const scope = await currentScope();
     const id = requireInteger(args, 'prompt_id');
-    const [existing] = await db
-      .select({ id: prompts.id, title: prompts.title })
-      .from(prompts)
-      .where(eq(prompts.id, id));
+    const existing = await getPromptRow(scope, id);
     if (!existing) {
       throw new McpToolError(`No prompt with id ${id}.`);
     }
 
-    await db.delete(prompts).where(eq(prompts.id, id));
+    await deletePromptRow(scope, id);
     revalidateAuthoring();
     return { deleted: { id: existing.id, title: existing.title } };
   },

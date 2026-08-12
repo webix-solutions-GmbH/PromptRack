@@ -1,9 +1,15 @@
 import Link from 'next/link';
-import { desc } from 'drizzle-orm';
-import { db } from '@/db';
-import { machines, prompts, runResults, runs } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { listMachines } from '@/db/repo/machines';
+import { countPrompts } from '@/db/repo/prompts';
+import {
+  countArchivedRuns,
+  countRuns,
+  listRunSummaries,
+  ratingTotals,
+} from '@/db/repo/runs';
 import { formatDateTime, formatRate, snapshotMachineName } from '@/lib/format';
-import { countRatings, RATING_META } from '@/lib/rating';
+import { RATING_META } from '@/lib/rating';
 import { StatusBadge } from '@/components/runs/status-badge';
 
 export const dynamic = 'force-dynamic';
@@ -20,44 +26,26 @@ function StatCard({ label, value }: { label: string; value: string }) {
 }
 
 export default async function Home() {
-  const [runRows, machineRows, promptRows, resultRows] = await Promise.all([
-    db.select().from(runs).orderBy(desc(runs.createdAt), desc(runs.id)),
-    db.select().from(machines),
-    db.select().from(prompts),
-    db
-      .select({
-        runId: runResults.runId,
-        status: runResults.status,
-        rating: runResults.rating,
-        tokensPerSec: runResults.tokensPerSec,
-      })
-      .from(runResults),
-  ]);
-
   // Archiving a run takes it out of the picture here too — the dashboard is a
   // view of work in play, not an all-time total.
-  const activeRuns = runRows.filter((run) => run.archivedAt === null);
-  const activeRunIds = new Set(activeRuns.map((run) => run.id));
-  const activeResults = resultRows.filter((result) => activeRunIds.has(result.runId));
+  const scope = await currentScope();
+  const [activeRunRows, activeRunCount, machineRows, promptCount, totals, archivedCount] =
+    await Promise.all([
+      listRunSummaries(scope, {
+        archived: 'exclude',
+        machineId: null,
+        modelId: null,
+        groupName: null,
+        status: null,
+      }),
+      countRuns(scope, { archived: 'exclude' }),
+      listMachines(scope),
+      countPrompts(scope),
+      ratingTotals(scope, { archived: 'exclude' }),
+      countArchivedRuns(scope),
+    ]);
 
-  const totals = countRatings(activeResults.map((result) => result.rating));
-  const archivedCount = runRows.length - activeRuns.length;
-
-  const recentRuns = activeRuns.slice(0, 10).map((run) => {
-    const results = resultRows.filter((result) => result.runId === run.id);
-    const rates = results
-      .map((result) => result.tokensPerSec)
-      .filter((rate): rate is number => typeof rate === 'number');
-
-    return {
-      run,
-      ok: results.filter((result) => result.status === 'ok').length,
-      error: results.filter((result) => result.status === 'error').length,
-      ...countRatings(results.map((result) => result.rating)),
-      avgRate:
-        rates.length > 0 ? rates.reduce((total, rate) => total + rate, 0) / rates.length : null,
-    };
-  });
+  const recentRuns = activeRunRows.slice(0, 10);
 
   return (
     <div className="flex flex-1 flex-col gap-8 p-8">
@@ -96,9 +84,9 @@ export default async function Home() {
       </div>
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-        <StatCard label="Active runs" value={String(activeRuns.length)} />
+        <StatCard label="Active runs" value={String(activeRunCount)} />
         <StatCard label="Machines" value={String(machineRows.length)} />
-        <StatCard label="Prompts" value={String(promptRows.length)} />
+        <StatCard label="Prompts" value={String(promptCount)} />
         <StatCard label="Good ratings" value={String(totals.good)} />
         <StatCard label="Meh ratings" value={String(totals.meh)} />
         <StatCard label="Bad ratings" value={String(totals.bad)} />

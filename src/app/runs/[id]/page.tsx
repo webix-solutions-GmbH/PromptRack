@@ -1,7 +1,6 @@
 import { notFound } from 'next/navigation';
-import { asc, eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { runResults, runs } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { getRun, listRunResults } from '@/db/repo/runs';
 import { parseLlmInfo } from '@/lib/llm-info';
 import { parseRating } from '@/lib/rating';
 import type { RunResultStatus, RunStatus } from '@/lib/run-events';
@@ -63,16 +62,13 @@ export default async function RunDetailPage({
     notFound();
   }
 
-  const [run] = await db.select().from(runs).where(eq(runs.id, id));
+  const scope = await currentScope();
+  const run = await getRun(scope, id);
   if (!run) {
     notFound();
   }
 
-  const rows = await db
-    .select()
-    .from(runResults)
-    .where(eq(runResults.runId, id))
-    .orderBy(asc(runResults.sortOrder), asc(runResults.id));
+  const rows = await listRunResults(scope, id);
 
   const snapshot = parseSnapshot(run.machineSnapshot);
 

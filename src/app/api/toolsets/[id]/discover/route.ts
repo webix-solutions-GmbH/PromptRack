@@ -1,7 +1,6 @@
 import { revalidatePath } from 'next/cache';
-import { eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { tools, toolsets } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { getToolset, syncDiscoveredTools } from '@/db/repo/toolsets';
 import { listMcpTools, parseMcpHeaders } from '@/lib/mcp-client';
 
 export const dynamic = 'force-dynamic';
@@ -24,7 +23,8 @@ export async function POST(
     return Response.json({ ok: false, error: 'Invalid toolset id.' }, { status: 400 });
   }
 
-  const [toolset] = await db.select().from(toolsets).where(eq(toolsets.id, id));
+  const scope = await currentScope();
+  const toolset = await getToolset(scope, id);
   if (!toolset) {
     return Response.json({ ok: false, error: 'Toolset not found.' }, { status: 404 });
   }
@@ -48,49 +48,15 @@ export async function POST(
     });
   }
 
-  const now = new Date();
-  const existingRows = await db.select().from(tools).where(eq(tools.toolsetId, id));
-  const existingByName = new Map(existingRows.map((row) => [row.name, row]));
-
-  for (const tool of discovered) {
-    const existing = existingByName.get(tool.name);
-    const values = {
-      description: tool.description,
-      parametersJson: JSON.stringify(tool.parameters),
-      enabled: true,
-      lastSeenAt: now,
-    };
-
-    if (existing) {
-      // Re-enable and refresh the schema, but leave a hand-written canned
-      // response alone — it is useful for testing this tool without the server.
-      await db.update(tools).set(values).where(eq(tools.id, existing.id));
-    } else {
-      await db.insert(tools).values({
-        ...values,
-        toolsetId: id,
-        name: tool.name,
-        source: 'mcp',
-        firstSeenAt: now,
-      });
-    }
-  }
-
-  const discoveredNames = new Set(discovered.map((tool) => tool.name));
-  const retired = existingRows.filter(
-    (row) => row.source === 'mcp' && row.enabled && !discoveredNames.has(row.name),
-  );
-  for (const row of retired) {
-    await db.update(tools).set({ enabled: false }).where(eq(tools.id, row.id));
-  }
+  const synced = await syncDiscoveredTools(scope, id, discovered);
 
   revalidatePath('/toolsets');
   revalidatePath('/prompts');
 
   return Response.json({
     ok: true,
-    discovered: discovered.length,
-    retired: retired.length,
+    discovered: synced.discovered,
+    retired: synced.retired,
     tools: discovered.map((tool) => tool.name),
   });
 }

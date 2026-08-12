@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db';
+import { currentScope } from '@/db/scope';
 import {
   machines,
   promptGroups,
@@ -103,7 +104,7 @@ describe('createRunRecord', () => {
   it('freezes prompt text, system prompt and tools against later edits', async () => {
     const fixture = await seedFixture();
 
-    const created = await createRunRecord({
+    const created = await createRunRecord(await currentScope(), {
       machineId: fixture.machine.id,
       modelId: 'qwen3-32b',
       groupIds: [fixture.group.id],
@@ -152,7 +153,7 @@ describe('createRunRecord', () => {
     state.failResolve = true;
 
     await expect(
-      createRunRecord({
+      createRunRecord(await currentScope(), {
         machineId: fixture.machine.id,
         modelId: 'qwen3-32b',
         groupIds: [fixture.group.id],

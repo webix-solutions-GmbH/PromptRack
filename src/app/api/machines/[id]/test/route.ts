@@ -1,6 +1,5 @@
-import { eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { machines } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { getMachine } from '@/db/repo/machines';
 import { describeFetchError } from '@/lib/fetch-error';
 
 export const dynamic = 'force-dynamic';
@@ -15,7 +14,7 @@ export async function POST(
     return Response.json({ ok: false, error: 'Invalid machine id.' }, { status: 400 });
   }
 
-  const [machine] = await db.select().from(machines).where(eq(machines.id, id));
+  const machine = await getMachine(await currentScope(), id);
   if (!machine) {
     return Response.json({ ok: false, error: 'Machine not found.' }, { status: 404 });
   }

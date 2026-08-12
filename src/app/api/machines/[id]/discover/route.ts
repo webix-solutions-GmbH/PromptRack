@@ -1,7 +1,6 @@
 import { revalidatePath } from 'next/cache';
-import { eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { machineModels, machines } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { getMachine, syncDiscoveredModels } from '@/db/repo/machines';
 import { describeFetchError } from '@/lib/fetch-error';
 
 export const dynamic = 'force-dynamic';
@@ -16,7 +15,8 @@ export async function POST(
     return Response.json({ ok: false, error: 'Invalid machine id.' }, { status: 400 });
   }
 
-  const [machine] = await db.select().from(machines).where(eq(machines.id, id));
+  const scope = await currentScope();
+  const machine = await getMachine(scope, id);
   if (!machine) {
     return Response.json({ ok: false, error: 'Machine not found.' }, { status: 404 });
   }
@@ -65,44 +65,7 @@ export async function POST(
     .map((item) => (item && typeof item === 'object' ? (item as { id?: unknown }).id : undefined))
     .filter((value): value is string => typeof value === 'string' && value.length > 0);
 
-  const now = new Date();
-  const existingRows = await db
-    .select()
-    .from(machineModels)
-    .where(eq(machineModels.machineId, id));
-  const existingByModelId = new Map(existingRows.map((row) => [row.modelId, row]));
-
-  for (const modelId of discoveredIds) {
-    const existing = existingByModelId.get(modelId);
-    if (existing) {
-      await db
-        .update(machineModels)
-        .set({ lastSeenAt: now, currentlyLoaded: true })
-        .where(eq(machineModels.id, existing.id));
-    } else {
-      await db.insert(machineModels).values({
-        machineId: id,
-        modelId,
-        source: 'discovered',
-        currentlyLoaded: true,
-        firstSeenAt: now,
-        lastSeenAt: now,
-      });
-    }
-  }
-
-  // Anything previously seen for this machine but absent from this response
-  // is no longer loaded — flip the flag but never delete the row (history).
-  const discoveredSet = new Set(discoveredIds);
-  const noLongerLoaded = existingRows.filter(
-    (row) => row.currentlyLoaded && !discoveredSet.has(row.modelId),
-  );
-  for (const row of noLongerLoaded) {
-    await db
-      .update(machineModels)
-      .set({ currentlyLoaded: false })
-      .where(eq(machineModels.id, row.id));
-  }
+  await syncDiscoveredModels(scope, id, discoveredIds);
 
   revalidatePath(`/machines/${id}`);
   revalidatePath('/machines');

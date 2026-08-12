@@ -1,7 +1,6 @@
 import Link from 'next/link';
-import { desc } from 'drizzle-orm';
-import { db } from '@/db';
-import { machineModels, machines } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { listMachines, machineModelCounts } from '@/db/repo/machines';
 import { formatDateTime } from '@/lib/format';
 import { createMachine } from '@/actions/machines';
 import { CreateToggle } from '@/components/create-toggle';
@@ -13,15 +12,18 @@ const inputClass =
 const labelClass = 'text-xs font-medium text-zinc-600 dark:text-zinc-400';
 
 async function getMachinesWithCounts() {
-  const rows = await db.select().from(machines).orderBy(desc(machines.createdAt));
-  const models = await db.select().from(machineModels);
+  const scope = await currentScope();
+  const [rows, counts] = await Promise.all([
+    listMachines(scope, 'created'),
+    machineModelCounts(scope),
+  ]);
 
   return rows.map((machine) => {
-    const forMachine = models.filter((m) => m.machineId === machine.id);
+    const count = counts.get(machine.id);
     return {
       machine,
-      total: forMachine.length,
-      loaded: forMachine.filter((m) => m.currentlyLoaded).length,
+      total: count?.total ?? 0,
+      loaded: count?.loaded ?? 0,
     };
   });
 }

@@ -1,6 +1,5 @@
-import { and, eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { runResults, runs } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { countPendingResults, getRun } from '@/db/repo/runs';
 import { executeRun, isRunExecuting } from '@/lib/run-executor';
 import type { RunEvent, RunStatus } from '@/lib/run-events';
 
@@ -27,7 +26,8 @@ export async function POST(
     return Response.json({ error: 'Invalid run id.' }, { status: 400 });
   }
 
-  const [run] = await db.select().from(runs).where(eq(runs.id, runId));
+  const scope = await currentScope();
+  const run = await getRun(scope, runId);
   if (!run) {
     return Response.json({ error: 'Run not found.' }, { status: 404 });
   }
@@ -36,14 +36,11 @@ export async function POST(
     return Response.json({ error: 'This run is already executing.' }, { status: 409 });
   }
 
-  const pending = await db
-    .select({ id: runResults.id })
-    .from(runResults)
-    .where(and(eq(runResults.runId, runId), eq(runResults.status, 'pending')));
+  const pending = await countPendingResults(scope, runId);
 
   const encoder = new TextEncoder();
 
-  if (pending.length === 0) {
+  if (pending === 0) {
     const event: RunEvent = {
       type: 'runDone',
       runId,

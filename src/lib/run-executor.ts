@@ -1,6 +1,15 @@
-import { and, asc, eq, inArray } from 'drizzle-orm';
-import { db } from '@/db';
-import { machines, runResults, runs, toolsets } from '@/db/schema';
+import type { Scope } from '@/db/scope';
+import { getMachine } from '@/db/repo/machines';
+import { listMcpServers } from '@/db/repo/toolsets';
+import {
+  countPendingResults,
+  getRunResult,
+  listResultStatuses,
+  resetResultsInStatus,
+  scopeForRun,
+  updateRunResult,
+  updateRunStatus,
+} from '@/db/repo/runs';
 import { LlmError } from './llm';
 import { acquireRunLock } from './run-lock';
 import { callMcpTool, parseMcpHeaders, type McpServer } from './mcp-client';
@@ -68,16 +77,16 @@ function errorMessage(err: unknown): string {
  * machine's `base_url`. Returns null when the snapshot has no MCP tools, in
  * which case nothing needs to be looked up at all.
  */
-async function buildMcpExecutor(snapshot: SnapshotTool[]): Promise<ToolExecutor | null> {
+async function buildMcpExecutor(
+  scope: Scope,
+  snapshot: SnapshotTool[],
+): Promise<ToolExecutor | null> {
   const toolsetIds = [
     ...new Set(snapshot.filter((entry) => entry.source === 'mcp').map((entry) => entry.toolsetId)),
   ];
   if (toolsetIds.length === 0) return null;
 
-  const rows = await db
-    .select({ id: toolsets.id, mcpUrl: toolsets.mcpUrl, mcpHeaders: toolsets.mcpHeaders })
-    .from(toolsets)
-    .where(inArray(toolsets.id, toolsetIds));
+  const rows = await listMcpServers(scope, toolsetIds);
 
   const serverById = new Map<number, McpServer>();
   for (const row of rows) {
@@ -146,24 +155,20 @@ export async function executeRun(
   }
 
   try {
-    const [run] = await db.select().from(runs).where(eq(runs.id, runId));
-    if (!run) {
+    // The executor runs outside any request (MCP `execute_run` is
+    // fire-and-forget), so its scope comes from the run row itself.
+    const found = await scopeForRun(runId);
+    if (!found) {
       throw new Error(`Run ${runId} not found.`);
     }
+    const { scope, run } = found;
 
     // Rows stuck in 'running' are leftovers from a crashed process — once the
     // guard above is held, no other execution of this run can be live, so
     // reclaim them as 'pending' and let this execution redo them.
-    await db
-      .update(runResults)
-      .set(RESET_TO_PENDING)
-      .where(and(eq(runResults.runId, runId), eq(runResults.status, 'running')));
+    await resetResultsInStatus(scope, runId, 'running', RESET_TO_PENDING);
 
-    const allResults = await db
-      .select({ id: runResults.id, status: runResults.status })
-      .from(runResults)
-      .where(eq(runResults.runId, runId))
-      .orderBy(asc(runResults.sortOrder), asc(runResults.id));
+    const allResults = await listResultStatuses(scope, runId);
 
     const total = allResults.length;
     const pendingIds = allResults
@@ -182,7 +187,7 @@ export async function executeRun(
     // created; prefer live credentials, fall back to the snapshot's URL.
     let endpoint: Endpoint | null = null;
     if (run.machineId !== null) {
-      const [machine] = await db.select().from(machines).where(eq(machines.id, run.machineId));
+      const machine = await getMachine(scope, run.machineId);
       if (machine) {
         endpoint = { baseUrl: machine.baseUrl, apiKey: machine.apiKey };
       }
@@ -197,10 +202,11 @@ export async function executeRun(
 
     const params = parseParams(run.params);
 
-    await db
-      .update(runs)
-      .set({ status: 'running', startedAt: run.startedAt ?? new Date(), finishedAt: null })
-      .where(eq(runs.id, runId));
+    await updateRunStatus(scope, runId, {
+      status: 'running',
+      startedAt: run.startedAt ?? new Date(),
+      finishedAt: null,
+    });
 
     let aborted = false;
     let succeeded = 0;
@@ -214,13 +220,14 @@ export async function executeRun(
         break;
       }
 
-      const [result] = await db.select().from(runResults).where(eq(runResults.id, resultId));
+      const result = await getRunResult(scope, resultId);
       if (!result || result.status !== 'pending') continue;
 
-      await db
-        .update(runResults)
-        .set({ ...RESET_TO_PENDING, status: 'running', startedAt: new Date() })
-        .where(eq(runResults.id, resultId));
+      await updateRunResult(scope, runId, resultId, {
+        ...RESET_TO_PENDING,
+        status: 'running',
+        startedAt: new Date(),
+      });
 
       emit({
         type: 'resultStart',
@@ -232,7 +239,7 @@ export async function executeRun(
       const snapshot = parseToolsSnapshot(result.toolsSnapshot);
       const toolRun = snapshot.length > 0 && result.toolMode !== 'none';
       const executeTool =
-        result.toolMode === 'execute' ? await buildMcpExecutor(snapshot) : null;
+        result.toolMode === 'execute' ? await buildMcpExecutor(scope, snapshot) : null;
 
       let lastDeltaAt = 0;
       const startedAt = Date.now();
@@ -276,10 +283,8 @@ export async function executeRun(
             emit({ type: 'toolResult', resultId, turn, message }),
         });
 
-        await db
-          .update(runResults)
-          .set({
-            status: 'ok',
+        await updateRunResult(scope, runId, resultId, {
+          status: 'ok',
             responseText: outcome.text,
             error: null,
             durationMs: outcome.durationMs,
@@ -294,10 +299,9 @@ export async function executeRun(
             turnsJson: toolRun ? JSON.stringify(outcome.turns) : null,
             turnCount: toolRun ? outcome.turns.length : null,
             toolCallCount: toolRun ? outcome.toolCallCount : null,
-            stoppedReason: toolRun ? outcome.stoppedReason : null,
-            finishedAt: new Date(),
-          })
-          .where(eq(runResults.id, resultId));
+          stoppedReason: toolRun ? outcome.stoppedReason : null,
+          finishedAt: new Date(),
+        });
 
         succeeded += 1;
         emit({
@@ -329,10 +333,7 @@ export async function executeRun(
         if (isAbort) {
           // The client hung up. Roll the result back to 'pending' so that
           // "Resume" picks it up again instead of leaving a half-written row.
-          await db
-            .update(runResults)
-            .set(RESET_TO_PENDING)
-            .where(eq(runResults.id, resultId));
+          await updateRunResult(scope, runId, resultId, RESET_TO_PENDING);
 
           attempted -= 1;
           aborted = true;
@@ -345,33 +346,24 @@ export async function executeRun(
         }
 
         const message = errorMessage(err);
-        await db
-          .update(runResults)
-          .set({
-            status: 'error',
-            error: message,
-            durationMs: Date.now() - startedAt,
-            finishedAt: new Date(),
-          })
-          .where(eq(runResults.id, resultId));
+        await updateRunResult(scope, runId, resultId, {
+          status: 'error',
+          error: message,
+          durationMs: Date.now() - startedAt,
+          finishedAt: new Date(),
+        });
 
         emit({ type: 'resultError', resultId, error: message });
       }
     }
 
     if (aborted) {
-      await db
-        .update(runs)
-        .set({ status: 'pending', finishedAt: null })
-        .where(eq(runs.id, runId));
+      await updateRunStatus(scope, runId, { status: 'pending', finishedAt: null });
       emit({ type: 'runDone', runId, status: 'pending' });
       return;
     }
 
-    const remaining = await db
-      .select({ id: runResults.id })
-      .from(runResults)
-      .where(and(eq(runResults.runId, runId), eq(runResults.status, 'pending')));
+    const remaining = await countPendingResults(scope, runId);
 
     // 'failed' is reserved for "the machine was never reachable": every result
     // we tried died at the connection level and nothing succeeded. A run where
@@ -379,15 +371,12 @@ export async function executeRun(
     const everythingUnreachable =
       succeeded === 0 && attempted > 0 && connectionErrors === attempted;
     const status: RunStatus =
-      remaining.length > 0 ? 'pending' : everythingUnreachable ? 'failed' : 'completed';
+      remaining > 0 ? 'pending' : everythingUnreachable ? 'failed' : 'completed';
 
-    await db
-      .update(runs)
-      .set({
-        status,
-        finishedAt: status === 'pending' ? null : new Date(),
-      })
-      .where(eq(runs.id, runId));
+    await updateRunStatus(scope, runId, {
+      status,
+      finishedAt: status === 'pending' ? null : new Date(),
+    });
 
     emit({ type: 'runDone', runId, status });
   } finally {

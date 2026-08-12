@@ -2,33 +2,18 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { promptGroups, promptToolsets, prompts } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import {
+  createGroup as createGroupRow,
+  createPrompt as createPromptRow,
+  deleteGroup as deleteGroupRow,
+  deletePrompt as deletePromptRow,
+  replaceToolsetLinks,
+  updateGroup as updateGroupRow,
+  updatePrompt as updatePromptRow,
+} from '@/db/repo/prompts';
 import { normalizeMaxTurns, type ToolChoice, type ToolMode } from '@/lib/tools';
-
-function requiredString(formData: FormData, key: string): string {
-  const value = formData.get(key);
-  const trimmed = typeof value === 'string' ? value.trim() : '';
-  if (!trimmed) {
-    throw new Error(`${key} is required.`);
-  }
-  return trimmed;
-}
-
-function optionalString(formData: FormData, key: string): string | null {
-  const value = formData.get(key);
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function optionalId(formData: FormData, key: string): number | null {
-  const raw = optionalString(formData, key);
-  if (raw === null) return null;
-  const id = Number(raw);
-  return Number.isInteger(id) ? id : null;
-}
+import { optionalId, optionalString, requiredString } from '@/lib/form-data';
 
 function requiredMode(formData: FormData): 'append' | 'override' {
   const value = formData.get('systemPromptMode');
@@ -66,24 +51,6 @@ function toolFields(formData: FormData) {
   };
 }
 
-/**
- * Replaces a prompt's toolset links. Rewriting the set is simpler than diffing
- * it and the table holds a handful of rows per prompt.
- */
-async function replaceToolsetLinks(promptId: number, toolsetIds: number[]) {
-  await db.delete(promptToolsets).where(eq(promptToolsets.promptId, promptId));
-
-  if (toolsetIds.length === 0) return;
-
-  await db.insert(promptToolsets).values(
-    toolsetIds.map((toolsetId, index) => ({
-      promptId,
-      toolsetId,
-      sortOrder: index,
-    })),
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Prompt groups
 // ---------------------------------------------------------------------------
@@ -92,15 +59,11 @@ export async function createGroup(formData: FormData) {
   const name = requiredString(formData, 'name');
   const description = optionalString(formData, 'description');
 
-  const [row] = await db
-    .insert(promptGroups)
-    .values({
-      name,
-      description,
-      sortOrder: 0,
-      createdAt: new Date(),
-    })
-    .returning({ id: promptGroups.id });
+  const row = await createGroupRow(await currentScope(), {
+    name,
+    description,
+    now: new Date(),
+  });
 
   revalidatePath('/prompts');
   redirect(`/prompts?group=${row.id}`);
@@ -110,16 +73,13 @@ export async function updateGroup(id: number, formData: FormData) {
   const name = requiredString(formData, 'name');
   const description = optionalString(formData, 'description');
 
-  await db
-    .update(promptGroups)
-    .set({ name, description })
-    .where(eq(promptGroups.id, id));
+  await updateGroupRow(await currentScope(), id, { name, description });
 
   revalidatePath('/prompts');
 }
 
 export async function deleteGroup(id: number) {
-  await db.delete(promptGroups).where(eq(promptGroups.id, id));
+  await deleteGroupRow(await currentScope(), id);
   revalidatePath('/prompts');
 }
 
@@ -143,26 +103,24 @@ export async function createPrompt(formData: FormData) {
   const systemPromptId = optionalId(formData, 'systemPromptId');
   const systemPromptMode = requiredMode(formData);
   const customSystemText = optionalString(formData, 'customSystemText');
+  const scope = await currentScope();
   const now = new Date();
 
-  const [row] = await db
-    .insert(prompts)
-    .values({
-      groupId,
-      title,
-      content,
-      expectedOutput,
-      systemPromptId,
-      systemPromptMode,
-      customSystemText,
-      ...toolFields(formData),
-      sortOrder: 0,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning({ id: prompts.id });
+  const row = await createPromptRow(scope, {
+    groupId,
+    title,
+    content,
+    expectedOutput,
+    systemPromptId,
+    systemPromptMode,
+    customSystemText,
+    ...toolFields(formData),
+    sortOrder: 0,
+    createdAt: now,
+    updatedAt: now,
+  });
 
-  await replaceToolsetLinks(row.id, selectedToolsetIds(formData));
+  await replaceToolsetLinks(scope, row.id, selectedToolsetIds(formData));
 
   revalidatePath('/prompts');
 }
@@ -174,27 +132,25 @@ export async function updatePrompt(id: number, formData: FormData) {
   const systemPromptId = optionalId(formData, 'systemPromptId');
   const systemPromptMode = requiredMode(formData);
   const customSystemText = optionalString(formData, 'customSystemText');
+  const scope = await currentScope();
 
-  await db
-    .update(prompts)
-    .set({
-      title,
-      content,
-      expectedOutput,
-      systemPromptId,
-      systemPromptMode,
-      customSystemText,
-      ...toolFields(formData),
-      updatedAt: new Date(),
-    })
-    .where(eq(prompts.id, id));
+  await updatePromptRow(scope, id, {
+    title,
+    content,
+    expectedOutput,
+    systemPromptId,
+    systemPromptMode,
+    customSystemText,
+    ...toolFields(formData),
+    updatedAt: new Date(),
+  });
 
-  await replaceToolsetLinks(id, selectedToolsetIds(formData));
+  await replaceToolsetLinks(scope, id, selectedToolsetIds(formData));
 
   revalidatePath('/prompts');
 }
 
 export async function deletePrompt(id: number) {
-  await db.delete(prompts).where(eq(prompts.id, id));
+  await deletePromptRow(await currentScope(), id);
   revalidatePath('/prompts');
 }

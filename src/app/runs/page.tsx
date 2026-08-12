@@ -1,9 +1,14 @@
 import Link from 'next/link';
-import { desc } from 'drizzle-orm';
-import { db } from '@/db';
-import { machines, runResults, runs } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { listMachines } from '@/db/repo/machines';
+import {
+  countArchivedRuns,
+  countRuns,
+  listRunSummaries,
+  runFilterOptions,
+} from '@/db/repo/runs';
 import { formatDuration, formatIsoDateTime, formatRate, snapshotMachineName } from '@/lib/format';
-import { countRatings, ratingScore, RATING_META } from '@/lib/rating';
+import { ratingScore, RATING_META } from '@/lib/rating';
 import { LinkedRow } from '@/components/linked-row';
 import { ArchiveRunButton } from '@/components/runs/archive-run-button';
 import { DeleteRunButton } from '@/components/runs/delete-run-button';
@@ -39,62 +44,27 @@ export default async function RunsPage({
   // Archived runs are hidden unless explicitly asked for.
   const archivedFilter = firstParam(sp.archived);
 
-  const runRows = await db.select().from(runs).orderBy(desc(runs.createdAt), desc(runs.id));
-  const resultRows = await db
-    .select({
-      runId: runResults.runId,
-      status: runResults.status,
-      tokensPerSec: runResults.tokensPerSec,
-      durationMs: runResults.durationMs,
-      groupName: runResults.groupName,
-      rating: runResults.rating,
-    })
-    .from(runResults);
-  const machineRows = await db.select().from(machines);
+  const scope = await currentScope();
+  const [filteredRows, options, machineRows, archivedCount, totalRuns] = await Promise.all([
+    listRunSummaries(scope, {
+      archived: archivedFilter === 'only' ? 'only' : archivedFilter === 'all' ? 'all' : 'exclude',
+      machineId: machineIdFilter,
+      modelId: modelFilter,
+      groupName: groupFilter,
+      status: statusFilter,
+    }),
+    runFilterOptions(scope),
+    listMachines(scope, 'name'),
+    countArchivedRuns(scope),
+    countRuns(scope, { archived: 'all' }),
+  ]);
+
   const machineNameById = new Map(machineRows.map((machine) => [machine.id, machine.name]));
-
-  const allRows = runRows.map((run) => {
-    const results = resultRows.filter((result) => result.runId === run.id);
-    const rates = results
-      .map((result) => result.tokensPerSec)
-      .filter((rate): rate is number => typeof rate === 'number');
-    const groupNames = Array.from(new Set(results.map((result) => result.groupName)));
-
-    return {
-      run,
-      groupNames,
-      ok: results.filter((result) => result.status === 'ok').length,
-      error: results.filter((result) => result.status === 'error').length,
-      pending: results.filter(
-        (result) => result.status === 'pending' || result.status === 'running',
-      ).length,
-      ...countRatings(results.map((result) => result.rating)),
-      avgRate:
-        rates.length > 0 ? rates.reduce((total, rate) => total + rate, 0) / rates.length : null,
-      totalDurationMs: results.reduce((total, result) => total + (result.durationMs ?? 0), 0),
-    };
-  });
-
-  const filteredRows = allRows.filter(({ run, groupNames }) => {
-    const isArchived = run.archivedAt !== null;
-    if (archivedFilter === 'only' ? !isArchived : archivedFilter !== 'all' && isArchived) {
-      return false;
-    }
-    if (machineIdFilter !== null && String(run.machineId ?? '') !== machineIdFilter) {
-      return false;
-    }
-    if (modelFilter !== null && run.modelId !== modelFilter) return false;
-    if (groupFilter !== null && !groupNames.includes(groupFilter)) return false;
-    if (statusFilter !== null && run.status !== statusFilter) return false;
-    return true;
-  });
-
-  const archivedCount = allRows.filter(({ run }) => run.archivedAt !== null).length;
 
   const sortKey = firstParam(sp.sort) ?? 'created';
   const sortDir = firstParam(sp.dir) === 'asc' ? 1 : -1;
 
-  function sortValue(row: (typeof allRows)[number]): string | number {
+  function sortValue(row: (typeof filteredRows)[number]): string | number {
     switch (sortKey) {
       case 'run':
         return row.run.id;
@@ -124,12 +94,11 @@ export default async function RunsPage({
   });
 
   const filterOptions = {
-    machines: Array.from(new Set(runRows.map((run) => run.machineId)))
-      .filter((id): id is number => id !== null)
+    machines: options.machineIds
       .map((id) => ({ id, name: machineNameById.get(id) ?? `#${id}` }))
       .sort((a, b) => a.name.localeCompare(b.name)),
-    models: Array.from(new Set(runRows.map((run) => run.modelId))).sort(),
-    groups: Array.from(new Set(resultRows.map((result) => result.groupName))).sort(),
+    models: options.models,
+    groups: options.groups,
     statuses: [...RUN_STATUSES],
   };
 
@@ -210,7 +179,7 @@ export default async function RunsPage({
                   colSpan={12}
                   className="px-2 py-6 text-center text-zinc-500 dark:text-zinc-400"
                 >
-                  {allRows.length === 0
+                  {totalRuns === 0
                     ? 'No runs yet — start one from “New run”.'
                     : 'No runs match the current filters.'}
                 </td>

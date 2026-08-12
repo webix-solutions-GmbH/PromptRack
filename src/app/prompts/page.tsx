@@ -1,13 +1,12 @@
-import { asc } from 'drizzle-orm';
-import { db } from '@/db';
+import { currentScope } from '@/db/scope';
 import {
-  promptGroups,
-  promptToolsets,
-  prompts,
-  systemPrompts,
-  tools,
-  toolsets,
-} from '@/db/schema';
+  listGroups,
+  listPrompts,
+  listToolsetLinks,
+  promptCountsByGroup,
+} from '@/db/repo/prompts';
+import { listSystemPrompts } from '@/db/repo/system-prompts';
+import { listTools, listToolsets } from '@/db/repo/toolsets';
 import { GroupSidebar } from '@/components/prompts/group-sidebar';
 import { PromptsPanel } from '@/components/prompts/prompts-panel';
 import type { ToolsetOption } from '@/components/prompts/prompt-editor';
@@ -21,16 +20,14 @@ export default async function PromptsPage({
 }) {
   const { group } = await searchParams;
 
-  const groups = await db
-    .select()
-    .from(promptGroups)
-    .orderBy(asc(promptGroups.sortOrder), asc(promptGroups.name));
-  const allPrompts = await db.select().from(prompts);
-  const systemPromptRows = await db.select().from(systemPrompts).orderBy(asc(systemPrompts.name));
+  const scope = await currentScope();
+  const groups = await listGroups(scope, 'sort-name');
+  const allPrompts = await listPrompts(scope);
+  const systemPromptRows = await listSystemPrompts(scope, 'name');
 
   const counts: Record<number, number> = {};
-  for (const prompt of allPrompts) {
-    counts[prompt.groupId] = (counts[prompt.groupId] ?? 0) + 1;
+  for (const [groupId, count] of await promptCountsByGroup(scope)) {
+    counts[groupId] = count;
   }
 
   const requestedId = group ? Number(group) : null;
@@ -50,12 +47,9 @@ export default async function PromptsPage({
     content: sp.content,
   }));
 
-  const toolsetRows = await db.select().from(toolsets).orderBy(asc(toolsets.name));
-  const toolRows = await db.select().from(tools).orderBy(asc(tools.name));
-  const linkRows = await db
-    .select()
-    .from(promptToolsets)
-    .orderBy(asc(promptToolsets.sortOrder));
+  const toolsetRows = await listToolsets(scope);
+  const toolRows = await listTools(scope);
+  const linkRows = await listToolsetLinks(scope);
 
   const toolsetOptions: ToolsetOption[] = toolsetRows.map((toolset) => ({
     id: toolset.id,

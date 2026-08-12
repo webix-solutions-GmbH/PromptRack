@@ -1,6 +1,5 @@
-import { asc } from 'drizzle-orm';
-import { db } from '@/db';
-import { tools, toolsets } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { listTools, listToolsets } from '@/db/repo/toolsets';
 import { createToolset } from '@/actions/toolsets';
 import { CreateToggle } from '@/components/create-toggle';
 import { ToolsetCard } from '@/components/toolsets/toolset-card';
@@ -9,8 +8,9 @@ import { CreateToolsetForm } from '@/components/toolsets/create-toolset-form';
 export const dynamic = 'force-dynamic';
 
 export default async function ToolsetsPage() {
-  const toolsetRows = await db.select().from(toolsets).orderBy(asc(toolsets.name));
-  const toolRows = await db.select().from(tools).orderBy(asc(tools.name));
+  const scope = await currentScope();
+  const toolsetRows = await listToolsets(scope);
+  const toolRows = await listTools(scope);
 
   const toolsByToolset = new Map<number, typeof toolRows>();
   for (const tool of toolRows) {

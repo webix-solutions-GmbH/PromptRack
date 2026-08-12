@@ -56,6 +56,19 @@ Editing or deleting prompts, system prompts, machines, or toolsets must never ch
 
 The line between frozen and live is **content vs. credentials**: prompt text, tool definitions and a manual tool's canned response travel with the run; a machine's `base_url`/`api_key` and a toolset's `mcp_url`/headers are read live at execution time so a moved endpoint doesn't break Resume.
 
+### Data access
+
+No page, action, route handler or MCP tool touches `db` directly — ESLint forbids importing `@/db` outside `src/db/**` (one exemption, `src/lib/run-lock.ts`, which needs the `pool` itself for a Postgres advisory lock; that is infrastructure, not data access). Every query goes through a repository in `src/db/repo/*` whose functions all take a `Scope` (`src/db/scope.ts`) as their first parameter. `Scope` is a branded type: it can only be produced by `currentScope()` (the request's workspace), `scopeFromCustomerId()` (derived from a row — how the background executor stays scoped, via `scopeForRun`) or `systemScope(reason)` (the grep-able escape hatch). Today there is one implicit workspace, so `scopeWhere` / `scopeValues` / `scopeThroughParent` are no-ops, each carrying the `// Phase 5:` comment that shows its future form; Phase 5 adds `customer_id` to the five root tables and fills those three in, and **no call site changes**. Child tables (`machine_models`, `tools`, `prompts`, `prompt_toolsets`, `run_results`) inherit scope through their FK, which is why child reads join their parent and child writes carry their parent key.
+
+Two consequences worth knowing:
+
+- **`scopeForRun(runId)` is the one deliberately unscoped lookup.** The executor runs outside any request (MCP `execute_run` is fire-and-forget), so it reads the run row and derives the scope *from* it. It is the only function Phase 4 has to put an authorization check in front of.
+- **A transaction never leaves the layer.** `withTransaction` (`src/db/repo/scoped.ts`) hands a `DbHandle` to the repo functions that accept one (`createRun`, `insertRunResults`, `touchMachineModel`), which is how `createRunRecord` keeps the run row, its result rows and the model sighting atomic without any caller knowing.
+
+`@/db/schema` stays importable everywhere — components legitimately use `typeof runResults.$inferSelect`. Only the `db` *handle* is restricted.
+
+`/results` cells carry a `scopeKey` (`''` today, the customer id in Phase 5). `buildCompareMatrix` keys its deleted-prompt text fallback on `scopeKey + text`, so two workspaces' identical prompts can never collapse into one row; `promptId` matching is unaffected, ids being global.
+
 ### System prompt resolution
 
 A prompt references an optional base system prompt plus a mode: `append` (base + "\n\n" + custom text) or `override` (custom text only); empty/whitespace result → no system message. Pure function `resolveEffectiveSystemPrompt` in `src/lib/system-prompt.ts` — used at run creation (snapshot) and for the live preview in the prompt editor.
@@ -153,7 +166,7 @@ Two invariants that group depends on:
 
 Two suites, split by whether they need a database.
 
-`npm test` (`vitest.config.ts`, `src/**/*.test.ts`) is the pure one and must stay database-free and fast: `system-prompt.test.ts`, `llm.test.ts` (SSE fixtures per provider style, including index-keyed tool-call fragments split mid-JSON), `compare.test.ts`, `tools.test.ts`, `tool-loop.test.ts` (metric aggregation), `mcp/args.test.ts`, `mcp/protocol.test.ts`.
+`npm test` (`vitest.config.ts`, `src/**/*.test.ts`) is the pure one and must stay database-free and fast: `system-prompt.test.ts`, `llm.test.ts` (SSE fixtures per provider style, including index-keyed tool-call fragments split mid-JSON), `compare.test.ts`, `tools.test.ts`, `tool-loop.test.ts` (metric aggregation), `mcp/args.test.ts`, `mcp/protocol.test.ts`, `db/scope.test.ts` (the branded scope and `combine`, written db-free precisely so it can live here), `lib/form-data.test.ts` (the FormData readers the server actions share).
 
 `npm run test:integration` (`vitest.integration.config.ts`, `tests/integration/**`) runs against the scratch Postgres described above, with `fileParallelism: false` because the suites share one database and `tests/integration/setup.ts` truncates every table between tests. It covers what only a real database can show: the FK cascade/set-null actions and `Date`/`boolean`/float8 round-tripping (`schema.test.ts`), the snapshot invariant and the `createRunRecord` rollback (`run-create.test.ts`), the advisory-lock claim (`run-lock.test.ts`), and that `seed-prompts.mjs` is idempotent and preserves the invisible Unicode-Tags payload code point for code point (`seed.test.ts`).
 

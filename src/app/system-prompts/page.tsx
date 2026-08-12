@@ -1,6 +1,5 @@
-import { desc } from 'drizzle-orm';
-import { db } from '@/db';
-import { systemPrompts } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { listSystemPrompts } from '@/db/repo/system-prompts';
 import { createSystemPrompt } from '@/actions/system-prompts';
 import { CreateToggle } from '@/components/create-toggle';
 import { SystemPromptRow } from '@/components/system-prompts/system-prompt-row';
@@ -12,7 +11,7 @@ const inputClass =
 const labelClass = 'text-xs font-medium text-zinc-600 dark:text-zinc-400';
 
 export default async function SystemPromptsPage() {
-  const rows = await db.select().from(systemPrompts).orderBy(desc(systemPrompts.updatedAt));
+  const rows = await listSystemPrompts(await currentScope(), 'updated');
 
   return (
     <div className="flex flex-1 flex-col gap-8 p-8">

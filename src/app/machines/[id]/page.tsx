@@ -1,7 +1,6 @@
 import { notFound } from 'next/navigation';
-import { desc, eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { machineModels, machines } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import { getMachine, listMachineModels } from '@/db/repo/machines';
 import { formatDateTime } from '@/lib/format';
 import { addManualModel, updateMachine } from '@/actions/machines';
 import { TestConnectionButton } from '@/components/machines/test-connection-button';
@@ -25,16 +24,13 @@ export default async function MachineDetailPage({
     notFound();
   }
 
-  const [machine] = await db.select().from(machines).where(eq(machines.id, id));
+  const scope = await currentScope();
+  const machine = await getMachine(scope, id);
   if (!machine) {
     notFound();
   }
 
-  const models = await db
-    .select()
-    .from(machineModels)
-    .where(eq(machineModels.machineId, id))
-    .orderBy(desc(machineModels.lastSeenAt));
+  const models = await listMachineModels(scope, { machineId: id });
 
   const boundUpdateMachine = updateMachine.bind(null, id);
   const boundAddManualModel = addManualModel.bind(null, id);

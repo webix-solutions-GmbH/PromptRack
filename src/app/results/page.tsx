@@ -1,7 +1,14 @@
 import Link from 'next/link';
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
-import { db } from '@/db';
-import { promptGroups, prompts, runResults, runs } from '@/db/schema';
+import type { RunResult } from '@/db/schema';
+import { currentScope, type Scope } from '@/db/scope';
+import { comparePromptRows } from '@/db/repo/prompts';
+import {
+  compareCellsForModels,
+  compareCellsForRuns,
+  listComparableRuns,
+  modelColumnInputs,
+} from '@/db/repo/results';
+import { runGroupNames } from '@/db/repo/runs';
 import { formatDateTime, formatRate, snapshotMachineName } from '@/lib/format';
 import { countRatings, parseRating, RATING_META } from '@/lib/rating';
 import type { RunResultStatus } from '@/lib/run-events';
@@ -77,13 +84,17 @@ function resultsHref(sp: SearchParams, key: string, values: string[]): string {
  * was created, and the request params it was sent with.
  */
 function toCell(
-  row: typeof runResults.$inferSelect,
-  run: { createdAt: number; params: string | null } | undefined,
+  scope: Scope,
+  row: RunResult,
+  run: { createdAt: number; params: string | null },
 ): CompareCellView {
   return {
     id: row.id,
     runId: row.runId,
-    runCreatedAt: run?.createdAt ?? 0,
+    runCreatedAt: run.createdAt,
+    // Phase 5: the customer id, which keeps the deleted-prompt text fallback
+    // from matching across workspaces.
+    scopeKey: String(scope.customerId ?? ''),
     promptId: row.promptId,
     sortOrder: row.sortOrder,
     groupName: row.groupName,
@@ -94,7 +105,7 @@ function toCell(
     toolMode: row.toolMode as ToolMode,
     toolChoice: row.toolChoice as ToolChoice | null,
     maxTurns: row.maxTurns,
-    runParams: run?.params ?? null,
+    runParams: run.params,
     status: row.status as RunResultStatus,
     responseText: row.responseText,
     error: row.error,
@@ -120,37 +131,27 @@ export default async function ResultsPage({
   // Model mode is the default; an existing `?runs=` link keeps its pivot.
   const mode: CompareMode = parseCompareMode(sp.mode) ?? (sp.runs ? 'runs' : 'models');
 
-  const [runRows, summaryRows] = await Promise.all([
-    db.select().from(runs).orderBy(desc(runs.createdAt), desc(runs.id)),
-    db
-      .select({
-        runId: runResults.runId,
-        promptId: runResults.promptId,
-        status: runResults.status,
-        rating: runResults.rating,
-        tokensPerSec: runResults.tokensPerSec,
-        groupName: runResults.groupName,
-      })
-      .from(runResults),
-  ]);
-
-  // `createdAt` crosses into the client-side compare views, which speak epoch
-  // millis; the database hands out a Date.
-  const runById = new Map(
-    runRows.map((run) => [run.id, { createdAt: run.createdAt.getTime(), params: run.params }]),
-  );
+  const scope = await currentScope();
 
   // ---------------------------------------------------------------- run mode
   // A run is comparable once it has produced at least one result — that covers
   // completed runs as well as ones that were stopped or partially failed.
-  const comparableRuns: CompareRunView[] = runRows
-    .map((run) => {
-      const results = summaryRows.filter((result) => result.runId === run.id);
-      const rates = results
-        .map((result) => result.tokensPerSec)
-        .filter((rate): rate is number => typeof rate === 'number');
+  let comparableRuns: CompareRunView[] = [];
+  let selectedRunIds: number[] = [];
+  let runColumns: CompareRunView[] = [];
+  let pickerRuns: CompareRunView[] = [];
+  let hiddenArchivedCount = 0;
+  let runCells: CompareCellView[] = [];
 
-      return {
+  if (mode === 'runs') {
+    const summaries = await listComparableRuns(scope);
+    const groupNamesByRun = await runGroupNames(
+      scope,
+      summaries.map((row) => row.run.id),
+    );
+
+    comparableRuns = summaries
+      .map(({ run, ok, error, good, meh, bad, avgRate }) => ({
         id: run.id,
         modelId: run.modelId,
         machineName: snapshotMachineName(run.machineSnapshot),
@@ -158,74 +159,65 @@ export default async function ResultsPage({
         archived: run.archivedAt !== null,
         createdAt: run.createdAt.getTime(),
         groupNames: Array.from(
-          new Set([...parseGroupNames(run.groupNames), ...results.map((r) => r.groupName)]),
+          new Set([...parseGroupNames(run.groupNames), ...(groupNamesByRun.get(run.id) ?? [])]),
         ),
-        ...countRatings(results.map((result) => result.rating)),
-        ok: results.filter((result) => result.status === 'ok').length,
-        error: results.filter((result) => result.status === 'error').length,
-        avgRate:
-          rates.length > 0 ? rates.reduce((total, rate) => total + rate, 0) / rates.length : null,
-      };
-    })
-    .filter((run) => run.ok > 0 || run.error > 0 || run.status === 'completed');
+        good,
+        meh,
+        bad,
+        ok,
+        error,
+        avgRate,
+      }))
+      .filter((run) => run.ok > 0 || run.error > 0 || run.status === 'completed');
 
-  const comparableById = new Map(comparableRuns.map((run) => [run.id, run]));
-  const selectedRunIds =
-    mode === 'runs' ? parseRunIds(sp.runs).filter((id) => comparableById.has(id)) : [];
-  const runColumns = selectedRunIds.map((id) => comparableById.get(id)!);
+    const comparableById = new Map(comparableRuns.map((run) => [run.id, run]));
+    selectedRunIds = parseRunIds(sp.runs).filter((id) => comparableById.has(id));
+    runColumns = selectedRunIds.map((id) => comparableById.get(id)!);
 
-  // Archived runs are hidden from the picker, but an already-selected one stays
-  // listed so a bookmarked comparison still works and can be deselected.
-  const pickerRuns = comparableRuns.filter(
-    (run) => !run.archived || selectedRunIds.includes(run.id),
-  );
-  const hiddenArchivedCount = comparableRuns.length - pickerRuns.length;
+    // Archived runs are hidden from the picker, but an already-selected one
+    // stays listed so a bookmarked comparison still works and can be deselected.
+    pickerRuns = comparableRuns.filter(
+      (run) => !run.archived || selectedRunIds.includes(run.id),
+    );
+    hiddenArchivedCount = comparableRuns.length - pickerRuns.length;
 
-  const runCells =
-    selectedRunIds.length >= MIN_COMPARE_RUNS
-      ? (await db.select().from(runResults).where(inArray(runResults.runId, selectedRunIds))).map(
-          (row) => toCell(row, runById.get(row.runId)),
-        )
-      : [];
+    if (selectedRunIds.length >= MIN_COMPARE_RUNS) {
+      const rows = await compareCellsForRuns(scope, selectedRunIds);
+      runCells = rows.map((row) =>
+        toCell(scope, row.result, {
+          createdAt: row.runCreatedAt.getTime(),
+          params: row.runParams,
+        }),
+      );
+    }
+  }
 
   // -------------------------------------------------------------- model mode
-  const modelColumns = buildModelColumns(
-    runRows.map((run) => ({
-      id: run.id,
-      machineId: run.machineId,
-      machineName: snapshotMachineName(run.machineSnapshot),
-      modelId: run.modelId,
-      createdAt: run.createdAt.getTime(),
-      archived: run.archivedAt !== null,
-    })),
-    summaryRows,
-  );
+  const isModels = mode === 'models';
+  const columnInputs = isModels
+    ? await modelColumnInputs(scope)
+    : { runs: [], results: [] };
+
+  const modelColumns = isModels
+    ? buildModelColumns(
+        columnInputs.runs.map((run) => ({
+          id: run.id,
+          machineId: run.machineId,
+          machineName: snapshotMachineName(run.machineSnapshot),
+          modelId: run.modelId,
+          createdAt: run.createdAt.getTime(),
+          archived: false,
+        })),
+        columnInputs.results,
+      )
+    : [];
   const modelColumnByKey = new Map(modelColumns.map((column) => [column.key, column]));
-  const selectedModelKeys =
-    mode === 'models'
-      ? parseModelColumnKeys(sp.model).filter((key) => modelColumnByKey.has(key))
-      : [];
+  const selectedModelKeys = isModels
+    ? parseModelColumnKeys(sp.model).filter((key) => modelColumnByKey.has(key))
+    : [];
   const modelHeaders = selectedModelKeys.map((key) => modelColumnByKey.get(key)!);
 
-  const promptRows: ComparePromptView[] =
-    mode === 'models'
-      ? await db
-          .select({
-            id: prompts.id,
-            groupId: prompts.groupId,
-            groupName: promptGroups.name,
-            title: prompts.title,
-            text: prompts.content,
-          })
-          .from(prompts)
-          .innerJoin(promptGroups, eq(prompts.groupId, promptGroups.id))
-          .orderBy(
-            asc(promptGroups.sortOrder),
-            asc(promptGroups.name),
-            asc(prompts.sortOrder),
-            asc(prompts.id),
-          )
-      : [];
+  const promptRows: ComparePromptView[] = isModels ? await comparePromptRows(scope) : [];
 
   const groupOptions = Array.from(
     promptRows
@@ -275,33 +267,22 @@ export default async function ResultsPage({
   ];
 
   let modelCells: ModelCompareCell[] = [];
-  if (selectedModelKeys.length >= MIN_COMPARE_MODELS) {
-    const modelIds = Array.from(
-      new Set(selectedModelKeys.map((key) => splitModelColumnKey(key)!.modelId)),
-    );
-    // Archived runs never contribute: unlike run mode there is no explicit
-    // selection that could ask for one back. Errors are fetched so a newer
-    // failed attempt can be reported rather than silently skipped.
-    const rows = await db
-      .select({
-        result: runResults,
-        runCreatedAt: runs.createdAt,
-        runParams: runs.params,
-        machineId: runs.machineId,
-        modelId: runs.modelId,
-      })
-      .from(runResults)
-      .innerJoin(runs, eq(runResults.runId, runs.id))
-      .where(
-        and(
-          isNull(runs.archivedAt),
-          inArray(runs.modelId, modelIds),
-          inArray(runResults.status, ['ok', 'error']),
-        ),
-      );
+  if (isModels && selectedModelKeys.length >= MIN_COMPARE_MODELS) {
+    // The selection is (machine, model) pairs — filtering on the model id alone
+    // would load the same model's results from every other machine.
+    const columns = selectedModelKeys.map((key) => splitModelColumnKey(key)!);
+    // Only the group filter narrows the prompts; without one every live prompt
+    // is in scope and the extra predicate would be noise.
+    const scopedPromptIds =
+      selectedGroupIds.length > 0 ? scopedPrompts.map((prompt) => prompt.id) : null;
+
+    const rows = await compareCellsForModels(scope, columns, scopedPromptIds);
 
     modelCells = rows.map((row) => ({
-      ...toCell(row.result, { createdAt: row.runCreatedAt.getTime(), params: row.runParams }),
+      ...toCell(scope, row.result, {
+        createdAt: row.runCreatedAt.getTime(),
+        params: row.runParams,
+      }),
       columnKey: modelColumnKey(row.machineId, row.modelId),
     }));
   }
@@ -326,7 +307,6 @@ export default async function ResultsPage({
   });
 
   // ------------------------------------------------------------------ render
-  const isModels = mode === 'models';
   const rows = isModels ? modelMatrix.rows : buildCompareMatrix(selectedRunIds, runCells);
   const columnCount = isModels ? selectedModelKeys.length : selectedRunIds.length;
   const minColumns = isModels ? MIN_COMPARE_MODELS : MIN_COMPARE_RUNS;

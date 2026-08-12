@@ -2,29 +2,18 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { runResults, runs } from '@/db/schema';
+import { currentScope } from '@/db/scope';
+import {
+  deleteRun as deleteRunRow,
+  rateResult as rateResultRow,
+  setResultNote,
+  setRunArchivedAt,
+  updateRunComment as updateRunCommentRow,
+} from '@/db/repo/runs';
 import type { Rating } from '@/lib/rating';
 import { createRunRecord } from '@/lib/run-create';
 import { isRunExecuting } from '@/lib/run-executor';
-
-function optionalString(formData: FormData, key: string): string | null {
-  const value = formData.get(key);
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function optionalNumber(formData: FormData, key: string, label: string): number | null {
-  const raw = optionalString(formData, key);
-  if (raw === null) return null;
-  const value = Number(raw);
-  if (!Number.isFinite(value)) {
-    throw new Error(`${label} must be a number.`);
-  }
-  return value;
-}
+import { optionalNumber, optionalString } from '@/lib/form-data';
 
 /**
  * Extra body fields sent to the endpoint. Empty inputs are omitted entirely so
@@ -81,7 +70,7 @@ export async function createRun(formData: FormData) {
     throw new Error('Select or enter a model.');
   }
 
-  const run = await createRunRecord({
+  const run = await createRunRecord(await currentScope(), {
     machineId,
     modelId,
     groupIds: selectedGroupIds(formData),
@@ -97,10 +86,7 @@ export async function createRun(formData: FormData) {
 export async function updateRunComment(runId: number, comment: string) {
   const trimmed = comment.trim();
 
-  await db
-    .update(runs)
-    .set({ comment: trimmed.length > 0 ? trimmed : null })
-    .where(eq(runs.id, runId));
+  await updateRunCommentRow(await currentScope(), runId, trimmed.length > 0 ? trimmed : null);
 
   revalidatePath('/runs');
   revalidatePath(`/runs/${runId}`);
@@ -122,11 +108,7 @@ export async function rateResult(
     values.ratingNote = trimmed.length > 0 ? trimmed : null;
   }
 
-  const [result] = await db
-    .update(runResults)
-    .set(values)
-    .where(eq(runResults.id, resultId))
-    .returning({ runId: runResults.runId });
+  const result = await rateResultRow(await currentScope(), resultId, values);
 
   if (result) {
     revalidatePath(`/runs/${result.runId}`);
@@ -139,11 +121,11 @@ export async function rateResult(
 export async function updateResultNote(resultId: number, note: string) {
   const trimmed = note.trim();
 
-  const [result] = await db
-    .update(runResults)
-    .set({ ratingNote: trimmed.length > 0 ? trimmed : null })
-    .where(eq(runResults.id, resultId))
-    .returning({ runId: runResults.runId });
+  const result = await setResultNote(
+    await currentScope(),
+    resultId,
+    trimmed.length > 0 ? trimmed : null,
+  );
 
   if (result) {
     revalidatePath(`/runs/${result.runId}`);
@@ -163,10 +145,7 @@ export async function setRunArchived(runId: number, archived: boolean) {
     throw new Error('This run is currently executing — stop it before archiving.');
   }
 
-  await db
-    .update(runs)
-    .set({ archivedAt: archived ? new Date() : null })
-    .where(eq(runs.id, runId));
+  await setRunArchivedAt(await currentScope(), runId, archived ? new Date() : null);
 
   revalidatePath('/runs');
   revalidatePath(`/runs/${runId}`);
@@ -184,7 +163,7 @@ export async function deleteRun(runId: number) {
     throw new Error('This run is currently executing — stop it before deleting.');
   }
 
-  await db.delete(runs).where(eq(runs.id, runId));
+  await deleteRunRow(await currentScope(), runId);
   revalidatePath('/runs');
   revalidatePath('/');
 }

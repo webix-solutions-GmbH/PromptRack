@@ -23,6 +23,7 @@ function cell(overrides: Partial<CompareCellView> & { runId: number }): CompareC
   return {
     id: nextId++,
     runCreatedAt: 1_000,
+    scopeKey: '',
     promptId: null,
     sortOrder: 0,
     groupName: 'group',
@@ -276,6 +277,35 @@ describe('parseModelColumnKeys', () => {
 
   it('truncates to the maximum', () => {
     expect(parseModelColumnKeys(['1|a', '2|b', '3|c'], 2)).toEqual(['1|a', '2|b']);
+  });
+});
+
+describe('buildCompareMatrix scope isolation', () => {
+  it('never matches two deleted prompts by text across workspaces', () => {
+    const rows = buildCompareMatrix(
+      [1, 2],
+      [
+        cell({ runId: 1, promptId: null, promptText: 'same text', scopeKey: 'a' }),
+        cell({ runId: 2, promptId: null, promptText: 'same text', scopeKey: 'b' }),
+      ],
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0].cells.filter((c) => c !== null)).toHaveLength(1);
+    expect(rows[1].cells.filter((c) => c !== null)).toHaveLength(1);
+  });
+
+  it('still matches them within one workspace', () => {
+    const rows = buildCompareMatrix(
+      [1, 2],
+      [
+        cell({ runId: 1, promptId: null, promptText: 'same text', scopeKey: 'a' }),
+        cell({ runId: 2, promptId: null, promptText: 'same text', scopeKey: 'a' }),
+      ],
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].cells.filter((c) => c !== null)).toHaveLength(2);
   });
 });
 

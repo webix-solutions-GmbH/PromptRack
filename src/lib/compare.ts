@@ -78,6 +78,12 @@ export interface CompareCellView {
   runId: number;
   /** `runs.created_at` — what "most recent result" is ordered by. */
   runCreatedAt: number;
+  /**
+   * Opaque workspace key. Phase 3: `''` for every cell; Phase 5: the customer
+   * id. The deleted-prompt text fallback only matches within one key, so two
+   * customers' identical prompts can never collapse into one row.
+   */
+  scopeKey: string;
   promptId: number | null;
   sortOrder: number;
   groupName: string;
@@ -205,7 +211,8 @@ export function buildCompareMatrix(
 
   for (const result of ordered) {
     const column = columnOf.get(result.runId)!;
-    const key = textKey(result.promptText);
+    // Prompt ids are global, so only the text fallback needs the scope key.
+    const key = `${result.scopeKey} ${textKey(result.promptText)}`;
 
     let row: RowBuilder | undefined;
     if (result.promptId === null) {
