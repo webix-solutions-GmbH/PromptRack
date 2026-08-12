@@ -282,3 +282,22 @@ export const runResults = sqliteTable('run_results', {
 
 export type RunResult = typeof runResults.$inferSelect;
 export type NewRunResult = typeof runResults.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// __app_seeds — ledger owned by scripts/seed-prompts.mjs
+//
+// Not application data: it records which seeded toolsets/prompt groups have ever
+// been inserted, so seeding is additive and respects deletions. It lives here (and
+// not only in the seed script) so migration tooling knows it exists and can never
+// offer to drop it. `scope` is the group name for a prompt, empty for a toolset.
+// ---------------------------------------------------------------------------
+export const appSeeds = sqliteTable(
+  '__app_seeds',
+  {
+    kind: text('kind').notNull(),
+    scope: text('scope').notNull(),
+    name: text('name').notNull(),
+    seededAt: integer('seeded_at', { mode: 'number' }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.kind, table.scope, table.name] })],
+);

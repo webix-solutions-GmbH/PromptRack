@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "db:push": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node scripts/init-db.mjs",
+    "db:init": "drizzle-kit generate && node scripts/init-db.mjs",
     "db:seed": "node scripts/seed-prompts.mjs",
     "test": "vitest run"
   },

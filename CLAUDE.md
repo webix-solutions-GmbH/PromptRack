@@ -21,11 +21,13 @@ npx vitest run src/lib/llm.test.ts   # single test file
 npx tsc --noEmit                     # typecheck
 npm run lint                         # eslint
 npm run build                        # production build (also catches route/RSC errors)
-npm run db:push                      # drizzle-kit push — applies src/db/schema.ts to data/app.db
+npm run db:init                      # generate pending migration SQL + apply drizzle/ to data/app.db
+npm run db:generate                  # drizzle-kit generate — write a migration under drizzle/ from schema.ts
+npm run db:migrate                   # node scripts/init-db.mjs — apply pending migrations only
 npm run db:seed                      # seed toolsets + prompt groups (additive, respects deletions)
 ```
 
-`db:push` needs a TTY and will stall in a piped shell as soon as it has to ask about a table it does not know (`__app_migrations`, `__app_seeds`). Non-interactive alternative, which is also the production path: `npx drizzle-kit generate && node scripts/init-db.mjs`.
+Migrations are committed under `drizzle/`; `drizzle-kit generate` can still prompt interactively when it suspects a *rename*, so run it in a real terminal when renaming a table or column.
 
 Git: branch is `master` (not main); remote is Azure DevOps. Commits so far are milestone-sized with imperative messages.
 
@@ -35,7 +37,7 @@ Single-user LLM benchmarking web app: define test prompts (grouped, optionally w
 
 ## Architecture
 
-- **Stack**: Next.js 16 App Router + TypeScript + Tailwind v4, Drizzle ORM + better-sqlite3 (native module). DB file `data/app.db` (gitignored), WAL mode, singleton in `src/db/index.ts` with `foreign_keys = ON` (required for cascades). Schema push workflow, no committed migrations — `src/db/schema.ts` is the single source of truth.
+- **Stack**: Next.js 16 App Router + TypeScript + Tailwind v4, Drizzle ORM + better-sqlite3 (native module). DB file `data/app.db` (gitignored), WAL mode, singleton in `src/db/index.ts` with `foreign_keys = ON` (required for cascades). `src/db/schema.ts` is the single source of truth; `drizzle-kit generate` writes incremental SQL migrations under `drizzle/` (committed), applied by `scripts/init-db.mjs`.
 - **Mutations are Server Actions** (`src/actions/*.ts`); **Route Handlers exist only where streaming or a live network probe is needed**: run execution (`/api/runs/[id]/execute`, NDJSON progress stream), model discovery + connection test (`/api/machines/[id]/*`), MCP tool discovery (`/api/toolsets/[id]/discover`), and the dev mocks (`/api/mock-llm/*`, `/api/mock-mcp`).
 - **basePath `/agent-val`** (`next.config.ts`, constant in `src/lib/base-path.ts`): `next/link` and the router prefix automatically, but raw client `fetch()` calls to our own API routes MUST go through `apiPath()` from `src/lib/base-path.ts`.
 
@@ -123,7 +125,7 @@ To exercise a wired handler (real `db`, real sqlite) without a server or the pro
 
 ### Seeding
 
-`scripts/seed-prompts.mjs` (`npm run db:seed`) seeds manual toolsets and prompt groups. Idempotency is recorded in `__app_seeds` (script-owned, like `__app_migrations`): every object is seeded at most once *ever*, so new seed entries land in groups an earlier version created while anything you deleted stays deleted. A pre-ledger database is backfilled from what is already present on the first run.
+`scripts/seed-prompts.mjs` (`npm run db:seed`) seeds manual toolsets and prompt groups. Idempotency is recorded in `__app_seeds`, now declared in `src/db/schema.ts` and created by the migrations — the script only writes rows and owns the idempotency semantics: every object is seeded at most once *ever*, so new seed entries land in groups an earlier version created while anything you deleted stays deleted. A pre-ledger database is backfilled from what is already present on the first run.
 
 Seeded canned tool responses are written to stay correct *whatever arguments the model passes* — `convert_currency` returns a rate rather than a converted amount, so the response can never contradict the call and the model still has to do the arithmetic.
 
@@ -149,6 +151,6 @@ Everything else is verified against the dev server + the mocks:
 
 ## Deployment
 
-Docker multi-stage build (`node:22-alpine`, standalone output; better-sqlite3 prebuilds are explicitly traced in `next.config.ts`). Schema bootstrap at container start: build runs `drizzle-kit generate`, `scripts/init-db.mjs` applies unseen SQL files (tracked in `__app_migrations`, `IF NOT EXISTS`-rewritten) — see README for rationale. `docker-compose.yml` joins the **external** network `llm_default`; Caddy (config `/home/baum/llm/caddy/Caddyfile`, separate stack) serves `https://ki01.webix.de/agent-val` via a `handle /agent-val*` block with basic auth, everything else on that host goes to vLLM.
+Docker multi-stage build (`node:22-alpine`, standalone output; better-sqlite3 prebuilds are explicitly traced in `next.config.ts`). Schema bootstrap at container start: `drizzle/` (committed) is copied into the image as-is, and `scripts/init-db.mjs` applies the **committed** migrations with drizzle's `migrate()` (ledger `__drizzle_migrations`) — statements are applied verbatim, so a broken migration stops the container rather than silently no-opping; the old hand-rolled applier and its rewriting into idempotent DDL are retired. A database that predates this migrator is adopted automatically on first start (baseline recorded, not re-applied) — see README for rationale. `docker-compose.yml` joins the **external** network `llm_default`; Caddy (config `/home/baum/llm/caddy/Caddyfile`, separate stack) serves `https://ki01.webix.de/agent-val` via a `handle /agent-val*` block with basic auth, everything else on that host goes to vLLM.
 
 Caddy gotcha: the Caddyfile is bind-mounted as a single file into the caddy container — file-replacing edits (Edit tool, `sed -i`) change the inode, so `caddy reload` still reads the old content ("config is unchanged"). After editing it, `docker restart caddy` is required. Production container actions (`docker compose up`, `docker restart`) must be run by the user.

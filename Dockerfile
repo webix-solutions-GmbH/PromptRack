@@ -21,9 +21,10 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# drizzle/*.sql is generated from src/db/schema.ts here, so the runner image can
-# create the schema without drizzle-kit or TypeScript.
-RUN npx drizzle-kit generate
+# drizzle/ is committed, so the image ships the exact migrations that were reviewed.
+# Generating here would re-derive a full-schema baseline and defeat incremental diffs.
+RUN test -f drizzle/meta/_journal.json \
+  || (echo 'drizzle/ missing — run `npm run db:generate` and commit it' && exit 1)
 RUN npm run build \
   && rm -rf .next/standalone/data
 
@@ -39,6 +40,10 @@ ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=builder /app/.next/standalone ./
+# scripts/init-db.mjs runs outside Next, so it needs drizzle-orm resolvable from
+# /app/node_modules. The standalone trace only carries the modules the app itself
+# imports — `drizzle-orm/better-sqlite3/migrator` is not one of them (R3).
+COPY --from=deps /app/node_modules/drizzle-orm ./node_modules/drizzle-orm
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/drizzle ./drizzle

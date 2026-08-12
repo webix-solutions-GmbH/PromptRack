@@ -11,8 +11,9 @@
  * once ever, which means new seed entries land in groups an earlier version
  * created, while anything you deleted afterwards stays deleted. A database that
  * predates the ledger is backfilled on first run from what is already there.
- * (`__app_seeds` is owned by this script, in the same spirit as
- * `__app_migrations` in `init-db.mjs`; neither belongs in `src/db/schema.ts`.)
+ * (`__app_seeds` is declared in `src/db/schema.ts` and created by the
+ * migrations, so schema tooling knows about it; this script only writes rows.
+ * Run `npm run db:init` first.)
  *
  * Prompts deliberately embed all instructions and data inline (no
  * `system_prompts` dependency), so each one is self-contained. A prompt may
@@ -1073,17 +1074,6 @@ function main() {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
-  // Ledger of what this script has ever seeded. `scope` is the group name for a
-  // prompt and empty for a toolset.
-  db.exec(
-    `CREATE TABLE IF NOT EXISTS __app_seeds (
-       kind TEXT NOT NULL,
-       scope TEXT NOT NULL,
-       name TEXT NOT NULL,
-       seeded_at INTEGER NOT NULL,
-       PRIMARY KEY (kind, scope, name)
-     )`,
-  );
   const wasSeeded = db.prepare(
     'SELECT 1 FROM __app_seeds WHERE kind = ? AND scope = ? AND name = ?',
   );

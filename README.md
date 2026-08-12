@@ -15,14 +15,18 @@ against the running Node version.
 ```bash
 nvm use 22
 npm install
-npm run db:push   # create/update data/app.db from src/db/schema.ts
+npm run db:init   # create/update data/app.db from the migrations in drizzle/
+npm run db:seed   # optional: ready-made toolsets and prompt groups
 npm run dev       # http://localhost:3000/agent-val (the app lives under its basePath)
 ```
 
 Other scripts: `npm run lint`, `npm test` (vitest), `npm run build`.
 
-`npm run db:push` applies `src/db/schema.ts` directly to the local database —
-the schema file is the source of truth; there are no checked-in migrations.
+`src/db/schema.ts` is the source of truth; `npm run db:generate` writes an
+incremental SQL migration under `drizzle/` (committed) whenever the schema
+changes; `npm run db:migrate` applies whatever migrations the local database
+hasn't seen yet; `db:init` is both in sequence. Files under `drizzle/` are
+never hand-edited — a migration is reviewed like any other code change.
 
 ## Production deployment
 
@@ -51,20 +55,26 @@ docker compose up -d --build
 
 ### Schema bootstrap on start
 
-The data volume can be completely empty on first start, so the schema is created
+The data volume can be completely empty on first start, so the schema is applied
 when the container starts rather than when the image is built:
 
-1. During the image build, `drizzle-kit generate` turns `src/db/schema.ts` into
-   plain SQL under `drizzle/` (generated, not committed).
+1. Migrations under `drizzle/` are committed to the repo (`npm run db:generate`
+   writes them from `src/db/schema.ts`) and copied into the image as-is — the
+   image ships the exact SQL that was reviewed.
 2. `docker-entrypoint.sh` runs `scripts/init-db.mjs` before the server starts.
-   It applies every SQL file the database has not seen yet, tracked in an
-   `__app_migrations` table, and rewrites `CREATE TABLE`/`CREATE INDEX` to
-   `IF NOT EXISTS` so a database originally created with `drizzle-kit push` can
-   be mounted without conflicts.
+   It calls drizzle's own `migrate()`, which applies whatever migrations the
+   database hasn't seen yet and records them in drizzle's ledger table
+   `__drizzle_migrations`. Statements are applied verbatim, so a migration that
+   cannot apply cleanly stops the container instead of silently no-opping.
+3. A database that predates this setup (created by `drizzle-kit push`, or by
+   the old hand-rolled applier) is adopted automatically on first start: the
+   baseline migration is recorded as already applied rather than re-run, and
+   anything after it applies normally.
 
 This was chosen over shipping drizzle-kit in the runtime image: the bootstrap
-needs nothing but `better-sqlite3`, which is already part of the standalone
-output, so the runner image carries no dev dependencies and no TypeScript.
+needs nothing but `better-sqlite3` and the `drizzle-orm` package (for the
+migrator), both carried in the runner image, so it needs no dev dependencies
+and no TypeScript.
 
 ## How it works
 
