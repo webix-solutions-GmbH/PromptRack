@@ -2,11 +2,15 @@ import Link from 'next/link';
 import { currentScope } from '@/db/scope';
 import { listMachineModels, listMachines } from '@/db/repo/machines';
 import { listGroups, promptCountsByGroup } from '@/db/repo/prompts';
+import { onPage, requireWriter } from '@/lib/auth/guards';
 import { NewRunForm } from '@/components/runs/new-run-form';
 
 export const dynamic = 'force-dynamic';
 
 export default async function NewRunPage() {
+  // The whole page is a mutation form, so it is refused outright rather than
+  // rendered with its submit button hidden.
+  await onPage(requireWriter);
   const scope = await currentScope();
   const machineRows = await listMachines(scope, 'name');
   const modelRows = await listMachineModels(scope, { order: 'loaded-first' });

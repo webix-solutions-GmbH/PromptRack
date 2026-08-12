@@ -59,10 +59,13 @@ function ResponseBlock({ text, running }: { text: string | null; running: boolea
 export function ResultCard({
   result,
   index,
+  canWrite,
   onRatingChange,
 }: {
   result: ResultView;
   index: number;
+  /** A viewer still sees the verdict in the badge, just not the buttons. */
+  canWrite: boolean;
   onRatingChange: (
     resultId: number,
     patch: { rating?: Rating | null; ratingNote?: string | null },
@@ -106,12 +109,18 @@ export function ResultCard({
         </div>
       </header>
 
-      <ResultRating
-        resultId={result.id}
-        rating={result.rating}
-        ratingNote={result.ratingNote}
-        onChange={(patch) => onRatingChange(result.id, patch)}
-      />
+      {canWrite ? (
+        <ResultRating
+          resultId={result.id}
+          rating={result.rating}
+          ratingNote={result.ratingNote}
+          onChange={(patch) => onRatingChange(result.id, patch)}
+        />
+      ) : (
+        result.ratingNote && (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">{result.ratingNote}</p>
+        )
+      )}
 
       <details className="text-sm">
         <summary className="cursor-pointer text-xs font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200">

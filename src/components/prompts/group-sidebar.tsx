@@ -14,10 +14,12 @@ export function GroupSidebar({
   groups,
   selectedGroupId,
   counts,
+  canWrite,
 }: {
   groups: PromptGroup[];
   selectedGroupId: number | null;
   counts: Record<number, number>;
+  canWrite: boolean;
 }) {
   const router = useRouter();
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -120,24 +122,26 @@ export function GroupSidebar({
                 {group.name}{' '}
                 <span className="opacity-70">({counts[group.id] ?? 0})</span>
               </Link>
-              <div className="flex items-center gap-2 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setEditingId(group.id)}
-                  className="underline opacity-80 hover:opacity-100"
-                >
-                  edit
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDelete(group)}
-                  className={`underline opacity-80 hover:opacity-100 ${
-                    isSelected ? '' : 'text-red-600 dark:text-red-400'
-                  }`}
-                >
-                  delete
-                </button>
-              </div>
+              {canWrite && (
+                <div className="flex items-center gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setEditingId(group.id)}
+                    className="underline opacity-80 hover:opacity-100"
+                  >
+                    edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(group)}
+                    className={`underline opacity-80 hover:opacity-100 ${
+                      isSelected ? '' : 'text-red-600 dark:text-red-400'
+                    }`}
+                  >
+                    delete
+                  </button>
+                </div>
+              )}
             </li>
           );
         })}
@@ -145,22 +149,24 @@ export function GroupSidebar({
 
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
-      <form
-        action={createGroup}
-        className="flex flex-col gap-2 border-t border-zinc-200 pt-4 dark:border-zinc-800"
-      >
-        <label className={labelClass} htmlFor="new-group-name">
-          New group
-        </label>
-        <input id="new-group-name" name="name" required placeholder="Group name" className={inputClass} />
-        <textarea name="description" rows={2} placeholder="description (optional)" className={inputClass} />
-        <button
-          type="submit"
-          className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-50 transition-colors hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+      {canWrite && (
+        <form
+          action={createGroup}
+          className="flex flex-col gap-2 border-t border-zinc-200 pt-4 dark:border-zinc-800"
         >
-          Create group
-        </button>
-      </form>
+          <label className={labelClass} htmlFor="new-group-name">
+            New group
+          </label>
+          <input id="new-group-name" name="name" required placeholder="Group name" className={inputClass} />
+          <textarea name="description" rows={2} placeholder="description (optional)" className={inputClass} />
+          <button
+            type="submit"
+            className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-50 transition-colors hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          >
+            Create group
+          </button>
+        </form>
+      )}
     </div>
   );
 }

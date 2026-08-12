@@ -9,6 +9,8 @@ import {
 } from '@/db/repo/runs';
 import { formatDuration, formatIsoDateTime, formatRate, snapshotMachineName } from '@/lib/format';
 import { ratingScore, RATING_META } from '@/lib/rating';
+import { onPage, requireActor } from '@/lib/auth/guards';
+import { canWrite } from '@/lib/auth/policy';
 import { LinkedRow } from '@/components/linked-row';
 import { ArchiveRunButton } from '@/components/runs/archive-run-button';
 import { DeleteRunButton } from '@/components/runs/delete-run-button';
@@ -37,6 +39,8 @@ export default async function RunsPage({
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const sp = await searchParams;
+  const actor = await onPage(requireActor);
+  const writable = canWrite(actor.role);
   const machineIdFilter = firstParam(sp.machineId);
   const modelFilter = firstParam(sp.model);
   const groupFilter = firstParam(sp.group);
@@ -126,12 +130,14 @@ export default async function RunsPage({
             )}
           </p>
         </div>
-        <Link
-          href="/runs/new"
-          className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-zinc-50 transition-colors hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-        >
-          New run
-        </Link>
+        {writable && (
+          <Link
+            href="/runs/new"
+            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-zinc-50 transition-colors hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          >
+            New run
+          </Link>
+        )}
       </div>
 
       <RunsFilterBar options={filterOptions} />
@@ -246,14 +252,16 @@ export default async function RunsPage({
                   {excerpt(run.comment)}
                 </td>
                 <td className="px-2 py-3 text-right">
-                  <div className="flex items-center justify-end gap-1">
-                    <ArchiveRunButton
-                      runId={run.id}
-                      archived={run.archivedAt !== null}
-                      compact
-                    />
-                    <DeleteRunButton runId={run.id} compact />
-                  </div>
+                  {writable && (
+                    <div className="flex items-center justify-end gap-1">
+                      <ArchiveRunButton
+                        runId={run.id}
+                        archived={run.archivedAt !== null}
+                        compact
+                      />
+                      <DeleteRunButton runId={run.id} compact />
+                    </div>
+                  )}
                 </td>
               </LinkedRow>
             ))}

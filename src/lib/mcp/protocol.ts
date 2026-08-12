@@ -12,6 +12,7 @@
  * spec allows in place of an SSE stream.
  */
 
+import { canWrite, type Role } from '@/lib/auth/policy';
 import { McpToolError, toolArgs, type ToolArgs } from './args';
 
 export const LATEST_PROTOCOL_VERSION = '2025-11-25';
@@ -30,6 +31,11 @@ export const SERVER_INFO = {
   version: '0.1.0',
 } as const;
 
+/** Who a call is acting as. Every request carries one; see `lib/mcp/auth.ts`. */
+export interface McpCallContext {
+  actor: { userId: string; email: string; role: Role };
+}
+
 /** One tool: what the model is told, and what actually runs. */
 export interface McpToolSpec {
   name: string;
@@ -37,10 +43,11 @@ export interface McpToolSpec {
   /** JSON Schema for `arguments`. */
   inputSchema: Record<string, unknown>;
   /** Returns any JSON-serializable payload; throw `McpToolError` to fail. */
-  handler: (args: ToolArgs) => Promise<unknown>;
+  handler: (args: ToolArgs, ctx: McpCallContext) => Promise<unknown>;
   /**
    * Tools that only read are annotated as such, so a client can present the
-   * writing ones (or `delete_prompt`) differently.
+   * writing ones (or `delete_prompt`) differently — and so a viewer's token can
+   * be refused everything else.
    */
   readOnly?: boolean;
   destructive?: boolean;
@@ -116,6 +123,7 @@ function describeTool(spec: McpToolSpec) {
 export async function handleMcpMessage(
   payload: unknown,
   registry: readonly McpToolSpec[],
+  ctx: McpCallContext,
 ): Promise<JsonRpcReply> {
   if (Array.isArray(payload)) {
     return protocolError(
@@ -148,7 +156,9 @@ export async function handleMcpMessage(
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
         instructions:
-          'Authoring and reading an LLM benchmark: prompt groups, system prompts and prompts (optionally tool tests), then runs against a registered machine and their measured results.',
+          'Authoring and reading an LLM benchmark: prompt groups, system prompts and prompts (optionally tool tests), then runs against a registered machine and their measured results. ' +
+          `You are authenticated as ${ctx.actor.email} (${ctx.actor.role})` +
+          `${canWrite(ctx.actor.role) ? '.' : ', which is read-only: only the read tools will answer.'}`,
       });
     }
 
@@ -178,8 +188,20 @@ export async function handleMcpMessage(
         return error(id, INVALID_PARAMS, `Unknown tool "${params.name}".`);
       }
 
+      // isError content rather than a JSON-RPC error, for the same reason a
+      // tool failure is: the calling model reads the message and stops trying.
+      if (!spec.readOnly && !canWrite(ctx.actor.role)) {
+        return result(
+          id,
+          textContent(
+            { error: `The token's account is read-only; "${spec.name}" writes.` },
+            true,
+          ),
+        );
+      }
+
       try {
-        const value = await spec.handler(toolArgs(params.arguments));
+        const value = await spec.handler(toolArgs(params.arguments), ctx);
         return result(id, textContent(value, false));
       } catch (err) {
         if (err instanceof McpToolError) {

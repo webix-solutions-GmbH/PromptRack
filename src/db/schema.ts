@@ -308,3 +308,116 @@ export const appSeeds = pgTable(
   },
   (table) => [primaryKey({ columns: [table.kind, table.scope, table.name] })],
 );
+
+// ---------------------------------------------------------------------------
+// auth (better-auth core tables — table names are better-auth's defaults)
+//
+// Global infrastructure rather than workspace data: these tables are what a
+// scope is derived *from*, so they are read through src/lib/auth* and never
+// through the scoped repositories in src/db/repo.
+// ---------------------------------------------------------------------------
+export const users = pgTable('user', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  emailVerified: boolean('email_verified').notNull().default(false),
+  image: text('image'),
+  /** App role. `viewer` is the safe default for anything we did not stamp. */
+  role: text('role', { enum: ['admin', 'member', 'viewer'] })
+    .notNull()
+    .default('viewer'),
+  // better-auth admin plugin fields:
+  banned: boolean('banned').notNull().default(false),
+  banReason: text('ban_reason'),
+  banExpires: timestamp('ban_expires', { withTimezone: true, mode: 'date' }),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+export const sessions = pgTable(
+  'session',
+  {
+    id: text('id').primaryKey(),
+    token: text('token').notNull().unique(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    impersonatedBy: text('impersonated_by'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (table) => [index('session_user_id_idx').on(table.userId)],
+);
+
+export const accounts = pgTable(
+  'account',
+  {
+    id: text('id').primaryKey(),
+    accountId: text('account_id').notNull(),
+    providerId: text('provider_id').notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    accessToken: text('access_token'),
+    refreshToken: text('refresh_token'),
+    idToken: text('id_token'),
+    accessTokenExpiresAt: timestamp('access_token_expires_at', {
+      withTimezone: true,
+      mode: 'date',
+    }),
+    refreshTokenExpiresAt: timestamp('refresh_token_expires_at', {
+      withTimezone: true,
+      mode: 'date',
+    }),
+    scope: text('scope'),
+    password: text('password'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (table) => [index('account_user_id_idx').on(table.userId)],
+);
+
+export const verifications = pgTable(
+  'verification',
+  {
+    id: text('id').primaryKey(),
+    identifier: text('identifier').notNull(),
+    value: text('value').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (table) => [index('verification_identifier_idx').on(table.identifier)],
+);
+
+export type User = typeof users.$inferSelect;
+export type NewUser = typeof users.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// api_tokens — per-user bearer tokens for /api/mcp (hashed at rest)
+// ---------------------------------------------------------------------------
+export const apiTokens = pgTable(
+  'api_tokens',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    /** SHA-256 hex of the raw token. The raw value is shown exactly once. */
+    tokenHash: text('token_hash').notNull().unique(),
+    /** First 12 chars of the raw token, for recognising it in a list. */
+    prefix: text('prefix').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true, mode: 'date' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
+  },
+  (table) => [index('api_tokens_user_id_idx').on(table.userId)],
+);
+
+export type ApiToken = typeof apiTokens.$inferSelect;
+export type NewApiToken = typeof apiTokens.$inferInsert;

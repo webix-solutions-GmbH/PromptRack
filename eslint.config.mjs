@@ -24,6 +24,12 @@ const eslintConfig = defineConfig([
       // Infrastructure, not data access: run-lock.ts takes a Postgres advisory
       // lock on a dedicated connection, which needs the pool itself.
       "src/lib/run-lock.ts",
+      // Same reason: the auth tables (user/session/account/verification/
+      // api_tokens) are global infrastructure — they are what a Scope is
+      // derived *from*, so they cannot be read through a scoped repository.
+      "src/lib/auth.ts",
+      "src/lib/auth/tokens.ts",
+      "src/lib/auth/users.ts",
     ],
     rules: {
       "no-restricted-imports": ["error", {

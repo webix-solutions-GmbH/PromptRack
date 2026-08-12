@@ -10,6 +10,7 @@ import {
   updateMachine as updateMachineRow,
 } from '@/db/repo/machines';
 import { optionalString } from '@/lib/form-data';
+import { requireAdmin } from '@/lib/auth/guards';
 
 function normalizeBaseUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, '');
@@ -43,6 +44,7 @@ function requiredMachineFields(formData: FormData) {
 }
 
 export async function createMachine(formData: FormData) {
+  await requireAdmin();
   const scope = await currentScope();
   const fields = requiredMachineFields(formData);
   const now = new Date();
@@ -54,6 +56,7 @@ export async function createMachine(formData: FormData) {
 }
 
 export async function updateMachine(id: number, formData: FormData) {
+  await requireAdmin();
   const scope = await currentScope();
   const fields = requiredMachineFields(formData);
 
@@ -64,12 +67,14 @@ export async function updateMachine(id: number, formData: FormData) {
 }
 
 export async function deleteMachine(id: number) {
+  await requireAdmin();
   const scope = await currentScope();
   await deleteMachineRow(scope, id);
   revalidatePath('/machines');
 }
 
 export async function addManualModel(machineId: number, formData: FormData) {
+  await requireAdmin();
   const scope = await currentScope();
   const modelId = optionalString(formData, 'modelId');
   if (!modelId) {

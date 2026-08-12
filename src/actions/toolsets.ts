@@ -13,6 +13,7 @@ import {
 } from '@/db/repo/toolsets';
 import { validateParameterSchema, validateToolName } from '@/lib/tools';
 import { optionalString } from '@/lib/form-data';
+import { requireAdmin, requireWriter } from '@/lib/auth/guards';
 
 /**
  * A toolset's editable fields. `mcp` toolsets need a reachable endpoint; a
@@ -61,6 +62,7 @@ function toolsetFields(formData: FormData) {
 }
 
 export async function createToolset(formData: FormData) {
+  await requireAdmin();
   const fields = toolsetFields(formData);
 
   await createToolsetRow(await currentScope(), { ...fields, now: new Date() });
@@ -69,6 +71,7 @@ export async function createToolset(formData: FormData) {
 }
 
 export async function updateToolset(id: number, formData: FormData) {
+  await requireAdmin();
   const fields = toolsetFields(formData);
 
   await updateToolsetRow(await currentScope(), id, { ...fields, now: new Date() });
@@ -82,6 +85,7 @@ export async function updateToolset(id: number, formData: FormData) {
  * touches `run_results` — a past run renders from its own frozen snapshot.
  */
 export async function deleteToolset(id: number) {
+  await requireAdmin();
   await deleteToolsetRow(await currentScope(), id);
   revalidatePath('/toolsets');
   revalidatePath('/prompts');
@@ -126,6 +130,7 @@ function describeToolWriteError(err: unknown, name: string): Error {
 }
 
 export async function createTool(toolsetId: number, formData: FormData) {
+  await requireWriter();
   const scope = await currentScope();
   const fields = toolFields(formData);
 
@@ -139,6 +144,7 @@ export async function createTool(toolsetId: number, formData: FormData) {
 }
 
 export async function updateTool(id: number, formData: FormData) {
+  await requireWriter();
   const scope = await currentScope();
   const fields = toolFields(formData);
 
@@ -152,6 +158,7 @@ export async function updateTool(id: number, formData: FormData) {
 }
 
 export async function deleteTool(id: number) {
+  await requireWriter();
   await deleteToolRow(await currentScope(), id);
   revalidatePath('/toolsets');
 }
@@ -162,6 +169,7 @@ export async function deleteTool(id: number) {
  * `machine_models` treats models the same way.
  */
 export async function setToolEnabled(id: number, enabled: boolean) {
+  await requireWriter();
   await setToolEnabledRow(await currentScope(), id, enabled);
   revalidatePath('/toolsets');
 }

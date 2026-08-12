@@ -14,6 +14,7 @@ import {
 } from '@/db/repo/prompts';
 import { normalizeMaxTurns, type ToolChoice, type ToolMode } from '@/lib/tools';
 import { optionalId, optionalString, requiredString } from '@/lib/form-data';
+import { requireWriter } from '@/lib/auth/guards';
 
 function requiredMode(formData: FormData): 'append' | 'override' {
   const value = formData.get('systemPromptMode');
@@ -56,6 +57,7 @@ function toolFields(formData: FormData) {
 // ---------------------------------------------------------------------------
 
 export async function createGroup(formData: FormData) {
+  await requireWriter();
   const name = requiredString(formData, 'name');
   const description = optionalString(formData, 'description');
 
@@ -70,6 +72,7 @@ export async function createGroup(formData: FormData) {
 }
 
 export async function updateGroup(id: number, formData: FormData) {
+  await requireWriter();
   const name = requiredString(formData, 'name');
   const description = optionalString(formData, 'description');
 
@@ -79,6 +82,7 @@ export async function updateGroup(id: number, formData: FormData) {
 }
 
 export async function deleteGroup(id: number) {
+  await requireWriter();
   await deleteGroupRow(await currentScope(), id);
   revalidatePath('/prompts');
 }
@@ -96,6 +100,7 @@ function requiredGroupId(formData: FormData): number {
 }
 
 export async function createPrompt(formData: FormData) {
+  await requireWriter();
   const groupId = requiredGroupId(formData);
   const title = requiredString(formData, 'title');
   const content = requiredString(formData, 'content');
@@ -126,6 +131,7 @@ export async function createPrompt(formData: FormData) {
 }
 
 export async function updatePrompt(id: number, formData: FormData) {
+  await requireWriter();
   const title = requiredString(formData, 'title');
   const content = requiredString(formData, 'content');
   const expectedOutput = optionalString(formData, 'expectedOutput');
@@ -151,6 +157,7 @@ export async function updatePrompt(id: number, formData: FormData) {
 }
 
 export async function deletePrompt(id: number) {
+  await requireWriter();
   await deletePromptRow(await currentScope(), id);
   revalidatePath('/prompts');
 }

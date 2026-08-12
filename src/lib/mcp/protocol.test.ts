@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import type { Role } from '@/lib/auth/policy';
 import { McpToolError } from './args';
 import {
   handleMcpMessage,
   LATEST_PROTOCOL_VERSION,
+  type McpCallContext,
   type McpToolSpec,
 } from './protocol';
-import { checkApiKey } from './auth';
+
+const invoked: string[] = [];
 
 const REGISTRY: McpToolSpec[] = [
   {
@@ -13,7 +16,19 @@ const REGISTRY: McpToolSpec[] = [
     description: 'Echoes its argument.',
     readOnly: true,
     inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
-    handler: async (args) => ({ value: args.value ?? null }),
+    handler: async (args) => {
+      invoked.push('echo');
+      return { value: args.value ?? null };
+    },
+  },
+  {
+    name: 'write_something',
+    description: 'Writes.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async () => {
+      invoked.push('write_something');
+      return { ok: true };
+    },
   },
   {
     name: 'refuse',
@@ -33,10 +48,15 @@ const REGISTRY: McpToolSpec[] = [
   },
 ];
 
-function call(name: string, args?: unknown) {
+function ctx(role: Role = 'member'): McpCallContext {
+  return { actor: { userId: 'u1', email: 'user@example.com', role } };
+}
+
+function call(name: string, args?: unknown, role: Role = 'member') {
   return handleMcpMessage(
     { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
     REGISTRY,
+    ctx(role),
   );
 }
 
@@ -54,6 +74,7 @@ describe('initialize', () => {
     const reply = await handleMcpMessage(
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } },
       REGISTRY,
+      ctx(),
     );
     expect(resultOf(reply).protocolVersion).toBe('2025-03-26');
   });
@@ -62,12 +83,13 @@ describe('initialize', () => {
     const reply = await handleMcpMessage(
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '1999-01-01' } },
       REGISTRY,
+      ctx(),
     );
     expect(resultOf(reply).protocolVersion).toBe(LATEST_PROTOCOL_VERSION);
   });
 
   it('advertises only tools', async () => {
-    const reply = await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'initialize' }, REGISTRY);
+    const reply = await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'initialize' }, REGISTRY, ctx());
     expect(resultOf(reply).capabilities).toEqual({ tools: { listChanged: false } });
   });
 });
@@ -77,6 +99,7 @@ describe('notifications', () => {
     const reply = await handleMcpMessage(
       { jsonrpc: '2.0', method: 'notifications/initialized' },
       REGISTRY,
+      ctx(),
     );
     expect(reply).toEqual({ status: 202, body: null });
   });
@@ -84,10 +107,15 @@ describe('notifications', () => {
 
 describe('tools/list', () => {
   it('describes every tool without leaking the handler', async () => {
-    const reply = await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, REGISTRY);
+    const reply = await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, REGISTRY, ctx());
     const tools = resultOf(reply).tools as Record<string, unknown>[];
 
-    expect(tools.map((tool) => tool.name)).toEqual(['echo', 'refuse', 'crash']);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      'echo',
+      'write_something',
+      'refuse',
+      'crash',
+    ]);
     expect(tools[0]).not.toHaveProperty('handler');
     expect(tools[0].annotations).toEqual({ readOnlyHint: true, destructiveHint: false });
     expect(tools[1].annotations).toEqual({ readOnlyHint: false, destructiveHint: false });
@@ -128,7 +156,7 @@ describe('tools/call', () => {
 
 describe('unsupported shapes', () => {
   it('declines batches, which the current protocol removed', async () => {
-    const reply = await handleMcpMessage([{ jsonrpc: '2.0', id: 1, method: 'ping' }], REGISTRY);
+    const reply = await handleMcpMessage([{ jsonrpc: '2.0', id: 1, method: 'ping' }], REGISTRY, ctx());
     expect(reply.status).toBe(400);
     expect(errorOf(reply)?.message).toContain('batching is not supported');
   });
@@ -137,51 +165,63 @@ describe('unsupported shapes', () => {
     const reply = await handleMcpMessage(
       { jsonrpc: '2.0', id: 1, method: 'resources/read' },
       REGISTRY,
+      ctx(),
     );
     expect(errorOf(reply)?.code).toBe(-32601);
   });
 
   it('answers probes for resources and prompts with empty lists', async () => {
     expect(
-      resultOf(await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'resources/list' }, REGISTRY)),
+      resultOf(await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'resources/list' }, REGISTRY, ctx())),
     ).toEqual({ resources: [] });
     expect(
-      resultOf(await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'prompts/list' }, REGISTRY)),
+      resultOf(await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'prompts/list' }, REGISTRY, ctx())),
     ).toEqual({ prompts: [] });
   });
 });
 
-describe('checkApiKey', () => {
-  it('accepts the key in x-api-key', () => {
-    expect(checkApiKey(new Headers({ 'x-api-key': 'secret' }), 'secret')).toEqual({ ok: true });
+describe('the actor\'s role gates tools/call', () => {
+  beforeEach(() => {
+    invoked.length = 0;
   });
 
-  it('accepts a bearer token as a fallback', () => {
-    expect(checkApiKey(new Headers({ authorization: 'Bearer secret' }), 'secret')).toEqual({
-      ok: true,
+  it('lets a viewer call a read-only tool', async () => {
+    const result = resultOf(await call('echo', { value: 'hi' }, 'viewer'));
+    expect(result.isError).toBe(false);
+    expect(invoked).toEqual(['echo']);
+  });
+
+  it('refuses a viewer a writing tool as isError content, not a JSON-RPC error', async () => {
+    const reply = await call('write_something', {}, 'viewer');
+    const result = resultOf(reply);
+    expect(errorOf(reply)).toBeUndefined();
+    expect(result.isError).toBe(true);
+    expect(JSON.parse((result.content as { text: string }[])[0].text)).toEqual({
+      error: 'The token\'s account is read-only; "write_something" writes.',
     });
   });
 
-  it('prefers x-api-key, so basic auth for the proxy can travel alongside', () => {
-    const headers = new Headers({
-      authorization: 'Basic dXNlcjpwYXNz',
-      'x-api-key': 'secret',
-    });
-    expect(checkApiKey(headers, 'secret')).toEqual({ ok: true });
+  it('never reaches the handler of a tool it refuses', async () => {
+    await call('write_something', {}, 'viewer');
+    expect(invoked).toEqual([]);
   });
 
-  it('rejects a wrong key and a missing one differently', () => {
-    const wrong = checkApiKey(new Headers({ 'x-api-key': 'nope' }), 'secret');
-    expect(wrong).toMatchObject({ ok: false, status: 401, message: 'Invalid API key.' });
-
-    const missing = checkApiKey(new Headers(), 'secret');
-    expect(missing).toMatchObject({ ok: false, status: 401 });
-    expect(missing.ok === false && missing.message).toContain('Missing API key');
+  it('lets a member and an admin write', async () => {
+    expect(resultOf(await call('write_something', {}, 'member')).isError).toBe(false);
+    expect(resultOf(await call('write_something', {}, 'admin')).isError).toBe(false);
+    expect(invoked).toEqual(['write_something', 'write_something']);
   });
+});
 
-  it('refuses everything when no key is configured', () => {
-    const reply = checkApiKey(new Headers({ 'x-api-key': 'anything' }), null);
-    expect(reply).toMatchObject({ ok: false, status: 503 });
-    expect(reply.ok === false && reply.message).toContain('MCP_API_KEY');
+describe('initialize instructions', () => {
+  it('name the authenticated account, so a transcript records who acted', async () => {
+    const reply = await handleMcpMessage(
+      { jsonrpc: '2.0', id: 1, method: 'initialize' },
+      REGISTRY,
+      ctx('viewer'),
+    );
+    const instructions = resultOf(reply).instructions as string;
+    expect(instructions).toContain('user@example.com');
+    expect(instructions).toContain('read-only');
   });
 });

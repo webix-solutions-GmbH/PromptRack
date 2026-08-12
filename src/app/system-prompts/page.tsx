@@ -1,6 +1,8 @@
 import { currentScope } from '@/db/scope';
 import { listSystemPrompts } from '@/db/repo/system-prompts';
 import { createSystemPrompt } from '@/actions/system-prompts';
+import { onPage, requireActor } from '@/lib/auth/guards';
+import { canWrite } from '@/lib/auth/policy';
 import { CreateToggle } from '@/components/create-toggle';
 import { SystemPromptRow } from '@/components/system-prompts/system-prompt-row';
 
@@ -11,6 +13,8 @@ const inputClass =
 const labelClass = 'text-xs font-medium text-zinc-600 dark:text-zinc-400';
 
 export default async function SystemPromptsPage() {
+  const actor = await onPage(requireActor);
+  const writable = canWrite(actor.role);
   const rows = await listSystemPrompts(await currentScope(), 'updated');
 
   return (
@@ -19,6 +23,7 @@ export default async function SystemPromptsPage() {
         label="New system prompt"
         title="New system prompt"
         className="max-w-3xl"
+        canCreate={writable}
         header={
           <div className="flex flex-col gap-2">
             <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
@@ -74,7 +79,7 @@ export default async function SystemPromptsPage() {
           </li>
         )}
         {rows.map((prompt) => (
-          <SystemPromptRow key={prompt.id} prompt={prompt} />
+          <SystemPromptRow key={prompt.id} prompt={prompt} canWrite={writable} />
         ))}
       </ul>
     </div>

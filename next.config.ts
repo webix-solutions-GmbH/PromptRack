@@ -4,6 +4,11 @@ import { BASE_PATH } from "./src/lib/base-path";
 const nextConfig: NextConfig = {
   // Served at https://ki01.webix.de/agent-val (path-based routing in Caddy).
   basePath: BASE_PATH,
+  experimental: {
+    // Lets a page answer a refused role with `forbidden()` / `unauthorized()`
+    // — a real 403/401 and our own page, instead of a thrown error's 500.
+    authInterrupts: true,
+  },
   // Emit `.next/standalone` so the Docker runner image does not need node_modules.
   output: "standalone",
   // `pg` is on Next's built-in server-external list, so it is never bundled.

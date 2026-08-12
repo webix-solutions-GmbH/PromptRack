@@ -2,6 +2,7 @@ import { revalidatePath } from 'next/cache';
 import { currentScope } from '@/db/scope';
 import { getToolset, syncDiscoveredTools } from '@/db/repo/toolsets';
 import { listMcpTools, parseMcpHeaders } from '@/lib/mcp-client';
+import { guardRequest } from '@/lib/auth/guards';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,9 +15,13 @@ export const dynamic = 'force-dynamic';
  * came from.
  */
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // Admin: discovery talks to the toolset's mcp_url with its stored headers.
+  const guard = await guardRequest(request, 'admin');
+  if ('response' in guard) return guard.response;
+
   const { id: idParam } = await params;
   const id = Number(idParam);
   if (!Number.isInteger(id)) {

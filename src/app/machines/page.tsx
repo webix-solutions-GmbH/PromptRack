@@ -3,6 +3,8 @@ import { currentScope } from '@/db/scope';
 import { listMachines, machineModelCounts } from '@/db/repo/machines';
 import { formatDateTime } from '@/lib/format';
 import { createMachine } from '@/actions/machines';
+import { onPage, requireActor } from '@/lib/auth/guards';
+import { canAdminister } from '@/lib/auth/policy';
 import { CreateToggle } from '@/components/create-toggle';
 
 export const dynamic = 'force-dynamic';
@@ -29,6 +31,7 @@ async function getMachinesWithCounts() {
 }
 
 export default async function MachinesPage() {
+  const actor = await onPage(requireActor);
   const rows = await getMachinesWithCounts();
 
   return (
@@ -37,6 +40,7 @@ export default async function MachinesPage() {
         label="New machine"
         title="New machine"
         className="max-w-2xl"
+        canCreate={canAdminister(actor.role)}
         header={
           <div className="flex flex-col gap-2">
             <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">

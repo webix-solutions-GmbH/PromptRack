@@ -1,3 +1,5 @@
+import { mockDisabledResponse, mocksEnabled } from '@/lib/dev-only';
+
 export const dynamic = 'force-dynamic';
 
 const CHUNK_COUNT = 10;
@@ -168,6 +170,7 @@ function sse(payload: unknown): string {
  * end-to-end testing of the run executor.
  */
 export async function POST(request: Request) {
+  if (!mocksEnabled()) return mockDisabledResponse();
   let payload: unknown;
   try {
     payload = await request.json();

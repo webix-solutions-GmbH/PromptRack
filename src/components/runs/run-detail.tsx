@@ -74,9 +74,11 @@ function formatParams(params: Record<string, unknown> | null): string {
 export function RunDetail({
   run,
   results: initialResults,
+  canWrite,
 }: {
   run: RunView;
   results: ResultView[];
+  canWrite: boolean;
 }) {
   // Server-rendered rows seed the view; once the driver starts, its events are
   // the source of truth for this page (every event is already persisted).
@@ -358,7 +360,7 @@ export function RunDetail({
           </div>
 
           <div className="flex items-center gap-2">
-            {running ? (
+            {!canWrite ? null : running ? (
               <button
                 type="button"
                 onClick={() => abortRef.current?.abort()}
@@ -437,7 +439,7 @@ export function RunDetail({
         </div>
 
         <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
-          <RunComment runId={run.id} comment={run.comment} />
+          <RunComment runId={run.id} comment={run.comment} canWrite={canWrite} />
         </div>
 
         {error && (
@@ -453,6 +455,7 @@ export function RunDetail({
             key={result.id}
             result={result}
             index={index + 1}
+            canWrite={canWrite}
             onRatingChange={handleRatingChange}
           />
         ))}

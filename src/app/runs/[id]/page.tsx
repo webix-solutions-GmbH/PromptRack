@@ -6,6 +6,8 @@ import { parseRating } from '@/lib/rating';
 import type { RunResultStatus, RunStatus } from '@/lib/run-events';
 import { parseTranscript, parseTurns, type StoppedReason } from '@/lib/tool-loop';
 import { parseToolsSnapshot, type ToolChoice, type ToolMode } from '@/lib/tools';
+import { onPage, requireActor } from '@/lib/auth/guards';
+import { canWrite } from '@/lib/auth/policy';
 import { RunDetail } from '@/components/runs/run-detail';
 import type { ResultView, RunView } from '@/components/runs/types';
 
@@ -62,6 +64,7 @@ export default async function RunDetailPage({
     notFound();
   }
 
+  const actor = await onPage(requireActor);
   const scope = await currentScope();
   const run = await getRun(scope, id);
   if (!run) {
@@ -122,5 +125,5 @@ export default async function RunDetailPage({
     stoppedReason: row.stoppedReason as StoppedReason | null,
   }));
 
-  return <RunDetail run={runView} results={resultViews} />;
+  return <RunDetail run={runView} results={resultViews} canWrite={canWrite(actor.role)} />;
 }

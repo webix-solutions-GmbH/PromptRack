@@ -1,3 +1,5 @@
+import { mockDisabledResponse, mocksEnabled } from '@/lib/dev-only';
+
 export const dynamic = 'force-dynamic';
 
 /**
@@ -5,6 +7,7 @@ export const dynamic = 'force-dynamic';
  * `http://localhost:3000/api/mock-llm` to exercise runs without real hardware.
  */
 export async function GET() {
+  if (!mocksEnabled()) return mockDisabledResponse();
   const created = Math.floor(Date.now() / 1000);
 
   return Response.json({

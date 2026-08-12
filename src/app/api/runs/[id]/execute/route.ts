@@ -2,6 +2,7 @@ import { currentScope } from '@/db/scope';
 import { countPendingResults, getRun } from '@/db/repo/runs';
 import { executeRun, isRunExecuting } from '@/lib/run-executor';
 import type { RunEvent, RunStatus } from '@/lib/run-events';
+import { guardRequest } from '@/lib/auth/guards';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +21,11 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // Before anything else, and above all before the stream is constructed: a
+  // refusal has to be plain JSON rather than a truncated NDJSON body.
+  const guard = await guardRequest(request, 'write');
+  if ('response' in guard) return guard.response;
+
   const { id: idParam } = await params;
   const runId = Number(idParam);
   if (!Number.isInteger(runId)) {

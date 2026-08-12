@@ -14,6 +14,7 @@ import type { Rating } from '@/lib/rating';
 import { createRunRecord } from '@/lib/run-create';
 import { isRunExecuting } from '@/lib/run-executor';
 import { optionalNumber, optionalString } from '@/lib/form-data';
+import { requireWriter } from '@/lib/auth/guards';
 
 /**
  * Extra body fields sent to the endpoint. Empty inputs are omitted entirely so
@@ -60,6 +61,7 @@ function selectedGroupIds(formData: FormData): number[] {
  * server share one implementation; here we only parse the form and navigate.
  */
 export async function createRun(formData: FormData) {
+  await requireWriter();
   const machineId = Number(optionalString(formData, 'machineId'));
   if (!Number.isInteger(machineId)) {
     throw new Error('Select a machine.');
@@ -84,6 +86,7 @@ export async function createRun(formData: FormData) {
 }
 
 export async function updateRunComment(runId: number, comment: string) {
+  await requireWriter();
   const trimmed = comment.trim();
 
   await updateRunCommentRow(await currentScope(), runId, trimmed.length > 0 ? trimmed : null);
@@ -102,6 +105,7 @@ export async function rateResult(
   rating: Rating | null,
   note?: string | null,
 ) {
+  await requireWriter();
   const values: { rating: Rating | null; ratingNote?: string | null } = { rating };
   if (note !== undefined) {
     const trimmed = note?.trim() ?? '';
@@ -119,6 +123,7 @@ export async function rateResult(
 
 /** Saves a result's free-text rating note independently of its good/bad rating. */
 export async function updateResultNote(resultId: number, note: string) {
+  await requireWriter();
   const trimmed = note.trim();
 
   const result = await setResultNote(
@@ -141,6 +146,7 @@ export async function updateResultNote(resultId: number, note: string) {
  * does — the list the user is looking at would be lying about it.
  */
 export async function setRunArchived(runId: number, archived: boolean) {
+  await requireWriter();
   if (archived && (await isRunExecuting(runId))) {
     throw new Error('This run is currently executing — stop it before archiving.');
   }
@@ -159,6 +165,7 @@ export async function setRunArchived(runId: number, archived: boolean) {
  * the client's try/catch and read as a failure.
  */
 export async function deleteRun(runId: number) {
+  await requireWriter();
   if (await isRunExecuting(runId)) {
     throw new Error('This run is currently executing — stop it before deleting.');
   }

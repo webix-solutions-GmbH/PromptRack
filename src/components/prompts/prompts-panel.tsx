@@ -23,12 +23,14 @@ export function PromptsPanel({
   systemPrompts,
   toolsets,
   toolsetIdsByPrompt,
+  canWrite,
 }: {
   groupId: number;
   prompts: Prompt[];
   systemPrompts: SystemPromptOption[];
   toolsets: ToolsetOption[];
   toolsetIdsByPrompt: Record<number, number[]>;
+  canWrite: boolean;
 }) {
   const router = useRouter();
   const [editingId, setEditingId] = useState<number | 'new' | null>(null);
@@ -56,7 +58,7 @@ export function PromptsPanel({
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Prompts</h2>
-        {editingId === null && (
+        {canWrite && editingId === null && (
           <button
             type="button"
             onClick={() => setEditingId('new')}
@@ -156,22 +158,24 @@ export function PromptsPanel({
                     Updated {formatDateTime(prompt.updatedAt)}
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setEditingId(prompt.id)}
-                    className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(prompt)}
-                    className="rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-                  >
-                    Delete
-                  </button>
-                </div>
+                {canWrite && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingId(prompt.id)}
+                      className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(prompt)}
+                      className="rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
               </div>
 
               <p className="line-clamp-2 text-sm text-zinc-600 dark:text-zinc-400">

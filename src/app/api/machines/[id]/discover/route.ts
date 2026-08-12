@@ -2,13 +2,19 @@ import { revalidatePath } from 'next/cache';
 import { currentScope } from '@/db/scope';
 import { getMachine, syncDiscoveredModels } from '@/db/repo/machines';
 import { describeFetchError } from '@/lib/fetch-error';
+import { guardRequest } from '@/lib/auth/guards';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // 'write', not 'admin': /runs/new posts this on page load for every user, and
+  // the response carries model ids only — never the machine's api key.
+  const guard = await guardRequest(request, 'write');
+  if ('response' in guard) return guard.response;
+
   const { id: idParam } = await params;
   const id = Number(idParam);
   if (!Number.isInteger(id)) {

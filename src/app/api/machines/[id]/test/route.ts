@@ -1,13 +1,18 @@
 import { currentScope } from '@/db/scope';
 import { getMachine } from '@/db/repo/machines';
 import { describeFetchError } from '@/lib/fetch-error';
+import { guardRequest } from '@/lib/auth/guards';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // Admin: this probes the endpoint with its stored credentials.
+  const guard = await guardRequest(request, 'admin');
+  if ('response' in guard) return guard.response;
+
   const { id: idParam } = await params;
   const id = Number(idParam);
   if (!Number.isInteger(id)) {

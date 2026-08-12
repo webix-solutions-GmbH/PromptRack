@@ -7,21 +7,31 @@ import { useState } from 'react';
  * below the header. The form is passed as (server-rendered) children, so pages
  * keep their plain server-action forms; only the open/closed state lives on
  * the client. `header` is the page's title block (h1 + description).
+ *
+ * `canCreate` false leaves the header alone and drops the button and the form —
+ * a role that cannot create must not be offered the control, because a server
+ * action's error is opaque in a production build.
  */
 export function CreateToggle({
   label,
   title,
   header,
   className,
+  canCreate = true,
   children,
 }: {
   label: string;
   title: string;
   header: React.ReactNode;
   className?: string;
+  canCreate?: boolean;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+
+  if (!canCreate) {
+    return <div className="flex flex-wrap items-start justify-between gap-4">{header}</div>;
+  }
 
   return (
     <>

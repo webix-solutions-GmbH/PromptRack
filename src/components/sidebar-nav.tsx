@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import type { Role } from "@/lib/auth/policy";
 
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard" },
@@ -11,14 +12,16 @@ const NAV_ITEMS = [
   { href: "/prompts", label: "Prompts" },
   { href: "/runs", label: "Runs" },
   { href: "/results", label: "Results" },
+  { href: "/account/tokens", label: "API tokens" },
+  { href: "/admin/users", label: "Users", adminOnly: true },
 ] as const;
 
-export function SidebarNav() {
+export function SidebarNav({ role }: { role: Role }) {
   const pathname = usePathname();
 
   return (
     <nav className="flex flex-col gap-1 p-4">
-      {NAV_ITEMS.map((item) => {
+      {NAV_ITEMS.filter((item) => !("adminOnly" in item) || role === "admin").map((item) => {
         const isActive =
           item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
 

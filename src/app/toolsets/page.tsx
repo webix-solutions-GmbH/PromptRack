@@ -1,6 +1,8 @@
 import { currentScope } from '@/db/scope';
 import { listTools, listToolsets } from '@/db/repo/toolsets';
 import { createToolset } from '@/actions/toolsets';
+import { onPage, requireActor } from '@/lib/auth/guards';
+import { canAdminister, canWrite } from '@/lib/auth/policy';
 import { CreateToggle } from '@/components/create-toggle';
 import { ToolsetCard } from '@/components/toolsets/toolset-card';
 import { CreateToolsetForm } from '@/components/toolsets/create-toolset-form';
@@ -8,6 +10,7 @@ import { CreateToolsetForm } from '@/components/toolsets/create-toolset-form';
 export const dynamic = 'force-dynamic';
 
 export default async function ToolsetsPage() {
+  const actor = await onPage(requireActor);
   const scope = await currentScope();
   const toolsetRows = await listToolsets(scope);
   const toolRows = await listTools(scope);
@@ -25,6 +28,7 @@ export default async function ToolsetsPage() {
         label="New toolset"
         title="New toolset"
         className="max-w-4xl"
+        canCreate={canAdminister(actor.role)}
         header={
           <div className="flex flex-col gap-2">
             <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
@@ -52,6 +56,8 @@ export default async function ToolsetsPage() {
             key={toolset.id}
             toolset={toolset}
             tools={toolsByToolset.get(toolset.id) ?? []}
+            canWrite={canWrite(actor.role)}
+            canAdminister={canAdminister(actor.role)}
           />
         ))}
       </ul>

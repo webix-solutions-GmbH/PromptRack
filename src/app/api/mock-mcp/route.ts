@@ -1,3 +1,5 @@
+import { mockDisabledResponse, mocksEnabled } from '@/lib/dev-only';
+
 export const dynamic = 'force-dynamic';
 
 /**
@@ -81,6 +83,7 @@ function callTool(name: string, args: Record<string, unknown>, forceFail: boolea
 }
 
 export async function POST(request: Request) {
+  if (!mocksEnabled()) return mockDisabledResponse();
   const url = new URL(request.url);
   const hidden = new Set(url.searchParams.getAll('hide'));
   const forceFail = url.searchParams.get('fail') === '1';

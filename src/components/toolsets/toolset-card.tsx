@@ -36,7 +36,21 @@ function KindBadge({ kind }: { kind: ToolsetKind }) {
   );
 }
 
-export function ToolsetCard({ toolset, tools }: { toolset: Toolset; tools: Tool[] }) {
+/**
+ * `canAdminister` gates the toolset itself (its `mcp_url` and headers are
+ * credentials); `canWrite` gates the tools inside it, which are content.
+ */
+export function ToolsetCard({
+  toolset,
+  tools,
+  canWrite,
+  canAdminister,
+}: {
+  toolset: Toolset;
+  tools: Tool[];
+  canWrite: boolean;
+  canAdminister: boolean;
+}) {
   const router = useRouter();
   const [editingToolset, setEditingToolset] = useState(false);
   const [editingToolId, setEditingToolId] = useState<number | 'new' | null>(null);
@@ -110,24 +124,26 @@ export function ToolsetCard({ toolset, tools }: { toolset: Toolset; tools: Tool[
             </span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {toolset.kind === 'mcp' && <DiscoverToolsButton toolsetId={toolset.id} />}
-            <button
-              type="button"
-              onClick={() => setEditingToolset(true)}
-              className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            >
-              Edit
-            </button>
-            <button
-              type="button"
-              onClick={handleDeleteToolset}
-              disabled={pending}
-              className="rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-            >
-              Delete
-            </button>
-          </div>
+          {canAdminister && (
+            <div className="flex flex-wrap items-center gap-2">
+              {toolset.kind === 'mcp' && <DiscoverToolsButton toolsetId={toolset.id} />}
+              <button
+                type="button"
+                onClick={() => setEditingToolset(true)}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteToolset}
+                disabled={pending}
+                className="rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+              >
+                Delete
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -138,7 +154,7 @@ export function ToolsetCard({ toolset, tools }: { toolset: Toolset; tools: Tool[
           <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
             Tools
           </h3>
-          {editingToolId === null && (
+          {canWrite && editingToolId === null && (
             <button
               type="button"
               onClick={() => setEditingToolId('new')}
@@ -230,39 +246,41 @@ export function ToolsetCard({ toolset, tools }: { toolset: Toolset; tools: Tool[
                   </details>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() =>
-                      run(
-                        () => setToolEnabled(tool.id, !tool.enabled),
-                        'Failed to change the tool.',
-                      )
-                    }
-                    className="rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                  >
-                    {tool.enabled ? 'Disable' : 'Enable'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingToolId(tool.id)}
-                    className="rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() => {
-                      if (!window.confirm(`Delete tool "${tool.name}"?`)) return;
-                      run(() => deleteTool(tool.id), 'Failed to delete the tool.');
-                    }}
-                    className="rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-                  >
-                    Delete
-                  </button>
-                </div>
+                {canWrite && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={pending}
+                      onClick={() =>
+                        run(
+                          () => setToolEnabled(tool.id, !tool.enabled),
+                          'Failed to change the tool.',
+                        )
+                      }
+                      className="rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    >
+                      {tool.enabled ? 'Disable' : 'Enable'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingToolId(tool.id)}
+                      className="rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      disabled={pending}
+                      onClick={() => {
+                        if (!window.confirm(`Delete tool "${tool.name}"?`)) return;
+                        run(() => deleteTool(tool.id), 'Failed to delete the tool.');
+                      }}
+                      className="rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
               </li>
             ),
           )}

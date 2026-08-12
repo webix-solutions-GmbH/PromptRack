@@ -1,6 +1,6 @@
 # Agent Model Evaluator
 
-A single-user benchmarking tool for self-hosted LLMs. Point it at one or more
+A benchmarking tool for self-hosted LLMs. Point it at one or more
 OpenAI-compatible endpoints, keep a library of prompts, run those prompts
 against a model, rate the answers, and compare runs side by side.
 
@@ -15,12 +15,22 @@ development database.
 ```bash
 nvm use 22
 npm install
-cp .env.example .env.local     # optional; npm run dev writes it if missing
+cp .env.example .env.local     # optional; npm run dev writes DATABASE_URL if missing
 npm run dev                    # starts postgres in docker, migrates, serves /agent-val
 npm run db:seed                # optional: sample toolsets + prompt groups
 ```
 
-The app lives under its basePath: `http://localhost:3000/agent-val`.
+`.env.local` also needs the two auth variables (`npm run dev` does *not* write
+these — a signing key has to be yours):
+
+```bash
+BETTER_AUTH_SECRET=$(openssl rand -base64 32)
+BETTER_AUTH_URL=http://localhost:3000/agent-val   # origin *including* the basePath
+```
+
+The app lives under its basePath: `http://localhost:3000/agent-val`. Open it and
+**the first account you create becomes the administrator** — see [Accounts and
+roles](#accounts-and-roles).
 
 `npm run dev` runs `scripts/dev-db.mjs` first, which brings up the
 `docker-compose.dev.yml` postgres on `127.0.0.1:5433`, waits for it and applies
@@ -51,14 +61,20 @@ app), which waits for the database to report healthy before it starts.
 - Put `POSTGRES_PASSWORD` in a `.env` file next to `docker-compose.yml`; compose
   refuses to start without it. `DATABASE_URL` is optional and overrides the
   bundled database with an external one.
+- `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` go in the same `.env`.
+  `BETTER_AUTH_URL` is the **public** origin including the basePath
+  (`https://ki01.webix.de/agent-val`); every auth URL, the OIDC `redirect_uri`
+  included, is built from it.
 - State lives in the named volume `pgdata` — there is no bind mount and no uid
   matching to get right. Back it up with
   `docker compose exec -T postgres pg_dump -U agentval agentval > backup.sql`.
 - The compose service is `agent-val`, listening on port 3000 in the container.
 - It joins the **external** network `llm_default` (created by the LLM stack);
   Caddy serves the app at `https://ki01.webix.de/agent-val` (path-based routing
-  via a `handle /agent-val*` block → `agent-val:3000`) and puts HTTP basic auth
-  in front of it. The app itself has no authentication.
+  via a `handle /agent-val*` block → `agent-val:3000`). Caddy's HTTP basic auth
+  is now **optional** — the app authenticates users itself. If you keep it, an
+  MCP client has to send both credentials at once: basic auth in `Authorization`
+  and its API token in `x-api-key` (which is why that header is read first).
 - The app is built with `basePath: '/agent-val'` (see `src/lib/base-path.ts`),
   so it expects that prefix everywhere — including in dev
   (`http://localhost:3000/agent-val`). Raw `fetch()` calls to our own API routes
@@ -90,6 +106,53 @@ carried in the runner image, so it needs no dev dependencies and no TypeScript.
 
 `npm run db:migrate` is the same script against your local database; `db:init`
 is `db:generate` followed by it.
+
+## Accounts and roles
+
+Sign-in is email + password, optionally single sign-on. There is no public
+registration: **the first account ever created is the administrator**, and the
+sign-up endpoint is refused from then on. Every further account is created by an
+admin under `/agent-val/admin/users` or provisioned by your identity provider.
+
+| Role | May |
+| --- | --- |
+| **Admin** | Everything a member can, plus users, machines and toolset credentials. |
+| **Member** | Prompts, system prompts, tools, runs and ratings. |
+| **Viewer** | Read-only. |
+
+The split is content versus credentials: a machine's base URL + API key and a
+toolset's MCP URL + headers are secrets, so they are admin-only, while the tools
+*inside* a toolset are content and a member may edit them. A role change takes
+effect on the requester's next request — sessions carry no cached copy of it.
+
+Controls a role cannot use are not rendered, and every server action, route
+handler and page re-checks the role server-side regardless.
+
+### Single sign-on (optional)
+
+Set `OIDC_ISSUER` and `OIDC_CLIENT_ID` (plus `OIDC_CLIENT_SECRET` for a
+confidential client) and a "Single sign-on" button appears on the sign-in page.
+Discovery is automatic: the issuer's `/.well-known/openid-configuration` is
+read, so no endpoint URLs are configured by hand.
+
+The **redirect URI to register with the provider** is:
+
+```
+${BETTER_AUTH_URL}/api/auth/oauth2/callback/oidc
+```
+
+Issuer URLs, by provider:
+
+| Provider | `OIDC_ISSUER` |
+| --- | --- |
+| Entra ID | `https://login.microsoftonline.com/<tenant-id>/v2.0` |
+| Keycloak | `https://<host>/realms/<realm>` |
+| Authentik | `https://<host>/application/o/<slug>/` |
+
+New SSO users are provisioned with `OIDC_DEFAULT_ROLE` (default `member`);
+anything unrecognised there degrades to `viewer`, never to admin. Entra ID does
+not reliably emit an `email` claim, so `preferred_username` and `upn` are
+accepted as fallbacks.
 
 ## How it works
 
@@ -134,28 +197,24 @@ and read the measurements back — instead of copying someone else's prompts int
 the web UI by hand.
 
 - Endpoint: `POST /agent-val/api/mcp` (streamable HTTP, stateless).
-- Auth: one API key in the `MCP_API_KEY` environment variable, sent as the
-  `x-api-key` header (or `Authorization: Bearer <key>`). **Without the variable
-  set the endpoint refuses every request** — these tools write.
-- `x-api-key` is checked before `Authorization` on purpose: in production Caddy
-  also wants HTTP basic auth for `/agent-val*`, and both credentials have to fit
-  in one request.
-
-```bash
-# in .env next to docker-compose.yml (gitignored)
-MCP_API_KEY=$(openssl rand -hex 24)
-```
+- Auth: a **per-user API token**, created under `/agent-val/account/tokens` and
+  sent as the `x-api-key` header (or `Authorization: Bearer <token>`). Tokens
+  are stored as a SHA-256 hash and shown exactly once, at creation.
+- A token **acts as the user who created it and carries their role**, so a
+  viewer's token is refused every tool that writes — with the refusal as
+  `isError` tool content, which is what the calling model reads.
+- `x-api-key` is checked before `Authorization` on purpose: if Caddy still wants
+  HTTP basic auth for `/agent-val*`, both credentials have to fit in one request.
 
 Register it with Claude Code — production (behind Caddy basic auth) and dev:
 
 ```bash
 claude mcp add --transport http agent-val https://ki01.webix.de/agent-val/api/mcp \
-  --header "x-api-key: $MCP_API_KEY" \
+  --header "x-api-key: amv_…" \
   --header "Authorization: Basic $(printf 'user:password' | base64)"
 
-MCP_API_KEY=dev-key npm run dev
 claude mcp add --transport http agent-val-dev http://localhost:3000/agent-val/api/mcp \
-  --header "x-api-key: dev-key"
+  --header "x-api-key: amv_…"
 ```
 
 Tools, all named for what they do to the app's own concepts:
@@ -180,6 +239,10 @@ Notes:
 - Machines, toolsets and their tools are *not* writable over MCP: an endpoint
   with an API key and an MCP server URL are credentials, configured in the UI.
 - Ratings stay manual as well — the verdict is the point of the whole exercise.
+
+Mock endpoints (`/api/mock-llm`, `/api/mock-mcp`) exist for exercising the
+executor without real hardware. They answer in development and are **404 in a
+production build** unless `ENABLE_MOCKS=true` is set.
 
 ## Metrics
 

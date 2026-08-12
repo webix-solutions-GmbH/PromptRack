@@ -8,8 +8,10 @@ import {
   updateSystemPrompt as updateSystemPromptRow,
 } from '@/db/repo/system-prompts';
 import { requiredString } from '@/lib/form-data';
+import { requireWriter } from '@/lib/auth/guards';
 
 export async function createSystemPrompt(formData: FormData) {
+  await requireWriter();
   const scope = await currentScope();
   const name = requiredString(formData, 'name');
   const content = requiredString(formData, 'content');
@@ -20,6 +22,7 @@ export async function createSystemPrompt(formData: FormData) {
 }
 
 export async function updateSystemPrompt(id: number, formData: FormData) {
+  await requireWriter();
   const scope = await currentScope();
   const name = requiredString(formData, 'name');
   const content = requiredString(formData, 'content');
@@ -31,6 +34,7 @@ export async function updateSystemPrompt(id: number, formData: FormData) {
 }
 
 export async function deleteSystemPrompt(id: number) {
+  await requireWriter();
   await deleteSystemPromptRow(await currentScope(), id);
   revalidatePath('/system-prompts');
   revalidatePath('/prompts');

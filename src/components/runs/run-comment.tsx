@@ -6,9 +6,11 @@ import { updateRunComment } from '@/actions/runs';
 export function RunComment({
   runId,
   comment,
+  canWrite,
 }: {
   runId: number;
   comment: string | null;
+  canWrite: boolean;
 }) {
   const [value, setValue] = useState(comment ?? '');
   const [saved, setSaved] = useState(comment ?? '');
@@ -39,16 +41,18 @@ export function RunComment({
             <span className="text-zinc-400 dark:text-zinc-600">No comment.</span>
           )}
         </p>
-        <button
-          type="button"
-          onClick={() => {
-            setValue(saved);
-            setEditing(true);
-          }}
-          className="text-xs font-medium text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
-        >
-          Edit
-        </button>
+        {canWrite && (
+          <button
+            type="button"
+            onClick={() => {
+              setValue(saved);
+              setEditing(true);
+            }}
+            className="text-xs font-medium text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
+          >
+            Edit
+          </button>
+        )}
       </div>
     );
   }

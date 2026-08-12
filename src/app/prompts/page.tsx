@@ -7,6 +7,8 @@ import {
 } from '@/db/repo/prompts';
 import { listSystemPrompts } from '@/db/repo/system-prompts';
 import { listTools, listToolsets } from '@/db/repo/toolsets';
+import { onPage, requireActor } from '@/lib/auth/guards';
+import { canWrite } from '@/lib/auth/policy';
 import { GroupSidebar } from '@/components/prompts/group-sidebar';
 import { PromptsPanel } from '@/components/prompts/prompts-panel';
 import type { ToolsetOption } from '@/components/prompts/prompt-editor';
@@ -20,6 +22,8 @@ export default async function PromptsPage({
 }) {
   const { group } = await searchParams;
 
+  const actor = await onPage(requireActor);
+  const writable = canWrite(actor.role);
   const scope = await currentScope();
   const groups = await listGroups(scope, 'sort-name');
   const allPrompts = await listPrompts(scope);
@@ -85,7 +89,12 @@ export default async function PromptsPage({
 
       <div className="flex flex-1 flex-col gap-8 lg:flex-row">
         <aside className="w-full shrink-0 lg:w-64">
-          <GroupSidebar groups={groups} selectedGroupId={selectedGroupId} counts={counts} />
+          <GroupSidebar
+            groups={groups}
+            selectedGroupId={selectedGroupId}
+            counts={counts}
+            canWrite={writable}
+          />
         </aside>
         <main className="min-w-0 flex-1">
           {selectedGroup ? (
@@ -95,6 +104,7 @@ export default async function PromptsPage({
               systemPrompts={systemPromptOptions}
               toolsets={toolsetOptions}
               toolsetIdsByPrompt={toolsetIdsByPrompt}
+              canWrite={writable}
             />
           ) : (
             <div className="rounded-lg border border-zinc-200 px-6 py-12 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">

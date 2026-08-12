@@ -1,4 +1,4 @@
-import { API_KEY_ENV, checkApiKey, configuredApiKey } from '@/lib/mcp/auth';
+import { API_KEY_HEADER, authenticateMcp } from '@/lib/mcp/auth';
 import {
   handleMcpMessage,
   parseErrorReply,
@@ -19,11 +19,12 @@ export const dynamic = 'force-dynamic';
  * JSON-RPC request answered with plain JSON, no session id, nothing to
  * reconnect to. The protocol handling lives in `lib/mcp/protocol.ts`.
  *
- * Auth is a single API key in `MCP_API_KEY` (see `lib/mcp/auth.ts`). Without it
- * the endpoint refuses everything, which matters because these tools write.
+ * Auth is a per-user API token (see `lib/mcp/auth.ts`), which is also what
+ * gives every call an actor: the token's role decides which tools answer, so a
+ * viewer's token is refused everything that writes.
  */
 export async function POST(request: Request) {
-  const auth = checkApiKey(request.headers, configuredApiKey());
+  const auth = await authenticateMcp(request);
   if (!auth.ok) {
     return unauthorized(auth.status, auth.message, auth.challenge);
   }
@@ -36,7 +37,7 @@ export async function POST(request: Request) {
     return Response.json(reply.body, { status: reply.status });
   }
 
-  const reply = await handleMcpMessage(payload, MCP_TOOLS);
+  const reply = await handleMcpMessage(payload, MCP_TOOLS, { actor: auth.actor });
   if (reply.body === null) {
     return new Response(null, { status: reply.status });
   }
@@ -50,7 +51,7 @@ export async function POST(request: Request) {
  * misconfigured key is reported once rather than as a hanging connection.
  */
 export async function GET(request: Request) {
-  const auth = checkApiKey(request.headers, configuredApiKey());
+  const auth = await authenticateMcp(request);
   if (!auth.ok) {
     return unauthorized(auth.status, auth.message, auth.challenge);
   }
@@ -81,7 +82,7 @@ function unauthorized(status: number, message: string, challenge?: boolean) {
       error: { code: -32001, message },
       server: SERVER_INFO.name,
       protocolVersion: LATEST_PROTOCOL_VERSION,
-      hint: `Set ${API_KEY_ENV} on the server and send the same value in the x-api-key header.`,
+      hint: `Create a token under /agent-val/account/tokens and send it as the ${API_KEY_HEADER} header.`,
     },
     {
       status,
