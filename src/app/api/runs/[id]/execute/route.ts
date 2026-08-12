@@ -32,7 +32,7 @@ export async function POST(
     return Response.json({ error: 'Run not found.' }, { status: 404 });
   }
 
-  if (isRunExecuting(runId)) {
+  if (await isRunExecuting(runId)) {
     return Response.json({ error: 'This run is already executing.' }, { status: 409 });
   }
 

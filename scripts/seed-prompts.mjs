@@ -2,7 +2,7 @@
 /**
  * Seeds ready-to-run benchmark toolsets and prompt groups.
  *
- * Like `init-db.mjs` this depends on nothing but `better-sqlite3`, so it can
+ * Like `init-db.mjs` this depends on nothing but `pg`, so it can
  * run inside the standalone container image (`node scripts/seed-prompts.mjs`)
  * as well as in development (`npm run db:seed`).
  *
@@ -11,7 +11,7 @@
  * once ever, which means new seed entries land in groups an earlier version
  * created, while anything you deleted afterwards stays deleted. A database that
  * predates the ledger is backfilled on first run from what is already there.
- * (`__app_seeds` is declared in `src/db/schema.ts` and created by the
+ * (`__app_seeds` now lives in `src/db/schema.ts` and is created by the
  * migrations, so schema tooling knows about it; this script only writes rows.
  * Run `npm run db:init` first.)
  *
@@ -20,12 +20,10 @@
  * carry its own `systemText`, stored as a per-prompt override system prompt,
  * and may reference seeded toolsets by name via `toolsets`.
  */
-import path from 'node:path';
-import Database from 'better-sqlite3';
+import { Client } from 'pg';
 
-const root = process.env.APP_ROOT ?? process.cwd();
-const dataDir = process.env.DATA_DIR ?? path.join(root, 'data');
-const dbPath = path.join(dataDir, 'app.db');
+const connectionString =
+  process.env.DATABASE_URL ?? 'postgres://agentval:dev@127.0.0.1:5433/agentval';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1069,73 +1067,102 @@ This is the same invoice body as "Reconcile: quantity mismatch → ASK" in the I
 // Insert
 // ---------------------------------------------------------------------------
 
-function main() {
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+async function main() {
+  const client = new Client({ connectionString });
+  await client.connect();
 
-  const wasSeeded = db.prepare(
-    'SELECT 1 FROM __app_seeds WHERE kind = ? AND scope = ? AND name = ?',
-  );
-  const markSeeded = db.prepare(
-    'INSERT OR IGNORE INTO __app_seeds (kind, scope, name, seeded_at) VALUES (?, ?, ?, ?)',
-  );
+  const wasSeeded = async (kind, scope, name) => {
+    const res = await client.query(
+      'SELECT 1 FROM __app_seeds WHERE kind = $1 AND scope = $2 AND name = $3',
+      [kind, scope, name],
+    );
+    return res.rowCount > 0;
+  };
+  const markSeeded = (kind, scope, name, seededAt) =>
+    client.query(
+      `INSERT INTO __app_seeds (kind, scope, name, seeded_at) VALUES ($1, $2, $3, $4)
+       ON CONFLICT DO NOTHING`,
+      [kind, scope, name, seededAt],
+    );
 
-  const toolsetByName = db.prepare('SELECT id FROM toolsets WHERE name = ?');
-  const insertToolset = db.prepare(
-    `INSERT INTO toolsets (name, description, kind, mcp_url, mcp_headers, created_at, updated_at)
-     VALUES (?, ?, 'manual', NULL, NULL, ?, ?)`,
-  );
-  const insertTool = db.prepare(
-    `INSERT INTO tools
-       (toolset_id, name, description, parameters_json, mock_response, enabled, source, first_seen_at, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, 1, 'manual', ?, ?)`,
-  );
+  const toolsetByName = async (name) =>
+    (await client.query('SELECT id FROM toolsets WHERE name = $1', [name])).rows[0];
+  const insertToolset = async (name, description, createdAt, updatedAt) =>
+    (
+      await client.query(
+        `INSERT INTO toolsets (name, description, kind, mcp_url, mcp_headers, created_at, updated_at)
+         VALUES ($1, $2, 'manual', NULL, NULL, $3, $4)
+         RETURNING id`,
+        [name, description, createdAt, updatedAt],
+      )
+    ).rows[0].id;
+  const insertTool = (...values) =>
+    client.query(
+      `INSERT INTO tools
+         (toolset_id, name, description, parameters_json, mock_response, enabled, source, first_seen_at, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, true, 'manual', $6, $7)`,
+      values,
+    );
 
-  const groupByName = db.prepare('SELECT id FROM prompt_groups WHERE name = ?');
-  const insertGroup = db.prepare(
-    'INSERT INTO prompt_groups (name, description, sort_order, created_at) VALUES (?, ?, ?, ?)',
-  );
-  const promptExists = db.prepare(
-    'SELECT id FROM prompts WHERE group_id = ? AND title = ?',
-  );
-  const insertPrompt = db.prepare(
-    `INSERT INTO prompts
-       (group_id, title, content, expected_output, system_prompt_id, system_prompt_mode, custom_system_text,
-        tool_mode, tool_choice, max_turns, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  const linkToolset = db.prepare(
-    'INSERT INTO prompt_toolsets (prompt_id, toolset_id, sort_order) VALUES (?, ?, ?)',
-  );
+  const groupByName = async (name) =>
+    (await client.query('SELECT id FROM prompt_groups WHERE name = $1', [name])).rows[0];
+  const insertGroup = async (...values) =>
+    (
+      await client.query(
+        `INSERT INTO prompt_groups (name, description, sort_order, created_at)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+        values,
+      )
+    ).rows[0].id;
+  const promptExists = async (groupId, title) =>
+    (
+      await client.query('SELECT id FROM prompts WHERE group_id = $1 AND title = $2', [
+        groupId,
+        title,
+      ])
+    ).rows[0];
+  const insertPrompt = async (...values) =>
+    (
+      await client.query(
+        `INSERT INTO prompts
+           (group_id, title, content, expected_output, system_prompt_id, system_prompt_mode, custom_system_text,
+            tool_mode, tool_choice, max_turns, sort_order, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9, $10, $11, $12)
+         RETURNING id`,
+        values,
+      )
+    ).rows[0].id;
+  const linkToolset = (...values) =>
+    client.query(
+      'INSERT INTO prompt_toolsets (prompt_id, toolset_id, sort_order) VALUES ($1, $2, $3)',
+      values,
+    );
 
-  const seedAll = db.transaction(() => {
+  try {
+    await client.query('BEGIN');
+
     // Toolsets first: prompts reference them by name.
     const toolsetIdByName = new Map();
     for (const toolset of TOOLSETS) {
-      const existing = toolsetByName.get(toolset.name);
+      const existing = await toolsetByName(toolset.name);
       if (existing) {
         // Present already: adopt it, and backfill the ledger for a database
         // seeded before the ledger existed.
         toolsetIdByName.set(toolset.name, existing.id);
-        markSeeded.run('toolset', '', toolset.name, Date.now());
+        await markSeeded('toolset', '', toolset.name, new Date());
         console.log(`[seed-prompts] toolset "${toolset.name}" already exists, skipping`);
         continue;
       }
-      if (wasSeeded.get('toolset', '', toolset.name)) {
+      if (await wasSeeded('toolset', '', toolset.name)) {
         console.log(`[seed-prompts] toolset "${toolset.name}" was seeded before and deleted, leaving it out`);
         continue;
       }
 
-      const now = Date.now();
-      const { lastInsertRowid: toolsetId } = insertToolset.run(
-        toolset.name,
-        toolset.description,
-        now,
-        now,
-      );
+      const now = new Date();
+      const toolsetId = await insertToolset(toolset.name, toolset.description, now, now);
       for (const tool of toolset.tools) {
-        insertTool.run(
+        await insertTool(
           toolsetId,
           tool.name,
           tool.description,
@@ -1146,37 +1173,37 @@ function main() {
         );
       }
       toolsetIdByName.set(toolset.name, toolsetId);
-      markSeeded.run('toolset', '', toolset.name, now);
+      await markSeeded('toolset', '', toolset.name, now);
       console.log(
         `[seed-prompts] created toolset "${toolset.name}" (${toolset.tools.length} tools)`,
       );
     }
 
-    GROUPS.forEach((group, groupIndex) => {
-      const now = Date.now();
-      let groupId = groupByName.get(group.name)?.id;
+    for (const [groupIndex, group] of GROUPS.entries()) {
+      const now = new Date();
+      let groupId = (await groupByName(group.name))?.id;
       if (groupId === undefined) {
-        groupId = insertGroup.run(group.name, group.description, groupIndex, now).lastInsertRowid;
+        groupId = await insertGroup(group.name, group.description, groupIndex, now);
         console.log(`[seed-prompts] created group "${group.name}"`);
       }
 
       let added = 0;
       let skippedAsDeleted = 0;
-      group.prompts.forEach((prompt, promptIndex) => {
-        if (promptExists.get(groupId, prompt.title)) {
+      for (const [promptIndex, prompt] of group.prompts.entries()) {
+        if (await promptExists(groupId, prompt.title)) {
           // Backfill: a database seeded before the ledger existed.
-          markSeeded.run('prompt', group.name, prompt.title, now);
-          return;
+          await markSeeded('prompt', group.name, prompt.title, now);
+          continue;
         }
-        if (wasSeeded.get('prompt', group.name, prompt.title)) {
+        if (await wasSeeded('prompt', group.name, prompt.title)) {
           // Seeded once and deleted since — that was a deliberate choice, so
           // do not resurrect it.
           skippedAsDeleted += 1;
-          return;
+          continue;
         }
 
         const toolMode = prompt.toolMode ?? 'none';
-        const { lastInsertRowid: promptId } = insertPrompt.run(
+        const promptId = await insertPrompt(
           groupId,
           prompt.title,
           prompt.content,
@@ -1191,7 +1218,7 @@ function main() {
           now,
         );
 
-        (prompt.toolsets ?? []).forEach((name, order) => {
+        for (const [order, name] of (prompt.toolsets ?? []).entries()) {
           const toolsetId = toolsetIdByName.get(name);
           if (toolsetId === undefined) {
             // Only reachable if a seed prompt names a toolset this script does
@@ -1200,12 +1227,12 @@ function main() {
               `prompt "${prompt.title}" references unknown toolset "${name}"`,
             );
           }
-          linkToolset.run(promptId, toolsetId, order);
-        });
+          await linkToolset(promptId, toolsetId, order);
+        }
 
-        markSeeded.run('prompt', group.name, prompt.title, now);
+        await markSeeded('prompt', group.name, prompt.title, now);
         added += 1;
-      });
+      }
 
       const deletedNote =
         skippedAsDeleted > 0 ? ` (${skippedAsDeleted} previously deleted, left out)` : '';
@@ -1214,12 +1241,27 @@ function main() {
           ? `[seed-prompts] group "${group.name}" up to date${deletedNote}`
           : `[seed-prompts] group "${group.name}": added ${added} prompt(s)${deletedNote}`,
       );
-    });
-  });
+    }
 
-  seedAll();
-  db.close();
-  console.log(`[seed-prompts] done (${dbPath})`);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    await client.end();
+  }
+
+  console.log(`[seed-prompts] done (${redact(connectionString)})`);
 }
 
-main();
+function redact(url) {
+  try {
+    const u = new URL(url);
+    if (u.password) u.password = '***';
+    return u.toString();
+  } catch {
+    return '(unparsable DATABASE_URL)';
+  }
+}
+
+await main();

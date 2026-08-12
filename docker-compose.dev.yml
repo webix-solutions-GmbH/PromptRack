@@ -1,0 +1,24 @@
+# Development database only. Production compose is docker-compose.yml.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: agent-val-dev-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agentval
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: agentval
+      # UTF8 is mandatory: seeded prompts carry Unicode Tags (U+E0000+).
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - agentval-dev-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentval -d agentval"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  agentval-dev-pgdata:

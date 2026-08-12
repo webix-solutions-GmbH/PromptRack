@@ -122,7 +122,7 @@ const listMachines: McpToolSpec = {
             model_id: model.modelId,
             currently_loaded: model.currentlyLoaded,
             source: model.source,
-            last_seen_at: model.lastSeenAt,
+            last_seen_at: model.lastSeenAt.getTime(),
           })),
       })),
     };
@@ -265,7 +265,7 @@ const executeRunTool: McpToolSpec = {
     const runId = requireInteger(args, 'run_id');
     const run = await loadRun(runId);
 
-    if (isRunExecuting(runId)) {
+    if (await isRunExecuting(runId)) {
       throw new McpToolError(`Run ${runId} is already executing.`);
     }
 
@@ -370,8 +370,8 @@ const listRuns: McpToolSpec = {
 
         return {
           id: run.id,
-          created_at: run.createdAt,
-          finished_at: run.finishedAt,
+          created_at: run.createdAt.getTime(),
+          finished_at: run.finishedAt?.getTime() ?? null,
           machine: machine?.name ?? null,
           machine_id: run.machineId,
           model: run.modelId,
@@ -441,12 +441,14 @@ const getRun: McpToolSpec = {
       return row.rating === ratingFilter;
     });
 
+    const executing = await isRunExecuting(run.id);
+
     return {
       run: {
         id: run.id,
-        created_at: run.createdAt,
-        started_at: run.startedAt,
-        finished_at: run.finishedAt,
+        created_at: run.createdAt.getTime(),
+        started_at: run.startedAt?.getTime() ?? null,
+        finished_at: run.finishedAt?.getTime() ?? null,
         machine: machine?.name ?? null,
         machine_id: run.machineId,
         base_url: machine?.base_url ?? null,
@@ -457,7 +459,7 @@ const getRun: McpToolSpec = {
         groups: parseJson<string[]>(run.groupNames) ?? [],
         status: run.status,
         archived: run.archivedAt !== null,
-        executing: isRunExecuting(run.id),
+        executing,
         results: summarizeResults(rows),
       },
       results: visible.map((row) => {
@@ -553,8 +555,8 @@ const getRunResult: McpToolSpec = {
           tokens_per_sec: row.tokensPerSec,
           tokens_estimated: row.tokensEstimated,
         },
-        started_at: row.startedAt,
-        finished_at: row.finishedAt,
+        started_at: row.startedAt?.getTime() ?? null,
+        finished_at: row.finishedAt?.getTime() ?? null,
         tool_mode: row.toolMode,
         ...(row.toolMode === 'none'
           ? {}

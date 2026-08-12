@@ -159,13 +159,13 @@ export async function updateResultNote(resultId: number, note: string) {
  * does — the list the user is looking at would be lying about it.
  */
 export async function setRunArchived(runId: number, archived: boolean) {
-  if (archived && isRunExecuting(runId)) {
+  if (archived && (await isRunExecuting(runId))) {
     throw new Error('This run is currently executing — stop it before archiving.');
   }
 
   await db
     .update(runs)
-    .set({ archivedAt: archived ? Date.now() : null })
+    .set({ archivedAt: archived ? new Date() : null })
     .where(eq(runs.id, runId));
 
   revalidatePath('/runs');
@@ -180,7 +180,7 @@ export async function setRunArchived(runId: number, archived: boolean) {
  * the client's try/catch and read as a failure.
  */
 export async function deleteRun(runId: number) {
-  if (isRunExecuting(runId)) {
+  if (await isRunExecuting(runId)) {
     throw new Error('This run is currently executing — stop it before deleting.');
   }
 

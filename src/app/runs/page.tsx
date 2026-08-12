@@ -112,7 +112,7 @@ export default async function RunsPage({
         return row.totalDurationMs;
       case 'created':
       default:
-        return row.run.createdAt;
+        return row.run.createdAt.getTime();
     }
   }
 

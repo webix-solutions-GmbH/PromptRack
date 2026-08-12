@@ -98,7 +98,7 @@ export async function createGroup(formData: FormData) {
       name,
       description,
       sortOrder: 0,
-      createdAt: Date.now(),
+      createdAt: new Date(),
     })
     .returning({ id: promptGroups.id });
 
@@ -143,7 +143,7 @@ export async function createPrompt(formData: FormData) {
   const systemPromptId = optionalId(formData, 'systemPromptId');
   const systemPromptMode = requiredMode(formData);
   const customSystemText = optionalString(formData, 'customSystemText');
-  const now = Date.now();
+  const now = new Date();
 
   const [row] = await db
     .insert(prompts)
@@ -185,7 +185,7 @@ export async function updatePrompt(id: number, formData: FormData) {
       systemPromptMode,
       customSystemText,
       ...toolFields(formData),
-      updatedAt: Date.now(),
+      updatedAt: new Date(),
     })
     .where(eq(prompts.id, id));
 

@@ -46,7 +46,7 @@ function requiredMachineFields(formData: FormData) {
 
 export async function createMachine(formData: FormData) {
   const fields = requiredMachineFields(formData);
-  const now = Date.now();
+  const now = new Date();
 
   const [row] = await db
     .insert(machines)
@@ -68,7 +68,7 @@ export async function updateMachine(id: number, formData: FormData) {
     .update(machines)
     .set({
       ...fields,
-      updatedAt: Date.now(),
+      updatedAt: new Date(),
     })
     .where(eq(machines.id, id));
 
@@ -87,7 +87,7 @@ export async function addManualModel(machineId: number, formData: FormData) {
     throw new Error('Model id is required.');
   }
 
-  const now = Date.now();
+  const now = new Date();
 
   const [existing] = await db
     .select({ id: machineModels.id })

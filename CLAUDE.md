@@ -15,17 +15,21 @@ export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
 ## Commands
 
 ```bash
-npm run dev                          # dev server — app lives at http://localhost:3000/agent-val (basePath!)
-npm test                             # vitest run (all tests)
+npm run dev                          # starts the dev postgres, migrates, serves http://localhost:3000/agent-val (basePath!)
+npm test                             # vitest run — the pure suite, no database
 npx vitest run src/lib/llm.test.ts   # single test file
+npm run test:integration             # throwaway postgres in docker + tests/integration/**
 npx tsc --noEmit                     # typecheck
 npm run lint                         # eslint
 npm run build                        # production build (also catches route/RSC errors)
-npm run db:init                      # generate pending migration SQL + apply drizzle/ to data/app.db
+npm run db:init                      # generate pending migration SQL + apply drizzle/
 npm run db:generate                  # drizzle-kit generate — write a migration under drizzle/ from schema.ts
 npm run db:migrate                   # node scripts/init-db.mjs — apply pending migrations only
+npm run db:reset                     # drop the dev postgres volume and re-migrate from empty
 npm run db:seed                      # seed toolsets + prompt groups (additive, respects deletions)
 ```
+
+Everything reads `DATABASE_URL`. `scripts/dev-db.mjs` (which `npm run dev` runs first) brings up `docker-compose.dev.yml`'s postgres on `127.0.0.1:5433`, waits for it, applies the migrations and writes `.env.local` on first run; it is idempotent and costs under a second once the container is up. **Setting `DATABASE_URL` to anything else makes it skip docker entirely** — the escape hatch for a managed database.
 
 Migrations are committed under `drizzle/`; `drizzle-kit generate` can still prompt interactively when it suspects a *rename*, so run it in a real terminal when renaming a table or column.
 
@@ -37,13 +41,18 @@ Single-user LLM benchmarking web app: define test prompts (grouped, optionally w
 
 ## Architecture
 
-- **Stack**: Next.js 16 App Router + TypeScript + Tailwind v4, Drizzle ORM + better-sqlite3 (native module). DB file `data/app.db` (gitignored), WAL mode, singleton in `src/db/index.ts` with `foreign_keys = ON` (required for cascades). `src/db/schema.ts` is the single source of truth; `drizzle-kit generate` writes incremental SQL migrations under `drizzle/` (committed), applied by `scripts/init-db.mjs`.
+- **Stack**: Next.js 16 App Router + TypeScript + Tailwind v4, Drizzle ORM + Postgres (`pg` — pure JS, so no build toolchain in the alpine image, and already on Next's built-in `serverExternalPackages` list, so it is never bundled). Connection string in `DATABASE_URL`; `src/db/index.ts` exports a `Pool` singleton next to `db` because `src/lib/run-lock.ts` needs a dedicated pooled connection (`max` from `DATABASE_POOL_MAX`, default 10 — it must exceed concurrent runs plus normal request concurrency, since an executing run holds one connection for its whole duration). Postgres enforces the FK cascades natively. `src/db/schema.ts` is the single source of truth; `drizzle-kit generate` writes incremental SQL migrations under `drizzle/` (committed), applied by `scripts/init-db.mjs`.
+  - Timestamps are `timestamp({ withTimezone: true, mode: 'date' })`, so **server code holds `Date`**; everything crossing into a client component, into `src/lib/compare.ts`, or into an MCP JSON response converts with `.getTime()`. `withTimezone` keeps node-postgres from parsing naive timestamps in the process-local zone. The MCP wire format stays **epoch millis** on purpose: `get_run`/`list_runs` already emitted numbers and external agents parse them.
+  - `tokens_per_sec` is `doublePrecision` (float8), not `real`: SQLite's `REAL` was an 8-byte double, and pg's `real` is float4, which would have silently rounded every imported value.
+  - Enum-ish columns stay `text('x', { enum: [...] })` rather than `pgEnum` — that is what keeps "adding a rating or status value needs no migration" true, and lets `parseRating` still see a legacy value.
 - **Mutations are Server Actions** (`src/actions/*.ts`); **Route Handlers exist only where streaming or a live network probe is needed**: run execution (`/api/runs/[id]/execute`, NDJSON progress stream), model discovery + connection test (`/api/machines/[id]/*`), MCP tool discovery (`/api/toolsets/[id]/discover`), and the dev mocks (`/api/mock-llm/*`, `/api/mock-mcp`).
 - **basePath `/agent-val`** (`next.config.ts`, constant in `src/lib/base-path.ts`): `next/link` and the router prefix automatically, but raw client `fetch()` calls to our own API routes MUST go through `apiPath()` from `src/lib/base-path.ts`.
 
 ### Snapshot model (the core invariant)
 
 Editing or deleting prompts, system prompts, machines, or toolsets must never change how a past run displays. `createRun` (`src/actions/runs.ts`) freezes everything into `run_results` rows at creation time: prompt text, title, group name, expected output, the **already-resolved** effective system prompt, and `tools_snapshot`. `prompt_id`/`machine_id` FKs are kept (SET NULL on delete) only for cross-run comparison; rendering always uses the snapshots. The compare page matches rows primarily by `prompt_id`, falling back to normalized `prompt_text` equality for deleted prompts (`src/lib/compare.ts`).
+
+`createRunRecord` (`src/lib/run-create.ts`) writes the `runs` row, all of its `run_results` in one multi-row INSERT, and the `machine_models` upsert inside a single transaction, so a crash can no longer leave a run with no prompts in it — which Resume would have reported as finished. Validation (`groupIds`, "no enabled tools", tool-name collisions) and `probeLlmInfo` stay *outside* it: the first two throw before anything is written, and the third is a network call that must never hold a transaction open.
 
 The line between frozen and live is **content vs. credentials**: prompt text, tool definitions and a manual tool's canned response travel with the run; a machine's `base_url`/`api_key` and a toolset's `mcp_url`/headers are read live at execution time so a moved endpoint doesn't break Resume.
 
@@ -56,7 +65,7 @@ A prompt references an optional base system prompt plus a mode: `append` (base +
 `src/lib/llm.ts` (raw-fetch SSE client, no SDK) → `src/lib/tool-loop.ts` (one to N turns) → `src/lib/run-executor.ts` (sequential loop over rows) → execute route (NDJSON) → `src/components/runs/run-detail.tsx` (client driver).
 
 - `llm.ts` parses SSE chunks tolerant of provider differences (usage in final empty-choices chunk vs. on last content chunk; chunks split across reads). No usage received → estimate `ceil(chars/4)` over text **plus** serialized tool calls, flag `tokensEstimated` (UI shows `~`). TTFT = first content delta **or** first tool-call fragment, whichever comes first — a tool-call-only response streams no content.
-- Executor invariants: one execution per run via module-level in-memory `Set` guard (single-process assumption) + 409 from the route; every result row is persisted the moment it finishes; errors mark the row `error` and the loop continues; abort (client disconnect) resets the in-flight row to `pending`; rows stuck in `running` from a crashed process are reclaimed to `pending` at next execution start. Run status `failed` is reserved for "every attempted result died at connection level"; partial errors still end `completed`.
+- Executor invariants: one execution per run via a Postgres **advisory lock** (`src/lib/run-lock.ts`, `pg_try_advisory_lock` on a dedicated pooled connection held for the whole run) + 409 from the route. It replaced a module-level in-memory `Set`, and the lock living on a connection is the point: it dies with the connection, so a crashed process releases it exactly the way the `Set` used to vanish — the stale-`running` reclaim below is still the recovery path — while more than one app process is now safe. A lock *table* would have needed expiry and heartbeats to get the same crash semantics. `isRunExecuting` reads `pg_locks` rather than taking the lock, and is therefore async now. every result row is persisted the moment it finishes; errors mark the row `error` and the loop continues; abort (client disconnect) resets the in-flight row to `pending`; rows stuck in `running` from a crashed process are reclaimed to `pending` at next execution start. Run status `failed` is reserved for "every attempted result died at connection level"; partial errors still end `completed`.
 - Execution is tied to the HTTP request lifetime (`request.signal`) — closing the tab stops the run; Resume picks up remaining `pending` rows.
 - `tokens_per_sec = completionTokens / ((durationMs - ttftMs) / 1000)` — rate over the generation window, not total duration. For a multi-turn tool run the denominator is the **sum of each turn's own** generation window (`aggregate` in `tool-loop.ts`), so later prefills aren't counted as generation; for a single turn it reduces to exactly the formula above.
 
@@ -91,7 +100,7 @@ Three manual verdicts plus unrated: `good` / `meh` / `bad`, all defined in `src/
 
 Named `meh` and not `ok` on purpose: `ok` already means "completed without error" as a `run_results.status`, and one word meaning two things in the same table is exactly the confusion this rating exists to remove.
 
-The column is `text` with a drizzle enum, which is type-level only in SQLite — adding `meh` needed **no migration**, and pre-existing `good`/`bad` rows are untouched. `parseRating` treats any unrecognised stored value as unrated, so a legacy value can never disappear from the totals. `ratingScore` (the runs-list sort) is `good - bad`: `meh` is deliberately neutral, so an all-meh run sorts level with an unrated one.
+The column is `text` with a drizzle enum rather than a `pgEnum`, so the constraint is type-level only — adding `meh` needed **no migration**, and pre-existing `good`/`bad` rows are untouched. `parseRating` treats any unrecognised stored value as unrated, so a legacy value can never disappear from the totals. `ratingScore` (the runs-list sort) is `good - bad`: `meh` is deliberately neutral, so an all-meh run sorts level with an unrated one.
 
 ### Model detection on the new-run page
 
@@ -121,7 +130,7 @@ Archived runs are hidden from the runs list (`?archived=only` / `?archived=all` 
 
 Tests cover the pure halves — `src/lib/mcp/args.test.ts` (argument coercion, ref resolution) and `protocol.test.ts` (dispatch, error mapping, auth). The wired-up half was verified against the dev server with the MCP SDK client.
 
-To exercise a wired handler (real `db`, real sqlite) without a server or the production database: copy `data/app.db` into a scratch dir, run vitest from *there* with `resolve.alias` mapping `@` to an absolute path into this repo, and `vi.mock('next/cache')` to stub `revalidatePath`. `src/db/index.ts` resolves `data/app.db` from `process.cwd()` at import time, so the cwd is what selects the database — but `process.chdir()` inside a test breaks `@/` resolution, hence running vitest from the scratch dir instead. `set_rating` was verified this way (9 cases: advertised schema, unknown id, pending guard, bad/missing enum, note-preserve, note-clear, `unrated`).
+To exercise a wired handler (real `db`, real Postgres) without a server or the production database, use the integration harness: `npm run test:integration` starts `postgres:17-alpine` on port 55432 with its data in a tmpfs, applies the same migrations, runs `tests/integration/**` and removes the container afterwards. `DATABASE_URL` is what selects the database, so nothing depends on the working directory any more. `vi.mock('next/cache')` is still needed to stub `revalidatePath` for anything under `src/actions/**`.
 
 ### Seeding
 
@@ -142,7 +151,11 @@ Two invariants that group depends on:
 
 ### Testing
 
-Unit tests exist only where logic is pure and fiddly: `system-prompt.test.ts`, `llm.test.ts` (SSE fixtures per provider style, including index-keyed tool-call fragments split mid-JSON), `compare.test.ts`, `tools.test.ts`, `tool-loop.test.ts` (metric aggregation).
+Two suites, split by whether they need a database.
+
+`npm test` (`vitest.config.ts`, `src/**/*.test.ts`) is the pure one and must stay database-free and fast: `system-prompt.test.ts`, `llm.test.ts` (SSE fixtures per provider style, including index-keyed tool-call fragments split mid-JSON), `compare.test.ts`, `tools.test.ts`, `tool-loop.test.ts` (metric aggregation), `mcp/args.test.ts`, `mcp/protocol.test.ts`.
+
+`npm run test:integration` (`vitest.integration.config.ts`, `tests/integration/**`) runs against the scratch Postgres described above, with `fileParallelism: false` because the suites share one database and `tests/integration/setup.ts` truncates every table between tests. It covers what only a real database can show: the FK cascade/set-null actions and `Date`/`boolean`/float8 round-tripping (`schema.test.ts`), the snapshot invariant and the `createRunRecord` rollback (`run-create.test.ts`), the advisory-lock claim (`run-lock.test.ts`), and that `seed-prompts.mjs` is idempotent and preserves the invisible Unicode-Tags payload code point for code point (`seed.test.ts`).
 
 Everything else is verified against the dev server + the mocks:
 
@@ -151,6 +164,8 @@ Everything else is verified against the dev server + the mocks:
 
 ## Deployment
 
-Docker multi-stage build (`node:22-alpine`, standalone output; better-sqlite3 prebuilds are explicitly traced in `next.config.ts`). Schema bootstrap at container start: `drizzle/` (committed) is copied into the image as-is, and `scripts/init-db.mjs` applies the **committed** migrations with drizzle's `migrate()` (ledger `__drizzle_migrations`) — statements are applied verbatim, so a broken migration stops the container rather than silently no-opping; the old hand-rolled applier and its rewriting into idempotent DDL are retired. A database that predates this migrator is adopted automatically on first start (baseline recorded, not re-applied) — see README for rationale. `docker-compose.yml` joins the **external** network `llm_default`; Caddy (config `/home/baum/llm/caddy/Caddyfile`, separate stack) serves `https://ki01.webix.de/agent-val` via a `handle /agent-val*` block with basic auth, everything else on that host goes to vLLM.
+Docker multi-stage build (`node:22-alpine`, standalone output). No build toolchain in the deps stage and no `drizzle-kit` in the image: `pg` is pure JS, and `drizzle/` is committed, so generating in the image would only re-derive a duplicate baseline. `next.config.ts` traces `pg*`/`drizzle-orm` into the standalone output explicitly, because `scripts/init-db.mjs` and `scripts/seed-prompts.mjs` run *inside* the image and import modules (drizzle's migrator) the app itself never does, which the tracer cannot see. Schema bootstrap at container start: `docker-entrypoint.sh` refuses to start without `DATABASE_URL`, then `scripts/init-db.mjs` applies the **committed** migrations with drizzle's `migrate()` (ledger `__drizzle_migrations`) — statements are applied verbatim, so a broken migration stops the container rather than silently no-opping.
+
+`docker-compose.yml` bundles a `postgres:17-alpine` service (initdb'd `--encoding=UTF8 --lc-collate=C --lc-ctype=C`, since the seeded prompts carry Unicode Tags) which the app waits for via `depends_on: condition: service_healthy`. State lives in the named volume `pgdata`, so the old `./data` bind mount and its `user: "1001:1001"` uid matching are gone. `POSTGRES_PASSWORD` is required in `.env`; `DATABASE_URL` optionally overrides the bundled database with an external one. `scripts/migrate-sqlite-to-pg.mjs` is the one-time importer from the retired SQLite file (reads it with built-in `node:sqlite`, refuses a non-empty target without `--truncate`, fixes the sequences with `setval`, and asserts the Unicode-Tags payload survived code point for code point). The compose stack joins the **external** network `llm_default`; Caddy (config `/home/baum/llm/caddy/Caddyfile`, separate stack) serves `https://ki01.webix.de/agent-val` via a `handle /agent-val*` block with basic auth, everything else on that host goes to vLLM.
 
 Caddy gotcha: the Caddyfile is bind-mounted as a single file into the caddy container — file-replacing edits (Edit tool, `sed -i`) change the inode, so `caddy reload` still reads the old content ("config is unchanged"). After editing it, `docker restart caddy` is required. Production container actions (`docker compose up`, `docker restart`) must be run by the user.

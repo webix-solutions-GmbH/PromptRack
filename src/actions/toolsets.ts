@@ -61,7 +61,7 @@ function toolsetFields(formData: FormData) {
 
 export async function createToolset(formData: FormData) {
   const fields = toolsetFields(formData);
-  const now = Date.now();
+  const now = new Date();
 
   await db.insert(toolsets).values({ ...fields, createdAt: now, updatedAt: now });
   revalidatePath('/toolsets');
@@ -73,7 +73,7 @@ export async function updateToolset(id: number, formData: FormData) {
 
   await db
     .update(toolsets)
-    .set({ ...fields, updatedAt: Date.now() })
+    .set({ ...fields, updatedAt: new Date() })
     .where(eq(toolsets.id, id));
 
   revalidatePath('/toolsets');
@@ -123,7 +123,7 @@ function describeToolWriteError(err: unknown, name: string): Error {
 
 export async function createTool(toolsetId: number, formData: FormData) {
   const fields = toolFields(formData);
-  const now = Date.now();
+  const now = new Date();
 
   try {
     await db.insert(tools).values({
@@ -147,7 +147,7 @@ export async function updateTool(id: number, formData: FormData) {
   try {
     await db
       .update(tools)
-      .set({ ...fields, lastSeenAt: Date.now() })
+      .set({ ...fields, lastSeenAt: new Date() })
       .where(eq(tools.id, id));
   } catch (err) {
     throw describeToolWriteError(err, fields.name);

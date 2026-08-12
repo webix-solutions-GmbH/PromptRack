@@ -90,10 +90,10 @@ export default async function RunDetailPage({
     comment: run.comment,
     groupNames: parseGroupNames(run.groupNames),
     status: run.status as RunStatus,
-    archivedAt: run.archivedAt,
-    createdAt: run.createdAt,
-    startedAt: run.startedAt,
-    finishedAt: run.finishedAt,
+    archivedAt: run.archivedAt?.getTime() ?? null,
+    createdAt: run.createdAt.getTime(),
+    startedAt: run.startedAt?.getTime() ?? null,
+    finishedAt: run.finishedAt?.getTime() ?? null,
   };
 
   const resultViews: ResultView[] = rows.map((row) => ({

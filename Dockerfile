@@ -1,15 +1,10 @@
 # syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
-# deps — install with the alpine/musl toolchain so better-sqlite3 picks up its
-# linuxmusl prebuilt binding.
+# deps — no build toolchain needed: `pg` is pure JavaScript.
 # ---------------------------------------------------------------------------
 FROM node:22-alpine AS deps
 WORKDIR /app
-# node-gyp needs python3 to even evaluate better-sqlite3's binding.gyp (which
-# then short-circuits because a linuxmusl prebuild ships with the package);
-# make/g++ are the fallback if it ever has to compile for real.
-RUN apk add --no-cache python3 make g++
 COPY package.json package-lock.json ./
 RUN npm ci
 
@@ -25,8 +20,11 @@ COPY . .
 # Generating here would re-derive a full-schema baseline and defeat incremental diffs.
 RUN test -f drizzle/meta/_journal.json \
   || (echo 'drizzle/ missing — run `npm run db:generate` and commit it' && exit 1)
-RUN npm run build \
-  && rm -rf .next/standalone/data
+# `next build` imports every route module to collect page data, which reaches
+# src/db/index.ts and its "DATABASE_URL is required in production" guard. No
+# database is contacted during the build, so a placeholder is enough — the real
+# URL comes from compose, and docker-entrypoint.sh refuses to start without it.
+RUN DATABASE_URL=postgres://build:build@127.0.0.1:5432/build npm run build
 
 # ---------------------------------------------------------------------------
 # runner — standalone server + schema bootstrap, no node_modules install.
@@ -42,7 +40,7 @@ ENV NODE_ENV=production \
 COPY --from=builder /app/.next/standalone ./
 # scripts/init-db.mjs runs outside Next, so it needs drizzle-orm resolvable from
 # /app/node_modules. The standalone trace only carries the modules the app itself
-# imports — `drizzle-orm/better-sqlite3/migrator` is not one of them (R3).
+# imports — `drizzle-orm/node-postgres/migrator` is not one of them (R3).
 COPY --from=deps /app/node_modules/drizzle-orm ./node_modules/drizzle-orm
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
@@ -50,11 +48,11 @@ COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/scripts ./scripts
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 
-# The SQLite file lives on a bind mount whose owner is decided by the host, so
-# the image stays uid-agnostic: `docker run --user`/compose `user:` can pin it.
+# All state lives in Postgres now; the only writable path the image needs is
+# Next's own cache, so it stays uid-agnostic.
 RUN chmod +x /app/docker-entrypoint.sh \
-  && mkdir -p /app/data /app/.next/cache \
-  && chmod 777 /app/data /app/.next/cache
+  && mkdir -p /app/.next/cache \
+  && chmod 777 /app/.next/cache
 
 EXPOSE 3000
 

@@ -65,7 +65,7 @@ export async function POST(
     .map((item) => (item && typeof item === 'object' ? (item as { id?: unknown }).id : undefined))
     .filter((value): value is string => typeof value === 'string' && value.length > 0);
 
-  const now = Date.now();
+  const now = new Date();
   const existingRows = await db
     .select()
     .from(machineModels)

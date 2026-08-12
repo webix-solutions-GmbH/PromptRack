@@ -189,94 +189,105 @@ export async function createRunRecord(input: CreateRunInput): Promise<CreateRunR
     modelId: input.modelId,
   });
 
-  const now = Date.now();
+  const now = new Date();
   const params = input.params ?? null;
   const comment = input.comment?.trim() ? input.comment.trim() : null;
 
-  const [run] = await db
-    .insert(runs)
-    .values({
-      machineId: machine.id,
-      machineSnapshot: JSON.stringify({
-        name: machine.name,
-        base_url: machine.baseUrl,
-        cpu: machine.cpu,
-        ram: machine.ram,
-        gpu: machine.gpu,
-      }),
-      modelId: input.modelId,
-      params: params && Object.keys(params).length > 0 ? JSON.stringify(params) : null,
-      llmInfo: llmInfo ? JSON.stringify(llmInfo) : null,
-      comment,
-      groupNames: JSON.stringify(groups.map((group) => group.name)),
-      status: 'pending',
-      createdAt: now,
-    })
-    .returning({ id: runs.id });
-
-  let sortOrder = 0;
-  for (const group of groups) {
-    const groupPrompts = promptRows.filter((prompt) => prompt.groupId === group.id);
-    for (const prompt of groupPrompts) {
-      const base = prompt.systemPromptId
-        ? (systemPromptById.get(prompt.systemPromptId)?.content ?? null)
-        : null;
-
-      const snapshot = prompt.toolMode === 'none' ? [] : (toolSnapshots.get(prompt.id) ?? []);
-
-      await db.insert(runResults).values({
-        runId: run.id,
-        promptId: prompt.id,
-        sortOrder: sortOrder++,
-        groupName: group.name,
-        promptTitle: prompt.title,
-        promptText: prompt.content,
-        expectedOutput: prompt.expectedOutput,
-        systemPromptText: resolveEffectiveSystemPrompt({
-          mode: prompt.systemPromptMode as SystemPromptMode,
-          baseContent: base,
-          customText: prompt.customSystemText,
+  // The run and its result rows are one unit: a crash between them used to
+  // leave a run with no prompts in it, which Resume would report as finished.
+  const created = await db.transaction(async (tx) => {
+    const [run] = await tx
+      .insert(runs)
+      .values({
+        machineId: machine.id,
+        machineSnapshot: JSON.stringify({
+          name: machine.name,
+          base_url: machine.baseUrl,
+          cpu: machine.cpu,
+          ram: machine.ram,
+          gpu: machine.gpu,
         }),
-        toolsSnapshot: snapshot.length > 0 ? JSON.stringify(snapshot) : null,
-        toolMode: prompt.toolMode as ToolMode,
-        toolChoice: prompt.toolChoice as ToolChoice | null,
-        maxTurns: prompt.maxTurns,
+        modelId: input.modelId,
+        params: params && Object.keys(params).length > 0 ? JSON.stringify(params) : null,
+        llmInfo: llmInfo ? JSON.stringify(llmInfo) : null,
+        comment,
+        groupNames: JSON.stringify(groups.map((group) => group.name)),
         status: 'pending',
+        createdAt: now,
+      })
+      .returning({ id: runs.id });
+
+    const resultRows: (typeof runResults.$inferInsert)[] = [];
+    let sortOrder = 0;
+    for (const group of groups) {
+      const groupPrompts = promptRows.filter((prompt) => prompt.groupId === group.id);
+      for (const prompt of groupPrompts) {
+        const base = prompt.systemPromptId
+          ? (systemPromptById.get(prompt.systemPromptId)?.content ?? null)
+          : null;
+
+        const snapshot = prompt.toolMode === 'none' ? [] : (toolSnapshots.get(prompt.id) ?? []);
+
+        resultRows.push({
+          runId: run.id,
+          promptId: prompt.id,
+          sortOrder: sortOrder++,
+          groupName: group.name,
+          promptTitle: prompt.title,
+          promptText: prompt.content,
+          expectedOutput: prompt.expectedOutput,
+          systemPromptText: resolveEffectiveSystemPrompt({
+            mode: prompt.systemPromptMode as SystemPromptMode,
+            baseContent: base,
+            customText: prompt.customSystemText,
+          }),
+          toolsSnapshot: snapshot.length > 0 ? JSON.stringify(snapshot) : null,
+          toolMode: prompt.toolMode as ToolMode,
+          toolChoice: prompt.toolChoice as ToolChoice | null,
+          maxTurns: prompt.maxTurns,
+          status: 'pending',
+        });
+      }
+    }
+
+    if (resultRows.length > 0) {
+      await tx.insert(runResults).values(resultRows);
+    }
+
+    // Remember the model against the machine so the next run can offer it even
+    // when it was typed by hand and never showed up in /models.
+    const [existingModel] = await tx
+      .select({ id: machineModels.id })
+      .from(machineModels)
+      .where(
+        and(eq(machineModels.machineId, machine.id), eq(machineModels.modelId, input.modelId)),
+      );
+
+    if (existingModel) {
+      await tx
+        .update(machineModels)
+        .set({ lastSeenAt: now })
+        .where(eq(machineModels.id, existingModel.id));
+    } else {
+      await tx.insert(machineModels).values({
+        machineId: machine.id,
+        modelId: input.modelId,
+        source: 'run',
+        currentlyLoaded: false,
+        firstSeenAt: now,
+        lastSeenAt: now,
       });
     }
-  }
 
-  // Remember the model against the machine so the next run can offer it even
-  // when it was typed by hand and never showed up in /models.
-  const [existingModel] = await db
-    .select({ id: machineModels.id })
-    .from(machineModels)
-    .where(
-      and(eq(machineModels.machineId, machine.id), eq(machineModels.modelId, input.modelId)),
-    );
-
-  if (existingModel) {
-    await db
-      .update(machineModels)
-      .set({ lastSeenAt: now })
-      .where(eq(machineModels.id, existingModel.id));
-  } else {
-    await db.insert(machineModels).values({
-      machineId: machine.id,
-      modelId: input.modelId,
-      source: 'run',
-      currentlyLoaded: false,
-      firstSeenAt: now,
-      lastSeenAt: now,
-    });
-  }
+    return { runId: run.id, resultCount: sortOrder };
+  });
 
   return {
-    runId: run.id,
+    runId: created.runId,
     machineId: machine.id,
     machineName: machine.name,
     modelId: input.modelId,
     groupNames: groups.map((group) => group.name),
-    resultCount: sortOrder,
+    resultCount: created.resultCount,
   };
 }

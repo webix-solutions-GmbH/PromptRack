@@ -17,7 +17,7 @@ function requiredString(formData: FormData, key: string): string {
 export async function createSystemPrompt(formData: FormData) {
   const name = requiredString(formData, 'name');
   const content = requiredString(formData, 'content');
-  const now = Date.now();
+  const now = new Date();
 
   await db.insert(systemPrompts).values({
     name,
@@ -35,7 +35,7 @@ export async function updateSystemPrompt(id: number, formData: FormData) {
 
   await db
     .update(systemPrompts)
-    .set({ name, content, updatedAt: Date.now() })
+    .set({ name, content, updatedAt: new Date() })
     .where(eq(systemPrompts.id, id));
 
   revalidatePath('/system-prompts');

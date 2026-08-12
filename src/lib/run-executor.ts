@@ -2,6 +2,7 @@ import { and, asc, eq, inArray } from 'drizzle-orm';
 import { db } from '@/db';
 import { machines, runResults, runs, toolsets } from '@/db/schema';
 import { LlmError } from './llm';
+import { acquireRunLock } from './run-lock';
 import { callMcpTool, parseMcpHeaders, type McpServer } from './mcp-client';
 import type { RunEvent, RunStatus } from './run-events';
 import { runToolLoop, type ToolExecutor } from './tool-loop';
@@ -20,19 +21,11 @@ export class RunAlreadyExecutingError extends Error {
 }
 
 /**
- * Runs currently being executed by this process.
- *
- * The app is a single-user, single-process tool, so an in-memory guard is
- * enough to stop a double-clicked "Resume" (or React re-mounting the driver)
- * from running the same result twice. It intentionally does not survive a
- * restart — rows left in 'running' by a crashed process are reclaimed as
- * 'pending' at the start of the next execution of that run.
+ * Whether a run is being executed anywhere. Re-exported so the call sites that
+ * only ever asked this question do not have to know it is now a database
+ * lookup rather than an in-memory one.
  */
-const executing = new Set<number>();
-
-export function isRunExecuting(runId: number): boolean {
-  return executing.has(runId);
-}
+export { isRunExecuting } from './run-lock';
 
 interface Endpoint {
   baseUrl: string;
@@ -147,10 +140,10 @@ export async function executeRun(
   emit: EmitRunEvent,
   requestSignal?: AbortSignal,
 ): Promise<void> {
-  if (executing.has(runId)) {
+  const lock = await acquireRunLock(runId);
+  if (!lock) {
     throw new RunAlreadyExecutingError(runId);
   }
-  executing.add(runId);
 
   try {
     const [run] = await db.select().from(runs).where(eq(runs.id, runId));
@@ -206,7 +199,7 @@ export async function executeRun(
 
     await db
       .update(runs)
-      .set({ status: 'running', startedAt: run.startedAt ?? Date.now(), finishedAt: null })
+      .set({ status: 'running', startedAt: run.startedAt ?? new Date(), finishedAt: null })
       .where(eq(runs.id, runId));
 
     let aborted = false;
@@ -226,7 +219,7 @@ export async function executeRun(
 
       await db
         .update(runResults)
-        .set({ ...RESET_TO_PENDING, status: 'running', startedAt: Date.now() })
+        .set({ ...RESET_TO_PENDING, status: 'running', startedAt: new Date() })
         .where(eq(runResults.id, resultId));
 
       emit({
@@ -302,7 +295,7 @@ export async function executeRun(
             turnCount: toolRun ? outcome.turns.length : null,
             toolCallCount: toolRun ? outcome.toolCallCount : null,
             stoppedReason: toolRun ? outcome.stoppedReason : null,
-            finishedAt: Date.now(),
+            finishedAt: new Date(),
           })
           .where(eq(runResults.id, resultId));
 
@@ -358,7 +351,7 @@ export async function executeRun(
             status: 'error',
             error: message,
             durationMs: Date.now() - startedAt,
-            finishedAt: Date.now(),
+            finishedAt: new Date(),
           })
           .where(eq(runResults.id, resultId));
 
@@ -392,12 +385,12 @@ export async function executeRun(
       .update(runs)
       .set({
         status,
-        finishedAt: status === 'pending' ? null : Date.now(),
+        finishedAt: status === 'pending' ? null : new Date(),
       })
       .where(eq(runs.id, runId));
 
     emit({ type: 'runDone', runId, status });
   } finally {
-    executing.delete(runId);
+    await lock.release();
   }
 }

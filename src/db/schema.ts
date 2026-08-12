@@ -1,17 +1,20 @@
 import {
-  sqliteTable,
+  pgTable,
   text,
   integer,
+  serial,
+  boolean,
+  timestamp,
+  doublePrecision,
   primaryKey,
-  real,
   unique,
-} from 'drizzle-orm/sqlite-core';
+} from 'drizzle-orm/pg-core';
 
 // ---------------------------------------------------------------------------
 // machines
 // ---------------------------------------------------------------------------
-export const machines = sqliteTable('machines', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
+export const machines = pgTable('machines', {
+  id: serial('id').primaryKey(),
   name: text('name').notNull(),
   baseUrl: text('base_url').notNull(),
   apiKey: text('api_key'),
@@ -19,8 +22,8 @@ export const machines = sqliteTable('machines', {
   ram: text('ram'),
   gpu: text('gpu'),
   notes: text('notes'),
-  createdAt: integer('created_at', { mode: 'number' }).notNull(),
-  updatedAt: integer('updated_at', { mode: 'number' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
 });
 
 export type Machine = typeof machines.$inferSelect;
@@ -29,19 +32,17 @@ export type NewMachine = typeof machines.$inferInsert;
 // ---------------------------------------------------------------------------
 // machine_models
 // ---------------------------------------------------------------------------
-export const machineModels = sqliteTable(
+export const machineModels = pgTable(
   'machine_models',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     machineId: integer('machine_id')
       .notNull()
       .references(() => machines.id, { onDelete: 'cascade' }),
     modelId: text('model_id').notNull(),
-    currentlyLoaded: integer('currently_loaded', { mode: 'boolean' })
-      .notNull()
-      .default(false),
-    firstSeenAt: integer('first_seen_at', { mode: 'number' }).notNull(),
-    lastSeenAt: integer('last_seen_at', { mode: 'number' }).notNull(),
+    currentlyLoaded: boolean('currently_loaded').notNull().default(false),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true, mode: 'date' }).notNull(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true, mode: 'date' }).notNull(),
     source: text('source', { enum: ['discovered', 'manual', 'run'] }).notNull(),
   },
   (table) => [unique().on(table.machineId, table.modelId)],
@@ -53,12 +54,12 @@ export type NewMachineModel = typeof machineModels.$inferInsert;
 // ---------------------------------------------------------------------------
 // system_prompts
 // ---------------------------------------------------------------------------
-export const systemPrompts = sqliteTable('system_prompts', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
+export const systemPrompts = pgTable('system_prompts', {
+  id: serial('id').primaryKey(),
   name: text('name').notNull(),
   content: text('content').notNull(),
-  createdAt: integer('created_at', { mode: 'number' }).notNull(),
-  updatedAt: integer('updated_at', { mode: 'number' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
 });
 
 export type SystemPrompt = typeof systemPrompts.$inferSelect;
@@ -72,8 +73,8 @@ export type NewSystemPrompt = typeof systemPrompts.$inferInsert;
  * authored here and answer from `tools.mockResponse`; `mcp` toolsets import
  * their tools from an MCP server over HTTP and execute against it.
  */
-export const toolsets = sqliteTable('toolsets', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
+export const toolsets = pgTable('toolsets', {
+  id: serial('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
   kind: text('kind', { enum: ['manual', 'mcp'] })
@@ -82,8 +83,8 @@ export const toolsets = sqliteTable('toolsets', {
   mcpUrl: text('mcp_url'),
   /** JSON object of extra request headers (auth), sent with every MCP call. */
   mcpHeaders: text('mcp_headers'),
-  createdAt: integer('created_at', { mode: 'number' }).notNull(),
-  updatedAt: integer('updated_at', { mode: 'number' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
 });
 
 export type Toolset = typeof toolsets.$inferSelect;
@@ -97,10 +98,10 @@ export type NewToolset = typeof toolsets.$inferInsert;
  * upserted and never deleted — a tool that disappears from `tools/list` only
  * flips `enabled` false, so past runs can still explain what they sent.
  */
-export const tools = sqliteTable(
+export const tools = pgTable(
   'tools',
   {
-    id: integer('id').primaryKey({ autoIncrement: true }),
+    id: serial('id').primaryKey(),
     toolsetId: integer('toolset_id')
       .notNull()
       .references(() => toolsets.id, { onDelete: 'cascade' }),
@@ -110,12 +111,12 @@ export const tools = sqliteTable(
     parametersJson: text('parameters_json').notNull().default('{}'),
     /** Canned output returned instead of calling anything (manual toolsets). */
     mockResponse: text('mock_response'),
-    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    enabled: boolean('enabled').notNull().default(true),
     source: text('source', { enum: ['manual', 'mcp'] })
       .notNull()
       .default('manual'),
-    firstSeenAt: integer('first_seen_at', { mode: 'number' }).notNull(),
-    lastSeenAt: integer('last_seen_at', { mode: 'number' }).notNull(),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true, mode: 'date' }).notNull(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true, mode: 'date' }).notNull(),
   },
   (table) => [unique().on(table.toolsetId, table.name)],
 );
@@ -126,12 +127,12 @@ export type NewTool = typeof tools.$inferInsert;
 // ---------------------------------------------------------------------------
 // prompt_groups
 // ---------------------------------------------------------------------------
-export const promptGroups = sqliteTable('prompt_groups', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
+export const promptGroups = pgTable('prompt_groups', {
+  id: serial('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
   sortOrder: integer('sort_order').notNull().default(0),
-  createdAt: integer('created_at', { mode: 'number' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
 });
 
 export type PromptGroup = typeof promptGroups.$inferSelect;
@@ -140,8 +141,8 @@ export type NewPromptGroup = typeof promptGroups.$inferInsert;
 // ---------------------------------------------------------------------------
 // prompts
 // ---------------------------------------------------------------------------
-export const prompts = sqliteTable('prompts', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
+export const prompts = pgTable('prompts', {
+  id: serial('id').primaryKey(),
   groupId: integer('group_id')
     .notNull()
     .references(() => promptGroups.id, { onDelete: 'cascade' }),
@@ -165,8 +166,8 @@ export const prompts = sqliteTable('prompts', {
   toolChoice: text('tool_choice', { enum: ['auto', 'required', 'none'] }),
   maxTurns: integer('max_turns').notNull().default(6),
   sortOrder: integer('sort_order').notNull().default(0),
-  createdAt: integer('created_at', { mode: 'number' }).notNull(),
-  updatedAt: integer('updated_at', { mode: 'number' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
 });
 
 export type Prompt = typeof prompts.$inferSelect;
@@ -176,7 +177,7 @@ export type NewPrompt = typeof prompts.$inferInsert;
 // prompt_toolsets
 // ---------------------------------------------------------------------------
 /** Which toolsets a prompt pulls in. A prompt may combine several sources. */
-export const promptToolsets = sqliteTable(
+export const promptToolsets = pgTable(
   'prompt_toolsets',
   {
     promptId: integer('prompt_id')
@@ -196,8 +197,8 @@ export type NewPromptToolset = typeof promptToolsets.$inferInsert;
 // ---------------------------------------------------------------------------
 // runs
 // ---------------------------------------------------------------------------
-export const runs = sqliteTable('runs', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
+export const runs = pgTable('runs', {
+  id: serial('id').primaryKey(),
   machineId: integer('machine_id').references(() => machines.id, {
     onDelete: 'set null',
   }),
@@ -215,10 +216,10 @@ export const runs = sqliteTable('runs', {
    * failed) that Resume depends on, so a half-finished run has to stay
    * `pending` while archived. The UI still presents archiving as a state.
    */
-  archivedAt: integer('archived_at', { mode: 'number' }),
-  createdAt: integer('created_at', { mode: 'number' }).notNull(),
-  startedAt: integer('started_at', { mode: 'number' }),
-  finishedAt: integer('finished_at', { mode: 'number' }),
+  archivedAt: timestamp('archived_at', { withTimezone: true, mode: 'date' }),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+  finishedAt: timestamp('finished_at', { withTimezone: true, mode: 'date' }),
 });
 
 export type Run = typeof runs.$inferSelect;
@@ -227,8 +228,8 @@ export type NewRun = typeof runs.$inferInsert;
 // ---------------------------------------------------------------------------
 // run_results
 // ---------------------------------------------------------------------------
-export const runResults = sqliteTable('run_results', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
+export const runResults = pgTable('run_results', {
+  id: serial('id').primaryKey(),
   runId: integer('run_id')
     .notNull()
     .references(() => runs.id, { onDelete: 'cascade' }),
@@ -269,15 +270,13 @@ export const runResults = sqliteTable('run_results', {
   ttftMs: integer('ttft_ms'),
   promptTokens: integer('prompt_tokens'),
   completionTokens: integer('completion_tokens'),
-  tokensPerSec: real('tokens_per_sec'),
-  tokensEstimated: integer('tokens_estimated', { mode: 'boolean' })
-    .notNull()
-    .default(false),
+  tokensPerSec: doublePrecision('tokens_per_sec'),
+  tokensEstimated: boolean('tokens_estimated').notNull().default(false),
   /** Manual verdict: `good`, `meh` (not wrong but not good enough) or `bad`. */
   rating: text('rating', { enum: ['good', 'meh', 'bad'] }),
   ratingNote: text('rating_note'),
-  startedAt: integer('started_at', { mode: 'number' }),
-  finishedAt: integer('finished_at', { mode: 'number' }),
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+  finishedAt: timestamp('finished_at', { withTimezone: true, mode: 'date' }),
 });
 
 export type RunResult = typeof runResults.$inferSelect;
@@ -291,13 +290,13 @@ export type NewRunResult = typeof runResults.$inferInsert;
 // not only in the seed script) so migration tooling knows it exists and can never
 // offer to drop it. `scope` is the group name for a prompt, empty for a toolset.
 // ---------------------------------------------------------------------------
-export const appSeeds = sqliteTable(
+export const appSeeds = pgTable(
   '__app_seeds',
   {
     kind: text('kind').notNull(),
     scope: text('scope').notNull(),
     name: text('name').notNull(),
-    seededAt: integer('seeded_at', { mode: 'number' }).notNull(),
+    seededAt: timestamp('seeded_at', { withTimezone: true, mode: 'date' }).notNull(),
   },
   (table) => [primaryKey({ columns: [table.kind, table.scope, table.name] })],
 );

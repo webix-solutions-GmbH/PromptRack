@@ -1,14 +1,36 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: agent-val-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agentval
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: agentval
+      # UTF8 is mandatory: seeded prompts carry Unicode Tags (U+E0000+).
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentval -d agentval"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      - agentval
+
   agent-val:
     build: .
     container_name: agent-val
     restart: unless-stopped
-    # Must match the owner of ./data on the host, otherwise SQLite cannot write
-    # to the bind mount. Drop this line to run as root.
-    user: "1001:1001"
-    volumes:
-      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
+      # Point this at an external/managed database to bypass the bundled one.
+      # `$POSTGRES_PASSWORD` is deliberately unbraced: compose 2.12 cannot parse a
+      # nested `${...}` inside a default value and fails the whole file.
+      - DATABASE_URL=${DATABASE_URL:-postgres://agentval:$POSTGRES_PASSWORD@postgres:5432/agentval}
       # API key for the MCP endpoint (/agent-val/api/mcp). Put it in a .env file
       # next to this one; unset means the endpoint refuses every request.
       - MCP_API_KEY=${MCP_API_KEY:-}
@@ -17,8 +39,13 @@ services:
     ports:
       - "127.0.0.1:3100:3000"
     networks:
+      - agentval
       - llm_default
 
+volumes:
+  pgdata:
+
 networks:
+  agentval:
   llm_default:
     external: true

@@ -1,13 +1,13 @@
-export function formatDateTime(ms: number): string {
-  return new Date(ms).toLocaleString(undefined, {
+export function formatDateTime(value: number | Date): string {
+  return new Date(value).toLocaleString(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
   });
 }
 
 /** Compact local-time ISO stamp for tables: `2026-07-27 09:46`. */
-export function formatIsoDateTime(ms: number): string {
-  const date = new Date(ms);
+export function formatIsoDateTime(value: number | Date): string {
+  const date = new Date(value);
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }

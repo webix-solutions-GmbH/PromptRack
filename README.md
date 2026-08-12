@@ -5,28 +5,36 @@ OpenAI-compatible endpoints, keep a library of prompts, run those prompts
 against a model, rate the answers, and compare runs side by side.
 
 Stack: Next.js 16 (App Router) · TypeScript · Tailwind v4 · Drizzle ORM +
-SQLite (better-sqlite3). All state lives in a single file, `data/app.db`.
+Postgres (`pg`).
 
 ## Development
 
-Node 22 (via nvm) is required — better-sqlite3 is a native module and is loaded
-against the running Node version.
+Node 22 (via nvm) is what the toolchain is pinned to. Docker is used for the
+development database.
 
 ```bash
 nvm use 22
 npm install
-npm run db:init   # create/update data/app.db from the migrations in drizzle/
-npm run db:seed   # optional: ready-made toolsets and prompt groups
-npm run dev       # http://localhost:3000/agent-val (the app lives under its basePath)
+cp .env.example .env.local     # optional; npm run dev writes it if missing
+npm run dev                    # starts postgres in docker, migrates, serves /agent-val
+npm run db:seed                # optional: sample toolsets + prompt groups
 ```
 
-Other scripts: `npm run lint`, `npm test` (vitest), `npm run build`.
+The app lives under its basePath: `http://localhost:3000/agent-val`.
 
-`src/db/schema.ts` is the source of truth; `npm run db:generate` writes an
-incremental SQL migration under `drizzle/` (committed) whenever the schema
-changes; `npm run db:migrate` applies whatever migrations the local database
-hasn't seen yet; `db:init` is both in sequence. Files under `drizzle/` are
-never hand-edited — a migration is reviewed like any other code change.
+`npm run dev` runs `scripts/dev-db.mjs` first, which brings up the
+`docker-compose.dev.yml` postgres on `127.0.0.1:5433`, waits for it and applies
+the migrations. It is idempotent, so it costs under a second once the container
+is up. `npm run db:reset` drops the volume and starts over from an empty
+database.
+
+**Setting `DATABASE_URL` yourself skips the docker step entirely** — point it at
+any Postgres (a managed one, a shared dev box) and `npm run dev` will leave the
+local container alone.
+
+Other scripts: `npm run lint`, `npm test` (vitest, no database needed),
+`npm run test:integration` (spins up a throwaway Postgres in docker),
+`npm run build`.
 
 ## Production deployment
 
@@ -37,10 +45,16 @@ The app ships as a Docker image built from the multi-stage `Dockerfile`
 docker compose up -d --build
 ```
 
+Compose brings up two services: `postgres` (the database) and `agent-val` (the
+app), which waits for the database to report healthy before it starts.
+
+- Put `POSTGRES_PASSWORD` in a `.env` file next to `docker-compose.yml`; compose
+  refuses to start without it. `DATABASE_URL` is optional and overrides the
+  bundled database with an external one.
+- State lives in the named volume `pgdata` — there is no bind mount and no uid
+  matching to get right. Back it up with
+  `docker compose exec -T postgres pg_dump -U agentval agentval > backup.sql`.
 - The compose service is `agent-val`, listening on port 3000 in the container.
-- `./data` is bind-mounted to `/app/data`, so the SQLite file lives on the host
-  and survives rebuilds. `user: "1001:1001"` in `docker-compose.yml` must match
-  the owner of `./data`.
 - It joins the **external** network `llm_default` (created by the LLM stack);
   Caddy serves the app at `https://ki01.webix.de/agent-val` (path-based routing
   via a `handle /agent-val*` block → `agent-val:3000`) and puts HTTP basic auth
@@ -55,26 +69,27 @@ docker compose up -d --build
 
 ### Schema bootstrap on start
 
-The data volume can be completely empty on first start, so the schema is applied
+The database can be completely empty on first start, so the schema is applied
 when the container starts rather than when the image is built:
 
-1. Migrations under `drizzle/` are committed to the repo (`npm run db:generate`
-   writes them from `src/db/schema.ts`) and copied into the image as-is — the
-   image ships the exact SQL that was reviewed.
-2. `docker-entrypoint.sh` runs `scripts/init-db.mjs` before the server starts.
-   It calls drizzle's own `migrate()`, which applies whatever migrations the
-   database hasn't seen yet and records them in drizzle's ledger table
-   `__drizzle_migrations`. Statements are applied verbatim, so a migration that
-   cannot apply cleanly stops the container instead of silently no-opping.
-3. A database that predates this setup (created by `drizzle-kit push`, or by
-   the old hand-rolled applier) is adopted automatically on first start: the
-   baseline migration is recorded as already applied rather than re-run, and
-   anything after it applies normally.
+1. `src/db/schema.ts` is the source of truth. `npm run db:generate` writes an
+   incremental SQL migration under `drizzle/`, which is committed and copied
+   into the image as-is — the image ships the exact SQL that was reviewed.
+   Files under `drizzle/` are never hand-edited; a migration is reviewed like
+   any other code change.
+2. `docker-entrypoint.sh` refuses to start without `DATABASE_URL`, then runs
+   `scripts/init-db.mjs` before the server. It calls drizzle's own `migrate()`,
+   which applies whatever migrations the database hasn't seen yet and records
+   them in drizzle's ledger table `__drizzle_migrations`. Statements are applied
+   verbatim, so a migration that cannot apply cleanly stops the container
+   instead of silently no-opping.
 
 This was chosen over shipping drizzle-kit in the runtime image: the bootstrap
-needs nothing but `better-sqlite3` and the `drizzle-orm` package (for the
-migrator), both carried in the runner image, so it needs no dev dependencies
-and no TypeScript.
+needs nothing but `pg` and the `drizzle-orm` package (for the migrator), both
+carried in the runner image, so it needs no dev dependencies and no TypeScript.
+
+`npm run db:migrate` is the same script against your local database; `db:init`
+is `db:generate` followed by it.
 
 ## How it works
 

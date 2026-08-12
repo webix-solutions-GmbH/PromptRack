@@ -48,7 +48,7 @@ export async function POST(
     });
   }
 
-  const now = Date.now();
+  const now = new Date();
   const existingRows = await db.select().from(tools).where(eq(tools.toolsetId, id));
   const existingByName = new Map(existingRows.map((row) => [row.name, row]));
 

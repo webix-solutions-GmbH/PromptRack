@@ -134,7 +134,11 @@ export default async function ResultsPage({
       .from(runResults),
   ]);
 
-  const runById = new Map(runRows.map((run) => [run.id, run]));
+  // `createdAt` crosses into the client-side compare views, which speak epoch
+  // millis; the database hands out a Date.
+  const runById = new Map(
+    runRows.map((run) => [run.id, { createdAt: run.createdAt.getTime(), params: run.params }]),
+  );
 
   // ---------------------------------------------------------------- run mode
   // A run is comparable once it has produced at least one result — that covers
@@ -152,7 +156,7 @@ export default async function ResultsPage({
         machineName: snapshotMachineName(run.machineSnapshot),
         status: run.status,
         archived: run.archivedAt !== null,
-        createdAt: run.createdAt,
+        createdAt: run.createdAt.getTime(),
         groupNames: Array.from(
           new Set([...parseGroupNames(run.groupNames), ...results.map((r) => r.groupName)]),
         ),
@@ -191,7 +195,7 @@ export default async function ResultsPage({
       machineId: run.machineId,
       machineName: snapshotMachineName(run.machineSnapshot),
       modelId: run.modelId,
-      createdAt: run.createdAt,
+      createdAt: run.createdAt.getTime(),
       archived: run.archivedAt !== null,
     })),
     summaryRows,
@@ -297,7 +301,7 @@ export default async function ResultsPage({
       );
 
     modelCells = rows.map((row) => ({
-      ...toCell(row.result, { createdAt: row.runCreatedAt, params: row.runParams }),
+      ...toCell(row.result, { createdAt: row.runCreatedAt.getTime(), params: row.runParams }),
       columnKey: modelColumnKey(row.machineId, row.modelId),
     }));
   }

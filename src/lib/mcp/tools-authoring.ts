@@ -224,8 +224,8 @@ async function promptViews(rows: (typeof prompts.$inferSelect)[], options: Promp
       toolsets: links
         .filter((link) => link.promptId === row.id)
         .map((link) => ({ id: link.toolsetId, name: link.name, kind: link.kind })),
-      created_at: row.createdAt,
-      updated_at: row.updatedAt,
+      created_at: row.createdAt.getTime(),
+      updated_at: row.updatedAt.getTime(),
     };
   });
 }
@@ -261,7 +261,7 @@ const listPromptGroups: McpToolSpec = {
         name: group.name,
         description: group.description,
         prompt_count: promptRows.filter((row) => row.groupId === group.id).length,
-        created_at: group.createdAt,
+        created_at: group.createdAt.getTime(),
       })),
     };
   },
@@ -302,7 +302,7 @@ const createPromptGroup: McpToolSpec = {
 
     const [row] = await db
       .insert(promptGroups)
-      .values({ name, description, sortOrder: 0, createdAt: Date.now() })
+      .values({ name, description, sortOrder: 0, createdAt: new Date() })
       .returning({ id: promptGroups.id });
 
     revalidateAuthoring();
@@ -323,8 +323,8 @@ const listSystemPrompts: McpToolSpec = {
         id: row.id,
         name: row.name,
         content: row.content,
-        created_at: row.createdAt,
-        updated_at: row.updatedAt,
+        created_at: row.createdAt.getTime(),
+        updated_at: row.updatedAt.getTime(),
       })),
     };
   },
@@ -355,7 +355,7 @@ const createSystemPrompt: McpToolSpec = {
       );
     }
 
-    const now = Date.now();
+    const now = new Date();
     const [row] = await db
       .insert(systemPrompts)
       .values({ name, content, createdAt: now, updatedAt: now })
@@ -389,7 +389,7 @@ const updateSystemPrompt: McpToolSpec = {
 
     await db
       .update(systemPrompts)
-      .set({ name, content, updatedAt: Date.now() })
+      .set({ name, content, updatedAt: new Date() })
       .where(eq(systemPrompts.id, target.id));
 
     revalidateAuthoring();
@@ -558,7 +558,7 @@ const createPrompt: McpToolSpec = {
     await assertToolConfig(toolMode, toolsetRefs);
     const resolvedToolsets = toolsetRefs.length > 0 ? await resolveToolsets(toolsetRefs) : [];
 
-    const now = Date.now();
+    const now = new Date();
     const [row] = await db
       .insert(prompts)
       .values({
@@ -624,7 +624,7 @@ const updatePrompt: McpToolSpec = {
       throw new McpToolError(`No prompt with id ${id}.`);
     }
 
-    const values: Partial<typeof prompts.$inferInsert> = { updatedAt: Date.now() };
+    const values: Partial<typeof prompts.$inferInsert> = { updatedAt: new Date() };
 
     if (hasKey(args, 'group')) {
       values.groupId = (await resolveGroup(requireRowRef(args, 'group'))).id;
