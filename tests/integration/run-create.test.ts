@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '@/db';
-import { currentScope } from '@/db/scope';
 import {
   machines,
   promptGroups,
@@ -13,6 +12,7 @@ import {
   tools,
   toolsets,
 } from '@/db/schema';
+import { defaultCustomerId, defaultScope } from './setup';
 
 const state = vi.hoisted(() => ({ failResolve: false }));
 
@@ -39,19 +39,21 @@ const { createRunRecord } = await import('@/lib/run-create');
 const NOW = new Date('2026-07-27T09:46:00.000Z');
 
 async function seedFixture() {
+  const customerId = defaultCustomerId();
+
   const [machine] = await db
     .insert(machines)
-    .values({ name: 'ki01', baseUrl: 'http://127.0.0.1:9/v1', createdAt: NOW, updatedAt: NOW })
+    .values({ customerId, name: 'ki01', baseUrl: 'http://127.0.0.1:9/v1', createdAt: NOW, updatedAt: NOW })
     .returning({ id: machines.id });
 
   const [systemPrompt] = await db
     .insert(systemPrompts)
-    .values({ name: 'base', content: 'BASE SYSTEM TEXT', createdAt: NOW, updatedAt: NOW })
+    .values({ customerId, name: 'base', content: 'BASE SYSTEM TEXT', createdAt: NOW, updatedAt: NOW })
     .returning({ id: systemPrompts.id });
 
   const [toolset] = await db
     .insert(toolsets)
-    .values({ name: 'Support Desk', kind: 'manual', createdAt: NOW, updatedAt: NOW })
+    .values({ customerId, name: 'Support Desk', kind: 'manual', createdAt: NOW, updatedAt: NOW })
     .returning({ id: toolsets.id });
 
   const [tool] = await db
@@ -71,7 +73,7 @@ async function seedFixture() {
 
   const [group] = await db
     .insert(promptGroups)
-    .values({ name: 'General', sortOrder: 0, createdAt: NOW })
+    .values({ customerId, name: 'General', sortOrder: 0, createdAt: NOW })
     .returning({ id: promptGroups.id });
 
   const [prompt] = await db
@@ -104,7 +106,7 @@ describe('createRunRecord', () => {
   it('freezes prompt text, system prompt and tools against later edits', async () => {
     const fixture = await seedFixture();
 
-    const created = await createRunRecord(await currentScope(), {
+    const created = await createRunRecord(defaultScope(), {
       machineId: fixture.machine.id,
       modelId: 'qwen3-32b',
       groupIds: [fixture.group.id],
@@ -153,7 +155,7 @@ describe('createRunRecord', () => {
     state.failResolve = true;
 
     await expect(
-      createRunRecord(await currentScope(), {
+      createRunRecord(defaultScope(), {
         machineId: fixture.machine.id,
         modelId: 'qwen3-32b',
         groupIds: [fixture.group.id],

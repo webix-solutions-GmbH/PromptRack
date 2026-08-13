@@ -14,7 +14,7 @@
 
 import { revalidatePath } from 'next/cache';
 import type { Prompt } from '@/db/schema';
-import { currentScope, type Scope } from '@/db/scope';
+import type { Scope } from '@/db/scope';
 import {
   createGroup,
   createPrompt as createPromptRow,
@@ -60,7 +60,8 @@ import {
   type RowRef,
   type ToolArgs,
 } from './args';
-import type { McpToolSpec } from './protocol';
+import { CUSTOMER_ARG, resolveMcpScope } from './customer';
+import type { McpCallContext, McpToolSpec } from './protocol';
 
 const TOOL_MODES = ['none', 'definitions', 'execute'] as const;
 const TOOL_CHOICES = ['auto', 'required', 'none'] as const;
@@ -233,9 +234,9 @@ const listPromptGroups: McpToolSpec = {
   description:
     'List every prompt group with its prompt count. Groups are what a run selects, so a set of prompts that should be run together belongs in one group.',
   readOnly: true,
-  inputSchema: { type: 'object', properties: {} },
-  handler: async () => {
-    const scope = await currentScope();
+  inputSchema: { type: 'object', properties: { customer: CUSTOMER_ARG } },
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const groups = await allGroups(scope);
     const counts = await promptCountsByGroup(scope);
 
@@ -258,6 +259,7 @@ const createPromptGroup: McpToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
+      customer: CUSTOMER_ARG,
       name: { type: 'string', description: 'Group name, e.g. "Odoo helpdesk replies".' },
       description: {
         type: 'string',
@@ -266,8 +268,8 @@ const createPromptGroup: McpToolSpec = {
     },
     required: ['name'],
   },
-  handler: async (args: ToolArgs) => {
-    const scope = await currentScope();
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const name = requireString(args, 'name');
     const description = optionalString(args, 'description');
 
@@ -297,9 +299,9 @@ const listSystemPrompts: McpToolSpec = {
   description:
     'List the reusable system prompts with their full content. A prompt may reference one of these as its base and then append to or override it.',
   readOnly: true,
-  inputSchema: { type: 'object', properties: {} },
-  handler: async () => {
-    const rows = await allSystemPrompts(await currentScope());
+  inputSchema: { type: 'object', properties: { customer: CUSTOMER_ARG } },
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const rows = await allSystemPrompts(await resolveMcpScope(args, ctx.source));
     return {
       system_prompts: rows.map((row) => ({
         id: row.id,
@@ -319,13 +321,14 @@ const createSystemPrompt: McpToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
+      customer: CUSTOMER_ARG,
       name: { type: 'string', description: 'Short label, e.g. "Helpdesk agent (prod)".' },
       content: { type: 'string', description: 'The system prompt itself, verbatim.' },
     },
     required: ['name', 'content'],
   },
-  handler: async (args: ToolArgs) => {
-    const scope = await currentScope();
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const name = requireString(args, 'name');
     const content = requireText(args, 'content');
 
@@ -352,6 +355,7 @@ const updateSystemPrompt: McpToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
+      customer: CUSTOMER_ARG,
       system_prompt: {
         type: ['string', 'integer'],
         description: 'Name or id of the system prompt to change.',
@@ -361,8 +365,8 @@ const updateSystemPrompt: McpToolSpec = {
     },
     required: ['system_prompt'],
   },
-  handler: async (args: ToolArgs) => {
-    const scope = await currentScope();
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const target = await resolveSystemPrompt(scope, requireRowRef(args, 'system_prompt'));
     const name = hasKey(args, 'name') ? requireString(args, 'name') : target.name;
     const content = hasKey(args, 'content') ? requireText(args, 'content') : target.content;
@@ -379,9 +383,9 @@ const listToolsets: McpToolSpec = {
   description:
     'List the toolsets a prompt can offer to the model, with their tool names. `manual` toolsets answer with a canned response (deterministic); `mcp` toolsets are really executed against an MCP server. Toolsets and their tools are authored in the web UI, not over this API.',
   readOnly: true,
-  inputSchema: { type: 'object', properties: {} },
-  handler: async () => {
-    const scope = await currentScope();
+  inputSchema: { type: 'object', properties: { customer: CUSTOMER_ARG } },
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const rows = await allToolsets(scope);
     const toolRows = await listTools(scope);
 
@@ -412,6 +416,7 @@ const listPrompts: McpToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
+      customer: CUSTOMER_ARG,
       group: {
         type: ['string', 'integer'],
         description: 'Name or id of a prompt group. Omit for all prompts.',
@@ -426,8 +431,8 @@ const listPrompts: McpToolSpec = {
       },
     },
   },
-  handler: async (args: ToolArgs) => {
-    const scope = await currentScope();
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const groupRef = optionalRowRef(args, 'group');
     const group = groupRef ? await resolveGroup(scope, groupRef) : null;
 
@@ -448,11 +453,17 @@ const getPrompt: McpToolSpec = {
   readOnly: true,
   inputSchema: {
     type: 'object',
-    properties: { prompt_id: { type: 'integer', description: 'Prompt id.' } },
+    properties: {
+      customer: CUSTOMER_ARG,
+      prompt_id: { type: 'integer', description: 'Prompt id.' },
+    },
     required: ['prompt_id'],
   },
-  handler: async (args: ToolArgs) => ({
-    prompt: await promptViewById(await currentScope(), requireInteger(args, 'prompt_id')),
+  handler: async (args: ToolArgs, ctx: McpCallContext) => ({
+    prompt: await promptViewById(
+      await resolveMcpScope(args, ctx.source),
+      requireInteger(args, 'prompt_id'),
+    ),
   }),
 };
 
@@ -463,6 +474,7 @@ const createPrompt: McpToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
+      customer: CUSTOMER_ARG,
       group: {
         type: ['string', 'integer'],
         description: 'Name or id of the prompt group. Create it first with create_prompt_group.',
@@ -510,8 +522,8 @@ const createPrompt: McpToolSpec = {
     },
     required: ['group', 'title', 'content'],
   },
-  handler: async (args: ToolArgs) => {
-    const scope = await currentScope();
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const group = await resolveGroup(scope, requireRowRef(args, 'group'));
     const title = requireString(args, 'title');
     const content = requireText(args, 'content');
@@ -567,6 +579,7 @@ const updatePrompt: McpToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
+      customer: CUSTOMER_ARG,
       prompt_id: { type: 'integer', description: 'Prompt id.' },
       group: { type: ['string', 'integer'], description: 'Move the prompt to this group.' },
       title: { type: 'string' },
@@ -589,8 +602,8 @@ const updatePrompt: McpToolSpec = {
     },
     required: ['prompt_id'],
   },
-  handler: async (args: ToolArgs) => {
-    const scope = await currentScope();
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const id = requireInteger(args, 'prompt_id');
     const existing = await getPromptRow(scope, id);
     if (!existing) {
@@ -666,11 +679,14 @@ const deletePrompt: McpToolSpec = {
   destructive: true,
   inputSchema: {
     type: 'object',
-    properties: { prompt_id: { type: 'integer', description: 'Prompt id.' } },
+    properties: {
+      customer: CUSTOMER_ARG,
+      prompt_id: { type: 'integer', description: 'Prompt id.' },
+    },
     required: ['prompt_id'],
   },
-  handler: async (args: ToolArgs) => {
-    const scope = await currentScope();
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const id = requireInteger(args, 'prompt_id');
     const existing = await getPromptRow(scope, id);
     if (!existing) {

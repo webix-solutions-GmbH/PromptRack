@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   pgTable,
   text,
@@ -9,23 +10,68 @@ import {
   index,
   primaryKey,
   unique,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
+
+// ---------------------------------------------------------------------------
+// customers
+// ---------------------------------------------------------------------------
+/**
+ * A customer workspace.
+ *
+ * Not a tenant: customers never log in, and every team member can switch into
+ * any workspace. It is the label that keeps one engagement's machines, prompts
+ * and runs from mixing with another's — which matters most for machines, since
+ * each engagement registers its own endpoints with its own API keys.
+ *
+ * The name is unique case-insensitively because MCP callers name a workspace and
+ * `resolveRowRef` refuses an ambiguous name rather than guessing: two workspaces
+ * differing only in case would make every by-name call fail.
+ */
+export const customers = pgTable(
+  'customers',
+  {
+    id: serial('id').primaryKey(),
+    name: text('name').notNull(),
+    description: text('description'),
+    /** Hidden from the switcher without destroying anything it owns. */
+    archivedAt: timestamp('archived_at', { withTimezone: true, mode: 'date' }),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [uniqueIndex('customers_name_lower_idx').on(sql`lower(${table.name})`)],
+);
+
+export type Customer = typeof customers.$inferSelect;
+export type NewCustomer = typeof customers.$inferInsert;
 
 // ---------------------------------------------------------------------------
 // machines
 // ---------------------------------------------------------------------------
-export const machines = pgTable('machines', {
-  id: serial('id').primaryKey(),
-  name: text('name').notNull(),
-  baseUrl: text('base_url').notNull(),
-  apiKey: text('api_key'),
-  cpu: text('cpu'),
-  ram: text('ram'),
-  gpu: text('gpu'),
-  notes: text('notes'),
-  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
-});
+export const machines = pgTable(
+  'machines',
+  {
+    id: serial('id').primaryKey(),
+    /**
+     * The workspace this row belongs to. `restrict`, never `cascade`: deleting a
+     * workspace must not silently destroy run history — archiving is the soft
+     * path, and `deleteCustomer` refuses while content exists.
+     */
+    customerId: integer('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    name: text('name').notNull(),
+    baseUrl: text('base_url').notNull(),
+    apiKey: text('api_key'),
+    cpu: text('cpu'),
+    ram: text('ram'),
+    gpu: text('gpu'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [index('machines_customer_id_idx').on(table.customerId)],
+);
 
 export type Machine = typeof machines.$inferSelect;
 export type NewMachine = typeof machines.$inferInsert;
@@ -55,13 +101,24 @@ export type NewMachineModel = typeof machineModels.$inferInsert;
 // ---------------------------------------------------------------------------
 // system_prompts
 // ---------------------------------------------------------------------------
-export const systemPrompts = pgTable('system_prompts', {
-  id: serial('id').primaryKey(),
-  name: text('name').notNull(),
-  content: text('content').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
-});
+export const systemPrompts = pgTable(
+  'system_prompts',
+  {
+    id: serial('id').primaryKey(),
+    customerId: integer('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    name: text('name').notNull(),
+    content: text('content').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  // `(customer_id, name)` rather than `(customer_id)` alone: the layer looks
+  // these up by name inside a workspace, and a btree on the pair already serves
+  // a customer-only predicate as its leftmost prefix. Non-unique on purpose —
+  // duplicate names may already exist, and app code produces a better message.
+  (table) => [index('system_prompts_customer_name_idx').on(table.customerId, table.name)],
+);
 
 export type SystemPrompt = typeof systemPrompts.$inferSelect;
 export type NewSystemPrompt = typeof systemPrompts.$inferInsert;
@@ -74,19 +131,26 @@ export type NewSystemPrompt = typeof systemPrompts.$inferInsert;
  * authored here and answer from `tools.mockResponse`; `mcp` toolsets import
  * their tools from an MCP server over HTTP and execute against it.
  */
-export const toolsets = pgTable('toolsets', {
-  id: serial('id').primaryKey(),
-  name: text('name').notNull(),
-  description: text('description'),
-  kind: text('kind', { enum: ['manual', 'mcp'] })
-    .notNull()
-    .default('manual'),
-  mcpUrl: text('mcp_url'),
-  /** JSON object of extra request headers (auth), sent with every MCP call. */
-  mcpHeaders: text('mcp_headers'),
-  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
-});
+export const toolsets = pgTable(
+  'toolsets',
+  {
+    id: serial('id').primaryKey(),
+    customerId: integer('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    name: text('name').notNull(),
+    description: text('description'),
+    kind: text('kind', { enum: ['manual', 'mcp'] })
+      .notNull()
+      .default('manual'),
+    mcpUrl: text('mcp_url'),
+    /** JSON object of extra request headers (auth), sent with every MCP call. */
+    mcpHeaders: text('mcp_headers'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [index('toolsets_customer_name_idx').on(table.customerId, table.name)],
+);
 
 export type Toolset = typeof toolsets.$inferSelect;
 export type NewToolset = typeof toolsets.$inferInsert;
@@ -128,13 +192,20 @@ export type NewTool = typeof tools.$inferInsert;
 // ---------------------------------------------------------------------------
 // prompt_groups
 // ---------------------------------------------------------------------------
-export const promptGroups = pgTable('prompt_groups', {
-  id: serial('id').primaryKey(),
-  name: text('name').notNull(),
-  description: text('description'),
-  sortOrder: integer('sort_order').notNull().default(0),
-  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
-});
+export const promptGroups = pgTable(
+  'prompt_groups',
+  {
+    id: serial('id').primaryKey(),
+    customerId: integer('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    name: text('name').notNull(),
+    description: text('description'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [index('prompt_groups_customer_name_idx').on(table.customerId, table.name)],
+);
 
 export type PromptGroup = typeof promptGroups.$inferSelect;
 export type NewPromptGroup = typeof promptGroups.$inferInsert;
@@ -198,30 +269,37 @@ export type NewPromptToolset = typeof promptToolsets.$inferInsert;
 // ---------------------------------------------------------------------------
 // runs
 // ---------------------------------------------------------------------------
-export const runs = pgTable('runs', {
-  id: serial('id').primaryKey(),
-  machineId: integer('machine_id').references(() => machines.id, {
-    onDelete: 'set null',
-  }),
-  machineSnapshot: text('machine_snapshot').notNull(),
-  modelId: text('model_id').notNull(),
-  params: text('params'),
-  comment: text('comment'),
-  groupNames: text('group_names').notNull(),
-  /** JSON snapshot of endpoint/server/model metadata probed at creation time. */
-  llmInfo: text('llm_info'),
-  status: text('status').notNull().default('pending'),
-  /**
-   * When the run was archived, or null. Deliberately *not* a `status` value:
-   * status is the execution state machine (pending → running → completed /
-   * failed) that Resume depends on, so a half-finished run has to stay
-   * `pending` while archived. The UI still presents archiving as a state.
-   */
-  archivedAt: timestamp('archived_at', { withTimezone: true, mode: 'date' }),
-  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
-  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
-  finishedAt: timestamp('finished_at', { withTimezone: true, mode: 'date' }),
-});
+export const runs = pgTable(
+  'runs',
+  {
+    id: serial('id').primaryKey(),
+    customerId: integer('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    machineId: integer('machine_id').references(() => machines.id, {
+      onDelete: 'set null',
+    }),
+    machineSnapshot: text('machine_snapshot').notNull(),
+    modelId: text('model_id').notNull(),
+    params: text('params'),
+    comment: text('comment'),
+    groupNames: text('group_names').notNull(),
+    /** JSON snapshot of endpoint/server/model metadata probed at creation time. */
+    llmInfo: text('llm_info'),
+    status: text('status').notNull().default('pending'),
+    /**
+     * When the run was archived, or null. Deliberately *not* a `status` value:
+     * status is the execution state machine (pending → running → completed /
+     * failed) that Resume depends on, so a half-finished run has to stay
+     * `pending` while archived. The UI still presents archiving as a state.
+     */
+    archivedAt: timestamp('archived_at', { withTimezone: true, mode: 'date' }),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+    finishedAt: timestamp('finished_at', { withTimezone: true, mode: 'date' }),
+  },
+  (table) => [index('runs_customer_id_idx').on(table.customerId)],
+);
 
 export type Run = typeof runs.$inferSelect;
 export type NewRun = typeof runs.$inferInsert;
@@ -297,16 +375,24 @@ export type NewRunResult = typeof runResults.$inferInsert;
 // been inserted, so seeding is additive and respects deletions. It lives here (and
 // not only in the seed script) so migration tooling knows it exists and can never
 // offer to drop it. `scope` is the group name for a prompt, empty for a toolset.
+//
+// The ledger is keyed per workspace: seeding the standard suite into a new
+// engagement's workspace must not be suppressed by a prompt someone deleted in
+// another one. `cascade` and not `restrict` here — this is bookkeeping about a
+// workspace, not content, and it must never be what blocks a delete.
 // ---------------------------------------------------------------------------
 export const appSeeds = pgTable(
   '__app_seeds',
   {
+    customerId: integer('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'cascade' }),
     kind: text('kind').notNull(),
     scope: text('scope').notNull(),
     name: text('name').notNull(),
     seededAt: timestamp('seeded_at', { withTimezone: true, mode: 'date' }).notNull(),
   },
-  (table) => [primaryKey({ columns: [table.kind, table.scope, table.name] })],
+  (table) => [primaryKey({ columns: [table.customerId, table.kind, table.scope, table.name] })],
 );
 
 // ---------------------------------------------------------------------------
@@ -326,6 +412,15 @@ export const users = pgTable('user', {
   role: text('role', { enum: ['admin', 'member', 'viewer'] })
     .notNull()
     .default('viewer'),
+  /**
+   * The workspace this user is currently in. Nullable and `set null`, so
+   * archiving or deleting a workspace logs its users into the fallback rather
+   * than breaking their session; `resolveActiveCustomerId` does the falling
+   * back and `currentScope()` heals the stored value.
+   */
+  activeCustomerId: integer('active_customer_id').references(() => customers.id, {
+    onDelete: 'set null',
+  }),
   // better-auth admin plugin fields:
   banned: boolean('banned').notNull().default(false),
   banReason: text('ban_reason'),

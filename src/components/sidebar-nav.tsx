@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { href: "/prompts", label: "Prompts" },
   { href: "/runs", label: "Runs" },
   { href: "/results", label: "Results" },
+  { href: "/customers", label: "Workspaces" },
   { href: "/account/tokens", label: "API tokens" },
   { href: "/admin/users", label: "Users", adminOnly: true },
 ] as const;

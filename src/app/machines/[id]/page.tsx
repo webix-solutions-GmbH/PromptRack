@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import { currentScope } from '@/db/scope';
+import { findMachineWorkspace } from '@/db/repo/customers';
 import { getMachine, listMachineModels } from '@/db/repo/machines';
 import { formatDateTime } from '@/lib/format';
 import { addManualModel, updateMachine } from '@/actions/machines';
@@ -8,6 +9,7 @@ import { canAdminister, canWrite } from '@/lib/auth/policy';
 import { TestConnectionButton } from '@/components/machines/test-connection-button';
 import { DiscoverModelsButton } from '@/components/machines/discover-models-button';
 import { DeleteMachineButton } from '@/components/machines/delete-machine-button';
+import { WrongWorkspaceNotice } from '@/components/wrong-workspace-notice';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,7 +33,13 @@ export default async function MachineDetailPage({
   const scope = await currentScope();
   const machine = await getMachine(scope, id);
   if (!machine) {
-    notFound();
+    // Deliberately unscoped, exactly as on the run detail page: tell "gone"
+    // apart from "in another workspace" and offer the switch.
+    const elsewhere = await findMachineWorkspace(id);
+    if (!elsewhere) {
+      notFound();
+    }
+    return <WrongWorkspaceNotice what="machine" workspace={elsewhere} />;
   }
 
   const models = await listMachineModels(scope, { machineId: id });

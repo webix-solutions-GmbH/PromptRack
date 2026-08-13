@@ -57,6 +57,26 @@ export async function setUserRoleRow(userId: string, role: Role): Promise<void> 
   await db.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, userId));
 }
 
+/**
+ * The workspace a user is currently in, or null when they have never switched
+ * (or the one they were in was archived away under them — the column is
+ * `ON DELETE SET NULL`).
+ */
+export async function getActiveCustomerId(userId: string): Promise<number | null> {
+  const [row] = await db
+    .select({ activeCustomerId: users.activeCustomerId })
+    .from(users)
+    .where(eq(users.id, userId));
+  return row?.activeCustomerId ?? null;
+}
+
+export async function setActiveCustomerId(userId: string, customerId: number): Promise<void> {
+  await db
+    .update(users)
+    .set({ activeCustomerId: customerId, updatedAt: new Date() })
+    .where(eq(users.id, userId));
+}
+
 /** Cascades to sessions, accounts and api_tokens through their foreign keys. */
 export async function deleteUserRow(userId: string): Promise<void> {
   await db.delete(users).where(eq(users.id, userId));

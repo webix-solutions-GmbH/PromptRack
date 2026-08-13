@@ -22,6 +22,27 @@
       "when": 1786568292122,
       "tag": "0002_many_stingray",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786570890155,
+      "tag": "0003_add_customers",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786570903187,
+      "tag": "0004_assign_default_customer",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786570933301,
+      "tag": "0005_customer_id_required",
+      "breakpoints": true
     }
   ]
 }

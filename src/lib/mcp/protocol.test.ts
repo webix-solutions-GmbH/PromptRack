@@ -7,6 +7,7 @@ import {
   type McpCallContext,
   type McpToolSpec,
 } from './protocol';
+import { MCP_TOOLS } from './registry';
 
 const invoked: string[] = [];
 
@@ -49,7 +50,10 @@ const REGISTRY: McpToolSpec[] = [
 ];
 
 function ctx(role: Role = 'member'): McpCallContext {
-  return { actor: { userId: 'u1', email: 'user@example.com', role } };
+  return {
+    actor: { userId: 'u1', email: 'user@example.com', role },
+    source: { header: null, tokenDefault: null },
+  };
 }
 
 function call(name: string, args?: unknown, role: Role = 'member') {
@@ -119,6 +123,31 @@ describe('tools/list', () => {
     expect(tools[0]).not.toHaveProperty('handler');
     expect(tools[0].annotations).toEqual({ readOnlyHint: true, destructiveHint: false });
     expect(tools[1].annotations).toEqual({ readOnlyHint: false, destructiveHint: false });
+  });
+
+  it('advertises the customer workspace on every real tool but list_customers', async () => {
+    const reply = await handleMcpMessage(
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      MCP_TOOLS,
+      ctx(),
+    );
+    const tools = resultOf(reply).tools as { name: string; inputSchema: Record<string, unknown> }[];
+
+    const missing = tools
+      .filter((tool) => tool.name !== 'list_customers')
+      .filter(
+        (tool) =>
+          !Object.prototype.hasOwnProperty.call(
+            tool.inputSchema.properties as Record<string, unknown>,
+            'customer',
+          ),
+      )
+      .map((tool) => tool.name);
+
+    expect(missing).toEqual([]);
+    // …and `list_customers` must not, because it is how a caller finds one.
+    const listCustomers = tools.find((tool) => tool.name === 'list_customers');
+    expect(listCustomers?.inputSchema.properties).toEqual({});
   });
 });
 

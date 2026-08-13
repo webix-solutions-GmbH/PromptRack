@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { runs } from './schema';
-import { combine, currentScope, scopeValues, systemScope, whereScoped } from './scope';
+import {
+  combine,
+  requireCustomerId,
+  resolveActiveCustomerId,
+  scopeFromCustomerId,
+  scopeValues,
+  systemScope,
+  whereScoped,
+  type CustomerOption,
+} from './scope';
 
 const a = eq(runs.id, 1);
 const b = eq(runs.status, 'completed');
@@ -27,29 +36,69 @@ describe('combine', () => {
 });
 
 describe('whereScoped', () => {
-  it('is a no-op in this phase — one implicit workspace, no customer_id column', async () => {
-    const scope = await currentScope();
-    expect(whereScoped(scope, runs)).toBeUndefined();
+  it('restricts a root table to the scope customer', () => {
+    const where = whereScoped(scopeFromCustomerId(7), runs);
+    expect(where).toBeDefined();
+    // The predicate is built from the table's own `customer_id` column, which is
+    // what makes it impossible to scope a query against the wrong table.
+    expect(where?.queryChunks).toContain(runs.customerId);
   });
 
-  it('passes the caller conditions through unchanged while the scope is a no-op', async () => {
-    const scope = await currentScope();
-    expect(whereScoped(scope, runs, a)).toBe(a);
-    expect(whereScoped(scope, runs, a, b)).toBeDefined();
+  it('ands the caller conditions onto the scope predicate', () => {
+    const where = whereScoped(scopeFromCustomerId(7), runs, a);
+    expect(where).toBeDefined();
+    expect(where).not.toBe(a);
+  });
+
+  it('is a no-op under the system scope, which spans every workspace', () => {
+    expect(whereScoped(systemScope('admin'), runs)).toBeUndefined();
+    expect(whereScoped(systemScope('admin'), runs, a)).toBe(a);
   });
 });
 
 describe('scopes', () => {
-  it('hands out the same implicit scope on every call', async () => {
-    expect(await currentScope()).toBe(await currentScope());
-  });
-
-  it('records where a scope came from', async () => {
-    expect((await currentScope()).origin).toBe('session');
+  it('records where a scope came from', () => {
+    expect(scopeFromCustomerId(1).origin).toBe('row');
     expect(systemScope('x').origin).toBe('system');
   });
 
-  it('contributes no columns to an insert in this phase', async () => {
-    expect(Object.keys(scopeValues(await currentScope()))).toHaveLength(0);
+  it('contributes the customer column to an insert', () => {
+    expect(scopeValues(scopeFromCustomerId(3))).toEqual({ customerId: 3 });
+  });
+
+  it('refuses to insert under the system scope — a row needs one workspace', () => {
+    expect(() => scopeValues(systemScope('backfill'))).toThrow(/system scope/);
+    expect(() => requireCustomerId(systemScope('backfill'))).toThrow(/system scope/);
+  });
+});
+
+describe('resolveActiveCustomerId', () => {
+  const options = (...entries: [number, boolean][]): CustomerOption[] =>
+    entries.map(([id, archived]) => ({ id, name: `w${id}`, archived }));
+
+  it('keeps a preferred workspace that is live', () => {
+    expect(resolveActiveCustomerId(2, options([1, false], [2, false]))).toBe(2);
+  });
+
+  it('falls back to the oldest live workspace when the preferred one is archived', () => {
+    expect(resolveActiveCustomerId(2, options([1, false], [2, true]))).toBe(1);
+  });
+
+  it('falls back when the preferred workspace no longer exists', () => {
+    expect(resolveActiveCustomerId(99, options([1, false], [2, false]))).toBe(1);
+  });
+
+  it('falls back when nothing is preferred', () => {
+    expect(resolveActiveCustomerId(null, options([3, false], [4, false]))).toBe(3);
+  });
+
+  it('uses an archived workspace rather than leaving the app unusable', () => {
+    expect(resolveActiveCustomerId(null, options([1, true]))).toBe(1);
+    expect(resolveActiveCustomerId(1, options([1, true]))).toBe(1);
+  });
+
+  it('has nothing to resolve to when no workspace exists', () => {
+    expect(resolveActiveCustomerId(null, [])).toBeNull();
+    expect(resolveActiveCustomerId(5, [])).toBeNull();
   });
 });

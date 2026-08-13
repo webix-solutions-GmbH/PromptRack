@@ -14,7 +14,7 @@
  */
 
 import { revalidatePath } from 'next/cache';
-import { currentScope, type Scope } from '@/db/scope';
+import type { Scope } from '@/db/scope';
 import { listLoadedModels, listMachineModels, listMachines as listMachineRows } from '@/db/repo/machines';
 import { listGroups } from '@/db/repo/prompts';
 import {
@@ -48,7 +48,8 @@ import {
   truncate,
   type ToolArgs,
 } from './args';
-import type { McpToolSpec } from './protocol';
+import { CUSTOMER_ARG, resolveMcpScope } from './customer';
+import type { McpCallContext, McpToolSpec } from './protocol';
 
 const DEFAULT_RUN_LIMIT = 20;
 const DEFAULT_RESPONSE_CHARS = 4000;
@@ -140,9 +141,9 @@ const listMachines: McpToolSpec = {
   description:
     'List the registered endpoints (a machine is an OpenAI-compatible base URL plus hardware notes) and every model ever seen on each, flagging which are currently loaded. API keys are never returned.',
   readOnly: true,
-  inputSchema: { type: 'object', properties: {} },
-  handler: async () => {
-    const scope = await currentScope();
+  inputSchema: { type: 'object', properties: { customer: CUSTOMER_ARG } },
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const rows = await listMachineRows(scope, 'name');
     const modelRows = await listMachineModels(scope);
 
@@ -175,6 +176,7 @@ const createRunTool: McpToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
+      customer: CUSTOMER_ARG,
       machine: {
         type: ['string', 'integer'],
         description: 'Name or id of the machine to run against (see list_machines).',
@@ -199,8 +201,8 @@ const createRunTool: McpToolSpec = {
     },
     required: ['machine', 'groups'],
   },
-  handler: async (args: ToolArgs) => {
-    const scope = await currentScope();
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const machineRows = await listMachineRows(scope, 'name');
     const machine = resolveRowRef(requireRowRef(args, 'machine'), machineRows, 'machine');
 
@@ -293,11 +295,14 @@ const executeRunTool: McpToolSpec = {
     'Start (or resume) execution of a run in the background and return immediately. Only rows still pending are executed, so this doubles as Resume. Poll get_run for progress.',
   inputSchema: {
     type: 'object',
-    properties: { run_id: { type: 'integer', description: 'Run id.' } },
+    properties: {
+      customer: CUSTOMER_ARG,
+      run_id: { type: 'integer', description: 'Run id.' },
+    },
     required: ['run_id'],
   },
-  handler: async (args: ToolArgs) => {
-    const scope = await currentScope();
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const runId = requireInteger(args, 'run_id');
     const run = await loadRun(scope, runId);
 
@@ -340,6 +345,7 @@ const listRuns: McpToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
+      customer: CUSTOMER_ARG,
       status: {
         type: 'string',
         enum: ['pending', 'running', 'completed', 'failed'],
@@ -354,7 +360,7 @@ const listRuns: McpToolSpec = {
       limit: { type: 'integer', description: `Default ${DEFAULT_RUN_LIMIT}.` },
     },
   },
-  handler: async (args: ToolArgs) => {
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
     const status = optionalEnum(args, 'status', [
       'pending',
       'running',
@@ -365,7 +371,7 @@ const listRuns: McpToolSpec = {
     const modelFilter = optionalString(args, 'model');
     const limit = Math.max(1, optionalInteger(args, 'limit') ?? DEFAULT_RUN_LIMIT);
 
-    const scope = await currentScope();
+    const scope = await resolveMcpScope(args, ctx.source);
 
     // Status and the archived vocabulary go into SQL. The model substring stays
     // in JS: it is applied before the limit, so pushing it down would need
@@ -424,6 +430,7 @@ const getRun: McpToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
+      customer: CUSTOMER_ARG,
       run_id: { type: 'integer', description: 'Run id.' },
       include_responses: {
         type: 'boolean',
@@ -441,8 +448,8 @@ const getRun: McpToolSpec = {
     },
     required: ['run_id'],
   },
-  handler: async (args: ToolArgs) => {
-    const scope = await currentScope();
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
+    const scope = await resolveMcpScope(args, ctx.source);
     const runId = requireInteger(args, 'run_id');
     const run = await loadRun(scope, runId);
     const includeResponses = optionalBoolean(args, 'include_responses', true);
@@ -533,6 +540,7 @@ const getRunResult: McpToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
+      customer: CUSTOMER_ARG,
       result_id: {
         type: 'integer',
         description: 'Result id, as returned by get_run (result_id).',
@@ -544,9 +552,9 @@ const getRunResult: McpToolSpec = {
     },
     required: ['result_id'],
   },
-  handler: async (args: ToolArgs) => {
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
     const id = requireInteger(args, 'result_id');
-    const row = await getRunResultRow(await currentScope(), id);
+    const row = await getRunResultRow(await resolveMcpScope(args, ctx.source), id);
     if (!row) {
       throw new McpToolError(`No run result with id ${id}.`);
     }
@@ -634,6 +642,7 @@ const setRatingTool: McpToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
+      customer: CUSTOMER_ARG,
       result_id: {
         type: 'integer',
         description: 'Result id, from get_run (result_id) or get_run_result.',
@@ -652,14 +661,14 @@ const setRatingTool: McpToolSpec = {
     },
     required: ['result_id', 'rating'],
   },
-  handler: async (args: ToolArgs) => {
+  handler: async (args: ToolArgs, ctx: McpCallContext) => {
     const resultId = requireInteger(args, 'result_id');
     const rating = optionalEnum(args, 'rating', RATING_ARGS);
     if (rating === null) {
       throw new McpToolError(`"rating" is required and must be one of: ${RATING_ARGS.join(', ')}.`);
     }
 
-    const scope = await currentScope();
+    const scope = await resolveMcpScope(args, ctx.source);
     const row = await getRunResultRow(scope, resultId);
 
     if (!row) {

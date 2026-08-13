@@ -14,6 +14,7 @@
 
 import { canWrite, type Role } from '@/lib/auth/policy';
 import { McpToolError, toolArgs, type ToolArgs } from './args';
+import type { McpScopeSource } from './customer';
 
 export const LATEST_PROTOCOL_VERSION = '2025-11-25';
 
@@ -31,9 +32,16 @@ export const SERVER_INFO = {
   version: '0.1.0',
 } as const;
 
-/** Who a call is acting as. Every request carries one; see `lib/mcp/auth.ts`. */
+/**
+ * Who a call is acting as, and where it is allowed to look.
+ *
+ * `actor` comes from the token (see `lib/mcp/auth.ts`); `source` is what the
+ * connection said about the customer workspace, which every tool but
+ * `list_customers` resolves through `resolveMcpScope`.
+ */
 export interface McpCallContext {
   actor: { userId: string; email: string; role: Role };
+  source: McpScopeSource;
 }
 
 /** One tool: what the model is told, and what actually runs. */
@@ -157,6 +165,7 @@ export async function handleMcpMessage(
         serverInfo: SERVER_INFO,
         instructions:
           'Authoring and reading an LLM benchmark: prompt groups, system prompts and prompts (optionally tool tests), then runs against a registered machine and their measured results. ' +
+          'Every call is scoped to one customer workspace: pass `customer` (name or id) on each call, or send an `X-Customer` header on the connection. `list_customers` lists them. ' +
           `You are authenticated as ${ctx.actor.email} (${ctx.actor.role})` +
           `${canWrite(ctx.actor.role) ? '.' : ', which is read-only: only the read tools will answer.'}`,
       });

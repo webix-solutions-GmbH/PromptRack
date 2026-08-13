@@ -1,4 +1,5 @@
 import { API_KEY_HEADER, authenticateMcp } from '@/lib/mcp/auth';
+import { scopeSourceFromHeaders } from '@/lib/mcp/customer';
 import {
   handleMcpMessage,
   parseErrorReply,
@@ -37,7 +38,10 @@ export async function POST(request: Request) {
     return Response.json(reply.body, { status: reply.status });
   }
 
-  const reply = await handleMcpMessage(payload, MCP_TOOLS, { actor: auth.actor });
+  const reply = await handleMcpMessage(payload, MCP_TOOLS, {
+    actor: auth.actor,
+    source: scopeSourceFromHeaders(request.headers),
+  });
   if (reply.body === null) {
     return new Response(null, { status: reply.status });
   }

@@ -7,6 +7,13 @@
 
 import type { McpToolSpec } from './protocol';
 import { AUTHORING_TOOLS } from './tools-authoring';
+import { CUSTOMER_TOOLS } from './tools-customers';
 import { RUN_TOOLS } from './tools-runs';
 
-export const MCP_TOOLS: readonly McpToolSpec[] = [...AUTHORING_TOOLS, ...RUN_TOOLS];
+// Workspaces first: every other tool needs one, so a client reading the list
+// top-down meets the way to find them before the things that require them.
+export const MCP_TOOLS: readonly McpToolSpec[] = [
+  ...CUSTOMER_TOOLS,
+  ...AUTHORING_TOOLS,
+  ...RUN_TOOLS,
+];

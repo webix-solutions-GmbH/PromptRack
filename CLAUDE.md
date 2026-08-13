@@ -26,7 +26,7 @@ npm run db:init                      # generate pending migration SQL + apply dr
 npm run db:generate                  # drizzle-kit generate — write a migration under drizzle/ from schema.ts
 npm run db:migrate                   # node scripts/init-db.mjs — apply pending migrations only
 npm run db:reset                     # drop the dev postgres volume and re-migrate from empty
-npm run db:seed                      # seed toolsets + prompt groups (additive, respects deletions)
+npm run db:seed                      # seed toolsets + prompt groups into ONE workspace (SEED_CUSTOMER, default = oldest)
 ```
 
 Everything reads `DATABASE_URL`. `scripts/dev-db.mjs` (which `npm run dev` runs first) brings up `docker-compose.dev.yml`'s postgres on `127.0.0.1:5433`, waits for it, applies the migrations and writes `.env.local` on first run; it is idempotent and costs under a second once the container is up. **Setting `DATABASE_URL` to anything else makes it skip docker entirely** — the escape hatch for a managed database.
@@ -37,7 +37,7 @@ Git: branch is `master` (not main); remote is Azure DevOps. Commits so far are m
 
 ## What this is
 
-Multi-user LLM benchmarking web app: define test prompts (grouped, optionally with expected output), run them sequentially against OpenAI-compatible endpoints (Ollama/LM Studio/vLLM) on registered machines, measure TTFT/duration/tokens/tok-s, rate results good/bad manually, compare runs in a matrix. A prompt can also be a **tool test**: offer the model a set of functions and either record what it wanted to call, or really execute the calls through an MCP server and loop until it answers.
+Multi-user, multi-workspace LLM benchmarking web app: define test prompts (grouped, optionally with expected output), run them sequentially against OpenAI-compatible endpoints (Ollama/LM Studio/vLLM) on registered machines, measure TTFT/duration/tokens/tok-s, rate results good/bad manually, compare runs in a matrix. A prompt can also be a **tool test**: offer the model a set of functions and either record what it wanted to call, or really execute the calls through an MCP server and loop until it answers.
 
 ## Architecture
 
@@ -54,11 +54,13 @@ Editing or deleting prompts, system prompts, machines, or toolsets must never ch
 
 `createRunRecord` (`src/lib/run-create.ts`) writes the `runs` row, all of its `run_results` in one multi-row INSERT, and the `machine_models` upsert inside a single transaction, so a crash can no longer leave a run with no prompts in it — which Resume would have reported as finished. Validation (`groupIds`, "no enabled tools", tool-name collisions) and `probeLlmInfo` stay *outside* it: the first two throw before anything is written, and the third is a network call that must never hold a transaction open.
 
+Both places the snapshot could once have crossed a workspace are closed by the scoped queries rather than by a new check: `createRunRecord` reads only the system prompts its own prompts reference *and* only within the scope (it used to read the whole table to build that map), and `resolveToolSnapshots` joins `toolsets` under the same predicate, so a prompt linked to a foreign toolset contributes no tools and the existing "no enabled tools" refusal fires.
+
 The line between frozen and live is **content vs. credentials**: prompt text, tool definitions and a manual tool's canned response travel with the run; a machine's `base_url`/`api_key` and a toolset's `mcp_url`/headers are read live at execution time so a moved endpoint doesn't break Resume.
 
 ### Data access
 
-No page, action, route handler or MCP tool touches `db` directly — ESLint forbids importing `@/db` outside `src/db/**`. The exemptions are all infrastructure rather than data access: `src/lib/run-lock.ts` needs the `pool` itself for a Postgres advisory lock, and `src/lib/auth.ts` / `auth/tokens.ts` / `auth/users.ts` own the auth tables, which are what a `Scope` is derived *from* and so cannot be read through a scoped repository. Action and page files are never exempted. Every query goes through a repository in `src/db/repo/*` whose functions all take a `Scope` (`src/db/scope.ts`) as their first parameter. `Scope` is a branded type: it can only be produced by `currentScope()` (the request's workspace), `scopeFromCustomerId()` (derived from a row — how the background executor stays scoped, via `scopeForRun`) or `systemScope(reason)` (the grep-able escape hatch). Today there is one implicit workspace, so `scopeWhere` / `scopeValues` / `scopeThroughParent` are no-ops, each carrying the `// Phase 5:` comment that shows its future form; Phase 5 adds `customer_id` to the five root tables and fills those three in, and **no call site changes**. Child tables (`machine_models`, `tools`, `prompts`, `prompt_toolsets`, `run_results`) inherit scope through their FK, which is why child reads join their parent and child writes carry their parent key.
+No page, action, route handler or MCP tool touches `db` directly — ESLint forbids importing `@/db` outside `src/db/**`. The exemptions are all infrastructure rather than data access: `src/lib/run-lock.ts` needs the `pool` itself for a Postgres advisory lock, and `src/lib/auth.ts` / `auth/tokens.ts` / `auth/users.ts` own the auth tables, which are what a `Scope` is derived *from* and so cannot be read through a scoped repository. Action and page files are never exempted. Every query goes through a repository in `src/db/repo/*` whose functions all take a `Scope` (`src/db/scope.ts`) as their first parameter. `Scope` is a branded type: it can only be produced by `currentScope()` (the request's workspace), `scopeFromCustomerId()` (derived from a row — how the background executor stays scoped, via `scopeForRun`) or `systemScope(reason)` (the grep-able escape hatch). `scopeWhere` / `scopeValues` / `scopeThroughParent` are what turn a `Scope` into SQL; filling them in for Phase 5 changed **no call site**, which was the point of writing them as seams. Child tables (`machine_models`, `tools`, `prompts`, `prompt_toolsets`, `run_results`) inherit scope through their FK, which is why child reads join their parent and child writes carry their parent key.
 
 Two consequences worth knowing:
 
@@ -67,7 +69,59 @@ Two consequences worth knowing:
 
 `@/db/schema` stays importable everywhere — components legitimately use `typeof runResults.$inferSelect`. Only the `db` *handle* is restricted.
 
-`/results` cells carry a `scopeKey` (`''` today, the customer id in Phase 5). `buildCompareMatrix` keys its deleted-prompt text fallback on `scopeKey + text`, so two workspaces' identical prompts can never collapse into one row; `promptId` matching is unaffected, ids being global.
+`/results` cells carry a `scopeKey` (the customer id). `buildCompareMatrix` keys its deleted-prompt text fallback on `scopeKey + text`, so two workspaces' identical prompts can never collapse into one row; `promptId` matching is unaffected, ids being global.
+
+### Customer workspaces
+
+A workspace (`customers`) is a **label, not a tenant**: customers never log in, and every
+signed-in user can switch into any of them. It is what keeps one engagement's machines — i.e.
+base URLs with API keys — from mixing with another's.
+
+- The five root tables (`machines`, `system_prompts`, `toolsets`, `prompt_groups`, `runs`) carry
+  `customer_id NOT NULL`. The five child tables (`machine_models`, `tools`, `prompts`,
+  `prompt_toolsets`, `run_results`) carry **nothing**: they inherit scope through their parent FK,
+  which reads join and writes express as the `scopeThroughParent` subquery. Denormalising the
+  column onto children was rejected — it would need composite `(id, customer_id)` FKs everywhere
+  and put the same fact in ten places. The price is that three cross-root references (a prompt's
+  group, a prompt's system prompt, a prompt's toolsets, a run's machine) can only be checked in
+  app code: `assertSameCustomer` (`src/db/repo/customers.ts`), called from inside the repository
+  functions rather than from each caller, so no call site can forget it. `tests/integration/workspaces.test.ts`
+  is what keeps it honest, and its fixture puts a **byte-identical prompt in both workspaces**
+  because that is what `/results`' deleted-prompt text fallback could otherwise collapse.
+- `ON DELETE RESTRICT` on all five, deliberately: a cascade would silently destroy run history.
+  `deleteCustomer` is admin-only (the rest is member), refuses a workspace that still holds
+  anything — listing what it holds, so the answer is a sentence and not a constraint violation —
+  and refuses the last workspace, because every scope has to resolve to one. **Archiving**
+  (`customers.archived_at`) is the soft path, same pattern as `runs.archived_at`.
+- **The active workspace lives on the user row** (`user.active_customer_id`, `ON DELETE SET NULL`),
+  not in a cookie: unforgeable from the client, survives a session refresh, one place that says
+  it — and Next 16 would not let an RSC render write a cookie anyway, which is why switching goes
+  through the `switchCustomer` server action. `resolveActiveCustomerId` (pure, in `src/db/scope.ts`)
+  ignores a stale pointer and falls back to the oldest live workspace, then `currentScope()` writes
+  the resolution back. A workspace archived under a user therefore logs them into the fallback
+  rather than into an empty app.
+- `currentScope()` is unchanged as an entry point — it now reads the session and returns the
+  active workspace. Its impure half is `src/lib/workspace.ts` (`server-only`, memoised with React
+  `cache` so one request resolves it once), pulled in by a **dynamic** import so `src/db/scope.ts`
+  stays importable by the database-free unit tests while the branded construction stays there.
+- `systemScope(reason)` still exists and now means "every workspace": `scopeWhere` returns no
+  predicate for it, while `scopeValues` throws — a read may deliberately span workspaces, an
+  insert has no defensible workspace to land in.
+- A deep link into another workspace (`/runs/42`, `/machines/3`) renders `WrongWorkspaceNotice`
+  with a switch button, not a 404 — a link shared between colleagues has to work, and "not found"
+  would be a lie. It costs exactly two deliberately unscoped reads (`findRunWorkspace`,
+  `findMachineWorkspace`), which expose nothing but a workspace name the switcher already lists.
+- **MCP scope precedence**: `customer` argument → `X-Customer` header → the token's default →
+  refusal naming both and listing the workspaces. The server is stateless, so there is nowhere to
+  "switch"; the workspace has to arrive with each call. `api_tokens` has **no** customer column
+  yet, so `tokenDefault` is always null — the chain is written out so adding it is one line.
+  Name resolution is the isolation mechanism: `allGroups`/`allSystemPrompts`/`allToolsets` are
+  scoped, so `resolveRowRef` can only match inside the workspace and its "Known: …" hint lists
+  only that workspace's rows. `list_customers` is the one tool that needs no scope (and is
+  `readOnly`, so a viewer's token can orient itself); customers are **not** writable over MCP.
+- **Seeding is per workspace**: `SEED_CUSTOMER` (name or id) selects it, unset means the oldest.
+  `__app_seeds`' primary key gained `customer_id` as its first column, which is what makes
+  "seeded once, then deleted, stays deleted" a per-workspace promise instead of a global one.
 
 ### Auth
 
@@ -152,7 +206,8 @@ Archived runs are hidden from the runs list (`?archived=only` / `?archived=all` 
 - **`set_rating` writes the same `rating` column the UI writes, with no provenance flag** — a rating set over MCP is deliberately indistinguishable from a hand-clicked one, so the automation costs the ability to tell afterwards who judged what. That was the explicit choice over a `rated_by` flag or a separate `judge_rating` column; `note` is the only place a caller can record that a check (rather than a person) decided it, which is why the tool description pushes for it. Judging policy stays entirely outside the app: the rubric is already `expected_output`, and `get_run_result` already returns the response plus the whole transcript, so the loop is get_run → get_run_result → grade → set_rating with no new read surface.
   - Two guards: a row still `pending`/`running` is refused, because `execute_run` is fire-and-forget and a grading loop can trivially outrun it; and omitting `note` leaves an existing note untouched (`hasKey`, not `optionalText`-is-null), matching what the UI's rating buttons already do. `unrated` is the wire word for "clear it" — JSON-RPC cannot distinguish absent from null by the time it reaches `optionalEnum`.
   - **A judge model reading these results is itself injectable.** `get_run_result` returns `prompt_text`, which for the `Prompt Injection & Instruction Hierarchy` group carries live payloads — Injection 06's is invisible even in the judge's context. Grade from `expected_output` + `response`, and never let a judge's output pick the tool call. Most of that group needs no judge at all: the rubrics are canary strings and "was this tool called", both mechanically checkable.
-- **Not writable over MCP**: machines, toolsets and tools (a base URL with an API key and an MCP server URL are credentials, and the app's own line is content vs. credentials).
+- **Every call names a customer workspace** (`src/lib/mcp/customer.ts`): `customer` argument → `X-Customer` header → token default → refusal. See *Customer workspaces* above; it is a **breaking change** for callers written before it, and deliberately so — an unscoped write has no defined destination.
+- **Not writable over MCP**: machines, toolsets and tools (a base URL with an API key and an MCP server URL are credentials, and the app's own line is content vs. credentials), and customer workspaces (creating an engagement is a human decision with billing behind it).
 
 Tests cover the pure halves — `src/lib/mcp/args.test.ts` (argument coercion, ref resolution) and `protocol.test.ts` (dispatch, error mapping, auth). The wired-up half was verified against the dev server with the MCP SDK client.
 
@@ -160,7 +215,7 @@ To exercise a wired handler (real `db`, real Postgres) without a server or the p
 
 ### Seeding
 
-`scripts/seed-prompts.mjs` (`npm run db:seed`) seeds manual toolsets and prompt groups. Idempotency is recorded in `__app_seeds`, now declared in `src/db/schema.ts` and created by the migrations — the script only writes rows and owns the idempotency semantics: every object is seeded at most once *ever*, so new seed entries land in groups an earlier version created while anything you deleted stays deleted. A pre-ledger database is backfilled from what is already present on the first run.
+`scripts/seed-prompts.mjs` (`npm run db:seed`) seeds manual toolsets and prompt groups into **one workspace** — `SEED_CUSTOMER` (name or id), or the oldest one when it is unset; a value matching nothing exits 1 with the list rather than creating a workspace off a typo. Idempotency is recorded in `__app_seeds` keyed by workspace first, now declared in `src/db/schema.ts` and created by the migrations — the script only writes rows and owns the idempotency semantics: every object is seeded at most once *ever*, so new seed entries land in groups an earlier version created while anything you deleted stays deleted. A pre-ledger database is backfilled from what is already present on the first run.
 
 Seeded canned tool responses are written to stay correct *whatever arguments the model passes* — `convert_currency` returns a rate rather than a converted amount, so the response can never contradict the call and the model still has to do the arithmetic.
 
@@ -179,9 +234,9 @@ Two invariants that group depends on:
 
 Two suites, split by whether they need a database.
 
-`npm test` (`vitest.config.ts`, `src/**/*.test.ts`) is the pure one and must stay database-free and fast: `system-prompt.test.ts`, `llm.test.ts` (SSE fixtures per provider style, including index-keyed tool-call fragments split mid-JSON), `compare.test.ts`, `tools.test.ts`, `tool-loop.test.ts` (metric aggregation), `mcp/args.test.ts`, `mcp/protocol.test.ts` (dispatch, error mapping, and the actor's role gating `tools/call`), `db/scope.test.ts` (the branded scope and `combine`, written db-free precisely so it can live here), `lib/form-data.test.ts` (the FormData readers the server actions share), `auth/policy.test.ts` (the role predicates) and `auth/tokens.test.ts` (the token crypto — its pure half only; `resolveToken` needs a database).
+`npm test` (`vitest.config.ts`, `src/**/*.test.ts`) is the pure one and must stay database-free and fast: `system-prompt.test.ts`, `llm.test.ts` (SSE fixtures per provider style, including index-keyed tool-call fragments split mid-JSON), `compare.test.ts`, `tools.test.ts`, `tool-loop.test.ts` (metric aggregation), `mcp/args.test.ts`, `mcp/protocol.test.ts` (dispatch, error mapping, and the actor's role gating `tools/call`), `db/scope.test.ts` (the branded scope, `combine` and `resolveActiveCustomerId`, written db-free precisely so it can live here), `mcp/customer.test.ts` (the workspace precedence chain and its refusal message), `lib/form-data.test.ts` (the FormData readers the server actions share), `auth/policy.test.ts` (the role predicates) and `auth/tokens.test.ts` (the token crypto — its pure half only; `resolveToken` needs a database).
 
-`npm run test:integration` (`vitest.integration.config.ts`, `tests/integration/**`) runs against the scratch Postgres described above, with `fileParallelism: false` because the suites share one database and `tests/integration/setup.ts` truncates every table between tests. It covers what only a real database can show: the FK cascade/set-null actions and `Date`/`boolean`/float8 round-tripping (`schema.test.ts`), the snapshot invariant and the `createRunRecord` rollback (`run-create.test.ts`), the advisory-lock claim (`run-lock.test.ts`), and that `seed-prompts.mjs` is idempotent and preserves the invisible Unicode-Tags payload code point for code point (`seed.test.ts`).
+`npm run test:integration` (`vitest.integration.config.ts`, `tests/integration/**`) runs against the scratch Postgres described above, with `fileParallelism: false` because the suites share one database and `tests/integration/setup.ts` truncates every table between tests. It covers what only a real database can show: the FK cascade/set-null actions and `Date`/`boolean`/float8 round-tripping (`schema.test.ts`), the snapshot invariant and the `createRunRecord` rollback (`run-create.test.ts`), the advisory-lock claim (`run-lock.test.ts`), cross-workspace isolation (`workspaces.test.ts` — the two snapshot/compare leak paths, foreign ids over MCP, the delete guard), and that `seed-prompts.mjs` is idempotent and preserves the invisible Unicode-Tags payload code point for code point (`seed.test.ts`).
 
 Everything else is verified against the dev server + the mocks:
 

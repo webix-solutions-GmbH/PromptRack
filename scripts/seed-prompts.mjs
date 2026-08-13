@@ -19,6 +19,14 @@
  * `system_prompts` dependency), so each one is self-contained. A prompt may
  * carry its own `systemText`, stored as a per-prompt override system prompt,
  * and may reference seeded toolsets by name via `toolsets`.
+ *
+ * Seeding targets **one customer workspace**, named by `SEED_CUSTOMER` (name or
+ * id) and defaulting to the oldest one — the migration's `Default`. A new
+ * engagement's workspace starts empty, and the standard suite is exactly what
+ * you want to run against that customer's candidate models on day one, so it has
+ * to be repeatable into any workspace. The `__app_seeds` ledger is keyed per
+ * workspace for the same reason: deleting a seeded prompt in one engagement must
+ * not suppress it in the next.
  */
 import { Client } from 'pg';
 
@@ -1067,33 +1075,82 @@ This is the same invoice body as "Reconcile: quantity mismatch → ASK" in the I
 // Insert
 // ---------------------------------------------------------------------------
 
+/**
+ * The workspace to seed into.
+ *
+ * Unset picks the oldest workspace, which on every existing install is the
+ * migration's `Default`. A name that is missing or ambiguous exits non-zero and
+ * lists what exists — a typo must never silently create a workspace called
+ * `Acme Gmbh` next to `Acme GmbH`.
+ */
+async function resolveCustomer(client) {
+  const wanted = process.env.SEED_CUSTOMER?.trim();
+
+  if (!wanted) {
+    const { rows } = await client.query('SELECT id, name FROM customers ORDER BY id LIMIT 1');
+    if (rows.length === 0) {
+      console.error('[seed-prompts] no customer workspace exists — run the migrations first.');
+      process.exit(1);
+    }
+    return rows[0];
+  }
+
+  const { rows } = await client.query(
+    /^\d+$/.test(wanted)
+      ? 'SELECT id, name FROM customers WHERE id = $1'
+      : 'SELECT id, name FROM customers WHERE lower(name) = lower($1)',
+    [wanted],
+  );
+
+  if (rows.length === 1) return rows[0];
+
+  const all = await client.query('SELECT id, name FROM customers ORDER BY id');
+  const known = all.rows.map((row) => `${row.name} (${row.id})`).join(', ');
+  console.error(
+    rows.length === 0
+      ? `[seed-prompts] no workspace matches SEED_CUSTOMER="${wanted}". Known: ${known || '(none)'}.`
+      : `[seed-prompts] SEED_CUSTOMER="${wanted}" is ambiguous. Use an id. Known: ${known}.`,
+  );
+  process.exit(1);
+}
+
 async function main() {
   const client = new Client({ connectionString });
   await client.connect();
 
+  const customer = await resolveCustomer(client);
+  console.log(`[seed-prompts] workspace "${customer.name}" (id ${customer.id})`);
+
+  // The ledger's first key is the workspace, matching its primary key: "seeded
+  // once, then deleted, stays deleted" is a per-workspace promise.
   const wasSeeded = async (kind, scope, name) => {
     const res = await client.query(
-      'SELECT 1 FROM __app_seeds WHERE kind = $1 AND scope = $2 AND name = $3',
-      [kind, scope, name],
+      'SELECT 1 FROM __app_seeds WHERE customer_id = $1 AND kind = $2 AND scope = $3 AND name = $4',
+      [customer.id, kind, scope, name],
     );
     return res.rowCount > 0;
   };
   const markSeeded = (kind, scope, name, seededAt) =>
     client.query(
-      `INSERT INTO __app_seeds (kind, scope, name, seeded_at) VALUES ($1, $2, $3, $4)
+      `INSERT INTO __app_seeds (customer_id, kind, scope, name, seeded_at) VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT DO NOTHING`,
-      [kind, scope, name, seededAt],
+      [customer.id, kind, scope, name, seededAt],
     );
 
   const toolsetByName = async (name) =>
-    (await client.query('SELECT id FROM toolsets WHERE name = $1', [name])).rows[0];
+    (
+      await client.query('SELECT id FROM toolsets WHERE customer_id = $1 AND name = $2', [
+        customer.id,
+        name,
+      ])
+    ).rows[0];
   const insertToolset = async (name, description, createdAt, updatedAt) =>
     (
       await client.query(
-        `INSERT INTO toolsets (name, description, kind, mcp_url, mcp_headers, created_at, updated_at)
-         VALUES ($1, $2, 'manual', NULL, NULL, $3, $4)
+        `INSERT INTO toolsets (customer_id, name, description, kind, mcp_url, mcp_headers, created_at, updated_at)
+         VALUES ($1, $2, $3, 'manual', NULL, NULL, $4, $5)
          RETURNING id`,
-        [name, description, createdAt, updatedAt],
+        [customer.id, name, description, createdAt, updatedAt],
       )
     ).rows[0].id;
   const insertTool = (...values) =>
@@ -1105,16 +1162,23 @@ async function main() {
     );
 
   const groupByName = async (name) =>
-    (await client.query('SELECT id FROM prompt_groups WHERE name = $1', [name])).rows[0];
+    (
+      await client.query('SELECT id FROM prompt_groups WHERE customer_id = $1 AND name = $2', [
+        customer.id,
+        name,
+      ])
+    ).rows[0];
   const insertGroup = async (...values) =>
     (
       await client.query(
-        `INSERT INTO prompt_groups (name, description, sort_order, created_at)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO prompt_groups (customer_id, name, description, sort_order, created_at)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING id`,
-        values,
+        [customer.id, ...values],
       )
     ).rows[0].id;
+  // No customer predicate needed: `group_id` already belongs to one workspace,
+  // and prompts inherit their scope through it.
   const promptExists = async (groupId, title) =>
     (
       await client.query('SELECT id FROM prompts WHERE group_id = $1 AND title = $2', [
@@ -1251,7 +1315,9 @@ async function main() {
     await client.end();
   }
 
-  console.log(`[seed-prompts] done (${redact(connectionString)})`);
+  console.log(
+    `[seed-prompts] done — workspace "${customer.name}" (${redact(connectionString)})`,
+  );
 }
 
 function redact(url) {

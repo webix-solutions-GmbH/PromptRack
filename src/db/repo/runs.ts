@@ -63,7 +63,7 @@ function archivedCondition(archived: 'exclude' | 'only' | 'all'): SQL | undefine
 
 export async function createRun(
   scope: Scope,
-  values: NewRun,
+  values: Omit<NewRun, 'customerId'>,
   handle: DbHandle = db,
 ): Promise<{ id: number }> {
   const [row] = await handle
@@ -121,8 +121,7 @@ export async function countArchivedRuns(scope: Scope): Promise<number> {
 export async function scopeForRun(runId: number): Promise<{ scope: Scope; run: Run } | null> {
   const [run] = await db.select().from(runs).where(eq(runs.id, runId));
   if (!run) return null;
-  // Phase 5: scopeFromCustomerId(run.customerId).
-  return { scope: scopeFromCustomerId(null), run };
+  return { scope: scopeFromCustomerId(run.customerId), run };
 }
 
 // ---------------------------------------------------------------------------

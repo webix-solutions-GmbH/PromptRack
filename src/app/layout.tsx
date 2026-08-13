@@ -3,7 +3,9 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { SidebarNav } from "@/components/sidebar-nav";
 import { UserMenu } from "@/components/auth/user-menu";
+import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import { currentActor } from "@/lib/auth/guards";
+import { activeWorkspace } from "@/lib/workspace";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -28,6 +30,8 @@ export default async function RootLayout({
   // Null on /login, the one page the proxy lets a signed-out visitor reach:
   // there is no session to describe, so the app chrome is left off entirely.
   const actor = await currentActor();
+  // Resolved once per request (React `cache`), so the pages below re-use it.
+  const workspace = actor ? await activeWorkspace() : null;
 
   return (
     <html
@@ -35,12 +39,16 @@ export default async function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50">
-        {actor ? (
+        {actor && workspace ? (
           <div className="flex min-h-screen flex-1">
             <aside className="flex w-56 shrink-0 flex-col border-r border-zinc-200 dark:border-zinc-800">
               <div className="px-4 py-4 text-sm font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
                 Agent Model Evaluator
               </div>
+              <WorkspaceSwitcher
+                customers={workspace.customers}
+                activeId={workspace.customerId}
+              />
               <SidebarNav role={actor.role} />
               <UserMenu name={actor.name} email={actor.email} role={actor.role} />
             </aside>

@@ -6,9 +6,10 @@
  * and every one of their exported functions takes a {@link Scope} first.
  */
 
-import type { AnyColumn, SQL } from 'drizzle-orm';
+import { inArray, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '@/db';
-import type { Scope, ScopedRootTable } from '../scope';
+import { scopeWhere, type Scope, type ScopedRootTable } from '../scope';
 
 /**
  * What a repository function runs its query on: the pool, or an open
@@ -32,23 +33,18 @@ export function withTransaction<T>(fn: (tx: DbHandle) => Promise<T>): Promise<T>
  *
  * Child tables (`machine_models`, `tools`, `prompts`, `prompt_toolsets`,
  * `run_results`) never carry `customer_id` themselves — they inherit it through
- * their foreign key. Phase 3: undefined, there is one implicit workspace.
+ * their foreign key. A read can express that as a join; an UPDATE or DELETE
+ * cannot, which is what this subquery is for.
  */
 export function scopeThroughParent(
   scope: Scope,
-  childFk: AnyColumn,
+  childFk: PgColumn,
   parentTable: ScopedRootTable,
-  parentId: AnyColumn,
+  parentId: PgColumn,
 ): SQL | undefined {
-  void scope;
-  void childFk;
-  void parentTable;
-  void parentId;
-  // Phase 5: return inArray(
-  //   childFk,
-  //   db.select({ id: parentId }).from(parentTable).where(scopeWhere(scope, parentTable)),
-  // );
-  return undefined;
+  const parentScope = scopeWhere(scope, parentTable);
+  if (parentScope === undefined) return undefined;
+  return inArray(childFk, db.select({ id: parentId }).from(parentTable).where(parentScope));
 }
 
 /**

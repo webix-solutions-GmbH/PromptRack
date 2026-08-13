@@ -4,9 +4,10 @@ import { asc, eq, inArray } from 'drizzle-orm';
 import { db } from '@/db';
 import { tools, toolsets, type NewTool, type NewToolset, type Tool, type Toolset } from '../schema';
 import { combine, scopeValues, whereScoped, type Scope } from '../scope';
+import { assertSameCustomer } from './customers';
 import { scopeThroughParent } from './scoped';
 
-export type ToolsetFields = Omit<NewToolset, 'id' | 'createdAt' | 'updatedAt'>;
+export type ToolsetFields = Omit<NewToolset, 'id' | 'customerId' | 'createdAt' | 'updatedAt'>;
 export type ToolFields = Pick<
   NewTool,
   'name' | 'description' | 'parametersJson' | 'mockResponse'
@@ -97,10 +98,9 @@ export async function createTool(
   toolsetId: number,
   values: ToolFields & { now: Date },
 ): Promise<void> {
-  // `tools` inherits its scope from the toolset it is inserted under, which the
-  // caller has already resolved through this repository.
-  // Phase 5: assert the toolset is in scope before inserting under it.
-  void scope;
+  // `tools` inherits its scope from the toolset it is inserted under, so that
+  // toolset has to be one this scope can see.
+  await assertSameCustomer(scope, { toolsetIds: [toolsetId] });
   const { now, ...fields } = values;
   await db.insert(tools).values({
     ...fields,

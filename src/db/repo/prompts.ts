@@ -14,6 +14,7 @@ import {
   type PromptToolset,
 } from '../schema';
 import { combine, scopeValues, whereScoped, type Scope } from '../scope';
+import { assertSameCustomer } from './customers';
 import { scopeThroughParent } from './scoped';
 
 // ---------------------------------------------------------------------------
@@ -157,10 +158,15 @@ export async function createPrompt(
   scope: Scope,
   values: NewPrompt,
 ): Promise<{ id: number }> {
-  // `prompts` inherits its scope from its group, which the caller resolved
-  // through this repository.
-  // Phase 5: assert the group is in scope before inserting under it.
-  void scope;
+  // `prompts` inherits its scope from its group, so the group has to be one this
+  // scope can see: a guessed id would otherwise file a prompt in someone else's
+  // workspace, where every later read would then find it. The base system prompt
+  // is the second cross-root reference and gets the same treatment — it is what
+  // `createRunRecord` later freezes into every result row.
+  await assertSameCustomer(scope, {
+    groupIds: [values.groupId],
+    systemPromptIds: values.systemPromptId ? [values.systemPromptId] : [],
+  });
   const [row] = await db.insert(prompts).values(values).returning({ id: prompts.id });
   return row;
 }
@@ -170,6 +176,12 @@ export async function updatePrompt(
   id: number,
   values: Partial<NewPrompt>,
 ): Promise<void> {
+  // Same two cross-root references as on insert, checked only when the patch
+  // actually names them.
+  await assertSameCustomer(scope, {
+    groupIds: values.groupId === undefined ? [] : [values.groupId],
+    systemPromptIds: values.systemPromptId ? [values.systemPromptId] : [],
+  });
   await db.update(prompts).set(values).where(promptWhere(scope, id));
 }
 
@@ -232,9 +244,13 @@ export async function replaceToolsetLinks(
   promptId: number,
   toolsetIds: number[],
 ): Promise<void> {
-  // Both statements carry the parent key, which is what scopes a link row.
-  // Phase 5: assert the prompt and the toolsets are in scope.
-  void scope;
+  // A link row has no `customer_id` of its own, so this is the only place the
+  // pairing can be checked: both ends have to be in the caller's workspace.
+  if (!(await getPrompt(scope, promptId))) {
+    throw new Error(`The selected prompt (id ${promptId}) no longer exists in this workspace.`);
+  }
+  await assertSameCustomer(scope, { toolsetIds });
+
   await db.delete(promptToolsets).where(eq(promptToolsets.promptId, promptId));
 
   if (toolsetIds.length === 0) return;

@@ -20,6 +20,20 @@ npm run dev                    # starts postgres in docker, migrates, serves /ag
 npm run db:seed                # optional: sample toolsets + prompt groups
 ```
 
+`db:seed` fills **one workspace**, the oldest (`Default`) unless `SEED_CUSTOMER`
+names another by name or id — the standard suite is exactly what you want to run
+against a new customer's candidate models, so it has to be repeatable into any
+workspace:
+
+```bash
+SEED_CUSTOMER="Acme GmbH" npm run db:seed
+```
+
+It is additive and respects deletions *per workspace*: something seeded once and
+deleted since stays deleted there, without suppressing it in the next workspace.
+A `SEED_CUSTOMER` that matches nothing exits non-zero and lists what exists,
+rather than creating a workspace off a typo.
+
 `.env.local` also needs the two auth variables (`npm run dev` does *not* write
 these — a signing key has to be yours):
 
@@ -156,6 +170,19 @@ accepted as fallbacks.
 
 ## How it works
 
+**Workspaces** — one per customer engagement. Machines, system prompts,
+toolsets, prompt groups and runs each belong to exactly one; prompts, tools and
+results inherit theirs through their parent. A workspace is a *label*, not a
+tenant: customers never log in, and every signed-in user can switch into any of
+them with the picker above the sidebar nav. Which one you are in lives on your
+user row, so it survives a sign-out and cannot be forged from the browser.
+Everything that existed before workspaces landed in one called `Default`.
+
+Deleting a workspace is admin-only and refuses while it still holds anything —
+the foreign keys are `ON DELETE RESTRICT` precisely so a delete can never take
+run history with it. **Archiving** is the soft path: the workspace disappears
+from the switcher and keeps everything.
+
 **Machines** — an OpenAI-compatible endpoint (base URL, optional API key) plus
 free-text hardware notes (CPU/RAM/GPU). "Test connection" pings the endpoint and
 "Discover models" reads `/v1/models` to record what the machine can serve.
@@ -205,16 +232,25 @@ the web UI by hand.
   `isError` tool content, which is what the calling model reads.
 - `x-api-key` is checked before `Authorization` on purpose: if Caddy still wants
   HTTP basic auth for `/agent-val*`, both credentials have to fit in one request.
+- **Every call names a customer workspace** — pass `customer` (name or id) as a
+  tool argument, or send an `X-Customer` header on the connection so it applies
+  to all of them. An explicit argument wins over the header. `list_customers` is
+  the only tool that needs neither, because it is how you find one. This is a
+  **breaking change** for callers written before workspaces existed: a call that
+  names no workspace is refused, with the list of workspaces in the message,
+  because a write with no defined destination is worse than an error.
 
 Register it with Claude Code — production (behind Caddy basic auth) and dev:
 
 ```bash
 claude mcp add --transport http agent-val https://ki01.webix.de/agent-val/api/mcp \
   --header "x-api-key: amv_…" \
+  --header "x-customer: Acme GmbH" \
   --header "Authorization: Basic $(printf 'user:password' | base64)"
 
 claude mcp add --transport http agent-val-dev http://localhost:3000/agent-val/api/mcp \
-  --header "x-api-key: amv_…"
+  --header "x-api-key: amv_…" \
+  --header "x-customer: Default"
 ```
 
 Tools, all named for what they do to the app's own concepts:
@@ -222,6 +258,7 @@ Tools, all named for what they do to the app's own concepts:
 | | |
 | --- | --- |
 | Authoring | `list_prompt_groups`, `create_prompt_group`, `list_system_prompts`, `create_system_prompt`, `update_system_prompt`, `list_prompts`, `get_prompt`, `create_prompt`, `update_prompt`, `delete_prompt` |
+| Workspaces | `list_customers` |
 | Reference | `list_toolsets`, `list_machines` |
 | Running | `create_run`, `execute_run` |
 | Results | `list_runs`, `get_run`, `get_run_result` |
@@ -238,6 +275,8 @@ Notes:
   are executed.
 - Machines, toolsets and their tools are *not* writable over MCP: an endpoint
   with an API key and an MCP server URL are credentials, configured in the UI.
+  Customer workspaces are not writable either — creating an engagement is a human
+  decision with billing behind it.
 - Ratings stay manual as well — the verdict is the point of the whole exercise.
 
 Mock endpoints (`/api/mock-llm`, `/api/mock-mcp`) exist for exercising the

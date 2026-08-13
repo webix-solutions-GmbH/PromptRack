@@ -13,13 +13,16 @@ import {
   tools,
   toolsets,
 } from '@/db/schema';
+import { defaultCustomerId } from './setup';
 
 const NOW = new Date('2026-07-27T09:46:00.000Z');
 
 async function seedEverything() {
+  const customerId = defaultCustomerId();
+
   const [machine] = await db
     .insert(machines)
-    .values({ name: 'ki01', baseUrl: 'http://x/v1', createdAt: NOW, updatedAt: NOW })
+    .values({ customerId, name: 'ki01', baseUrl: 'http://x/v1', createdAt: NOW, updatedAt: NOW })
     .returning({ id: machines.id });
 
   const [model] = await db
@@ -36,12 +39,12 @@ async function seedEverything() {
 
   const [systemPrompt] = await db
     .insert(systemPrompts)
-    .values({ name: 'terse', content: 'Be terse.', createdAt: NOW, updatedAt: NOW })
+    .values({ customerId, name: 'terse', content: 'Be terse.', createdAt: NOW, updatedAt: NOW })
     .returning({ id: systemPrompts.id });
 
   const [toolset] = await db
     .insert(toolsets)
-    .values({ name: 'Support Desk', kind: 'manual', createdAt: NOW, updatedAt: NOW })
+    .values({ customerId, name: 'Support Desk', kind: 'manual', createdAt: NOW, updatedAt: NOW })
     .returning({ id: toolsets.id });
 
   const [tool] = await db
@@ -60,7 +63,7 @@ async function seedEverything() {
 
   const [group] = await db
     .insert(promptGroups)
-    .values({ name: 'General', sortOrder: 0, createdAt: NOW })
+    .values({ customerId, name: 'General', sortOrder: 0, createdAt: NOW })
     .returning({ id: promptGroups.id });
 
   const [prompt] = await db
@@ -80,6 +83,7 @@ async function seedEverything() {
   const [run] = await db
     .insert(runs)
     .values({
+      customerId,
       machineId: machine.id,
       machineSnapshot: '{"name":"ki01"}',
       modelId: 'qwen3-32b',

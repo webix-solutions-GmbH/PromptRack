@@ -13,7 +13,7 @@ import { scopeValues, whereScoped, type Scope } from '../scope';
 import type { DbHandle } from './scoped';
 
 /** Editable machine fields — everything except the timestamps and the id. */
-export type MachineFields = Omit<NewMachine, 'id' | 'createdAt' | 'updatedAt'>;
+export type MachineFields = Omit<NewMachine, 'id' | 'customerId' | 'createdAt' | 'updatedAt'>;
 
 export function listMachines(scope: Scope, order: 'name' | 'created' = 'name'): Promise<Machine[]> {
   return db

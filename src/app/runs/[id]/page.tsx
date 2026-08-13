@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import { currentScope } from '@/db/scope';
+import { findRunWorkspace } from '@/db/repo/customers';
 import { getRun, listRunResults } from '@/db/repo/runs';
 import { parseLlmInfo } from '@/lib/llm-info';
 import { parseRating } from '@/lib/rating';
@@ -9,6 +10,7 @@ import { parseToolsSnapshot, type ToolChoice, type ToolMode } from '@/lib/tools'
 import { onPage, requireActor } from '@/lib/auth/guards';
 import { canWrite } from '@/lib/auth/policy';
 import { RunDetail } from '@/components/runs/run-detail';
+import { WrongWorkspaceNotice } from '@/components/wrong-workspace-notice';
 import type { ResultView, RunView } from '@/components/runs/types';
 
 export const dynamic = 'force-dynamic';
@@ -68,7 +70,14 @@ export default async function RunDetailPage({
   const scope = await currentScope();
   const run = await getRun(scope, id);
   if (!run) {
-    notFound();
+    // The one deliberate unscoped read on this page: it decides between "does
+    // not exist" and "exists, but in another workspace", so a link shared
+    // between colleagues offers a switch instead of a misleading 404.
+    const elsewhere = await findRunWorkspace(id);
+    if (!elsewhere) {
+      notFound();
+    }
+    return <WrongWorkspaceNotice what="run" workspace={elsewhere} />;
   }
 
   const rows = await listRunResults(scope, id);
