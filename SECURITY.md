@@ -1,8 +1,9 @@
 # Security
 
-This app has app-level authentication (see the README's Security section) but
-is not hardened for exposure to the open internet — run it on a trusted
-network or behind a reverse proxy you control.
+This app authenticates its users, but is not hardened for exposure to the open
+internet — run it on a trusted network or behind a reverse proxy you control.
+Endpoint API keys and MCP toolset headers are stored in Postgres in plaintext,
+so treat the database and its backups as sensitive.
 
 ## Reporting a vulnerability
 
