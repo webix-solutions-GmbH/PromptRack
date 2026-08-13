@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     # than the redirect still verifies.
     session_secret: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
 
+    # "development" (the default, matching a fresh clone with nothing else
+    # configured) or "production" — the latter is what `docker-entrypoint.sh`
+    # (Task 6.3) sets. Mirrors the old Node app's `NODE_ENV`; used only by
+    # `app.api.mocks.mocks_enabled` today.
+    environment: str = "development"
+    # Forces the mock LLM / mock MCP routes on even when `environment` is
+    # "production" — see `app.api.mocks`. Off by default so a production
+    # image never accidentally exposes a fake OpenAI endpoint.
+    enable_mocks: bool = False
+
     @field_validator("database_url")
     @classmethod
     def _asyncpg_scheme(cls, v: str) -> str:

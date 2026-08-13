@@ -1,4 +1,4 @@
-"""A live MCP client: list a server's tools, over streamable HTTP.
+"""A live MCP client: list a server's tools and call one, over streamable HTTP.
 
 Transport is streamable HTTP only, via the official SDK (`mcp`) rather than a
 hand-rolled JSON-RPC layer. A toolset is configured exactly like a machine — a
@@ -18,7 +18,9 @@ call plus response parsing.
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import httpx2
 from mcp import Client, Implementation
@@ -128,3 +130,80 @@ async def list_mcp_tools(
         )
         for tool in result.tools
     ]
+
+
+@dataclass(frozen=True)
+class McpCallResult:
+    """What one `tools/call` produced, as the model will see it."""
+
+    #: Flattened text of the result's content blocks.
+    content: str
+    is_error: bool
+
+
+def flatten_content(blocks: object) -> str:
+    """Flattens MCP content blocks into one string.
+
+    A model only ever sees a tool message as text, so a non-text block is
+    *described* rather than dropped — silently losing an image would look to
+    the model like the tool returned nothing at all.
+    """
+    if not isinstance(blocks, list):
+        return ""
+
+    parts: list[str] = []
+    for block in blocks:
+        kind = getattr(block, "type", None)
+        if kind == "text":
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+        elif isinstance(kind, str):
+            parts.append(f"[{kind} content omitted]")
+    return "\n".join(parts)
+
+
+async def call_mcp_tool(
+    url: str,
+    headers_json: str | None,
+    name: str,
+    arguments: Mapping[str, Any] | None = None,
+    *,
+    timeout: float = DEFAULT_TIMEOUT_S,
+) -> McpCallResult:
+    """Really executes one tool against a live server.
+
+    Same per-operation connection as :func:`list_mcp_tools`, and the same
+    translation of every transport failure into :class:`McpClientError` — which
+    the tool loop turns into the tool's *output* rather than a failed result
+    row, because that is what a real agent would see.
+
+    A tool that reports an error with no text still has to say something, or
+    the model is left staring at an empty message.
+    """
+    cleaned = url.strip()
+    if not _URL_RE.match(cleaned):
+        raise McpClientError(f'"{cleaned}" is not an http(s) MCP endpoint.')
+
+    request_headers = parse_mcp_headers(headers_json)
+    try:
+        async with httpx2.AsyncClient(
+            headers=request_headers, timeout=httpx2.Timeout(timeout)
+        ) as http_client:
+            transport = streamable_http_client(cleaned, http_client=http_client)
+            async with Client(transport, client_info=_CLIENT_INFO) as client:
+                result = await client.call_tool(name, dict(arguments or {}))
+    except McpClientError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - translated into one error type
+        raise McpClientError(_describe_error(exc, cleaned)) from exc
+
+    is_error = result.is_error is True
+    content = flatten_content(result.content)
+    if not content:
+        content = json.dumps(
+            {"error": f'Tool "{name}" reported an error with no detail.'}
+            if is_error
+            else {"result": "ok", "detail": "The tool returned no content."}
+        )
+    return McpCallResult(content=content, is_error=is_error)

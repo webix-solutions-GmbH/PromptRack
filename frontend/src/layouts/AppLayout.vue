@@ -29,7 +29,7 @@ const sections: NavSection[] = [
   },
   {
     label: 'Evaluate',
-    items: [{ label: 'Runs' }, { label: 'Results' }],
+    items: [{ label: 'Runs', to: '/runs' }, { label: 'Results' }],
   },
   {
     label: 'Settings',

@@ -11,6 +11,9 @@ import PromptEditView from '../views/PromptEditView.vue'
 import TestCasesView from '../views/TestCasesView.vue'
 import TestCaseEditView from '../views/TestCaseEditView.vue'
 import CustomersView from '../views/CustomersView.vue'
+import RunsView from '../views/RunsView.vue'
+import RunNewView from '../views/RunNewView.vue'
+import RunDetailView from '../views/RunDetailView.vue'
 import { useAuthStore } from '../stores/auth'
 
 declare module 'vue-router' {
@@ -95,6 +98,22 @@ const router = createRouter({
       path: '/workspaces',
       name: 'workspaces',
       component: CustomersView,
+    },
+    {
+      path: '/runs/new',
+      name: 'run-new',
+      component: RunNewView,
+    },
+    {
+      path: '/runs',
+      name: 'runs',
+      component: RunsView,
+    },
+    {
+      path: '/runs/:id',
+      name: 'run-detail',
+      component: RunDetailView,
+      props: true,
     },
   ],
 })
