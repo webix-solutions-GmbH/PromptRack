@@ -1,8 +1,9 @@
 """App configuration, read from the environment (see root `.env.example`)."""
 
+import secrets
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,12 +16,33 @@ class Settings(BaseSettings):
 
     # Dev fallback so a fresh clone works with nothing else configured —
     # mirrors the old Node app's DEV_DATABASE_URL and docker-compose.dev.yml.
-    database_url: str = "postgres://agentval:dev@127.0.0.1:5433/agentval"
+    database_url: str = "postgres://promptrack:dev@127.0.0.1:5433/promptrack"
 
     # Max size of the async connection pool. Must exceed the number of runs
     # that can execute concurrently plus normal request concurrency: an
     # executing run holds one connection for its whole duration.
     database_pool_max: int = 10
+
+    # OIDC (optional). Unset `oidc_issuer` means no SSO: `app.auth.oidc`
+    # mounts no routes at all and the app runs on email/password alone.
+    oidc_issuer: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: str | None = None
+    # Comma-separated, mirroring the old app's `OIDC_SCOPES`.
+    oidc_scopes: str = "openid,profile,email"
+    # The role a *new* OIDC-provisioned account gets. Read through
+    # `parse_role` wherever it is used, never trusted verbatim — an
+    # unrecognised value has to land on viewer, never admin.
+    oidc_default_role: str = "member"
+
+    # Signs the short-lived cookie Authlib's Starlette client uses to carry
+    # the OAuth `state`/`nonce` across the redirect to the provider and back.
+    # Unrelated to `app.auth.sessions` (a signed-in user's session): this one
+    # only has to survive a single login round trip, so a fresh random value
+    # per process start is fine for a single instance — pin it via env for a
+    # multi-process deployment, so a callback landing on a different worker
+    # than the redirect still verifies.
+    session_secret: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
 
     @field_validator("database_url")
     @classmethod

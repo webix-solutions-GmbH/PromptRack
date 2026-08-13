@@ -1,0 +1,146 @@
+"""The `users` table.
+
+Not a repository: ``users`` carries no ``customer_id`` and never will — a user's
+active workspace is what *produces* a :class:`~app.scope.Scope`, so reading the
+row through a scoped query would be circular. That is the same exemption
+:mod:`app.repos.customers` documents, and the reason these queries live under
+``app/auth`` instead.
+
+Sessions are handed in by the caller and **never committed here**, matching the
+repository convention: the request boundary decides where the unit of work ends
+(:mod:`app.auth.router` is the caller that commits).
+"""
+
+from collections.abc import Mapping
+from typing import Any
+
+from sqlalchemy import func, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.policy import Role, parse_role
+from app.config import get_settings
+from app.models import User
+
+
+def default_role() -> Role:
+    """The role an account gets when nobody names one and it is not the first.
+
+    Reads `OIDC_DEFAULT_ROLE` (default `member`) through `parse_role`, so an
+    unrecognised value still lands on viewer, never admin — the rule every
+    other role read in this app follows. A function rather than a
+    module-level constant so it is resolved at call time against whatever
+    `get_settings()` currently returns, rather than frozen at import.
+    """
+    return parse_role(get_settings().oidc_default_role)
+
+#: Advisory-lock key for the "first account is the administrator" decision.
+#: An arbitrary constant; it only has to be unique among the app's own locks
+#: (run execution takes `pg_try_advisory_lock(run_id)`, so small integers are
+#: spoken for and this one is deliberately far away from them).
+_BOOTSTRAP_LOCK_KEY = 0x70726B5F75736572  # "prk_user"
+
+
+async def count_users(session: AsyncSession) -> int:
+    return await session.scalar(select(func.count()).select_from(User)) or 0
+
+
+async def signup_open(session: AsyncSession) -> bool:
+    """Whether the bootstrap sign-up is still available.
+
+    Open exactly while the table is empty: the first account is the
+    administrator, and sign-up closes forever after it. Every later account is
+    created by an admin or provisioned by OIDC.
+    """
+    return await count_users(session) == 0
+
+
+async def lock_bootstrap(session: AsyncSession) -> None:
+    """Serialises the first-account decision against a concurrent sign-up.
+
+    Two requests arriving together would otherwise both read an empty table and
+    both be stamped ``admin``. A transaction-scoped advisory lock is enough: it
+    is taken by the one code path that reads the count in order to write it, and
+    it is released by the commit that closes sign-up.
+    """
+    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BOOTSTRAP_LOCK_KEY})
+
+
+async def get_user(session: AsyncSession, user_id: int) -> User | None:
+    return await session.get(User, user_id)
+
+
+async def find_user_by_email(session: AsyncSession, email: str) -> User | None:
+    """The account for an address, matched case-insensitively.
+
+    Case-insensitively because the unique index is on ``lower(email)``: two
+    accounts differing only in case are an authentication hazard, so the lookup
+    has to agree with the constraint that prevents them.
+    """
+    statement = select(User).where(func.lower(User.email) == func.lower(email))
+    return (await session.scalars(statement)).first()
+
+
+async def find_user_by_oidc_subject(session: AsyncSession, subject: str) -> User | None:
+    """The account already linked to an OIDC identity, if any.
+
+    Tried before :func:`find_user_by_email` on every OIDC sign-in
+    (:mod:`app.auth.oidc`): the subject claim is what stays stable across a
+    provider-side email change, where the address would not.
+    """
+    return await session.scalar(select(User).where(User.oidc_subject == subject))
+
+
+async def create_user(
+    session: AsyncSession,
+    *,
+    email: str,
+    name: str,
+    password_hash: str | None = None,
+    oidc_subject: str | None = None,
+    role: Role | None = None,
+) -> User:
+    """Creates an account, stamping the role when the caller does not name one.
+
+    The first account ever created is the administrator — the app's bootstrap,
+    and the reason no role is configured anywhere before the first login. Every
+    creation path goes through here so that rule cannot be forgotten by one of
+    them; :func:`lock_bootstrap` is what makes it safe under concurrency.
+    """
+    if role is None:
+        role = "admin" if await count_users(session) == 0 else default_role()
+    user = User(
+        email=email,
+        name=name,
+        password_hash=password_hash,
+        oidc_subject=oidc_subject,
+        role=role,
+    )
+    session.add(user)
+    await session.flush()
+    return user
+
+
+async def update_user(session: AsyncSession, user_id: int, values: Mapping[str, Any]) -> None:
+    """Patches the named columns only."""
+    if not values:
+        return
+    await session.execute(update(User).where(User.id == user_id).values(**values))
+
+
+async def get_active_customer_id(session: AsyncSession, user_id: int) -> int | None:
+    return await session.scalar(select(User.active_customer_id).where(User.id == user_id))
+
+
+async def set_active_customer_id(
+    session: AsyncSession, user_id: int, customer_id: int | None
+) -> None:
+    """Moves the user into a workspace.
+
+    The pointer lives on the user row rather than in a cookie: it cannot be
+    forged from the client, and it survives a session refresh. ``SET NULL`` on
+    the FK means archiving or deleting a workspace drops its users into the
+    fallback rather than breaking them.
+    """
+    await session.execute(
+        update(User).where(User.id == user_id).values(active_customer_id=customer_id)
+    )

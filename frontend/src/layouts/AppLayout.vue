@@ -3,6 +3,16 @@
 // work happens (configure it, run it, read it). Later tasks add routes and
 // views for the sections below; until then, items with no route yet render
 // as inert labels rather than dead links.
+//
+// The shell itself is auth-gated: /login and /setup render with no nav at
+// all (there is nothing scoped to a workspace to show yet), everything else
+// gets the full chrome plus the workspace switcher and account controls.
+import { computed, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import Select from 'primevue/select'
+import Button from 'primevue/button'
+import { useAuthStore } from '../stores/auth'
+
 type NavItem = { label: string; to?: string }
 type NavSection = { label: string | null; items: NavItem[] }
 
@@ -11,10 +21,10 @@ const sections: NavSection[] = [
   {
     label: 'Setup',
     items: [
-      { label: 'Prompts' },
-      { label: 'Test Cases' },
-      { label: 'Toolsets' },
-      { label: 'Machines' },
+      { label: 'Prompts', to: '/prompts' },
+      { label: 'Test Cases', to: '/test-cases' },
+      { label: 'Toolsets', to: '/toolsets' },
+      { label: 'Machines', to: '/machines' },
     ],
   },
   {
@@ -23,15 +33,53 @@ const sections: NavSection[] = [
   },
   {
     label: 'Settings',
-    items: [{ label: 'Workspaces' }],
+    items: [{ label: 'Workspaces', to: '/workspaces' }],
   },
 ]
+
+const auth = useAuthStore()
+const router = useRouter()
+
+// Workspaces are a label, not a tenant: every signed-in user may switch
+// into any of them, so the list is fetched as soon as a session exists
+// rather than gated on canAdminister.
+watch(
+  () => auth.user?.id,
+  (id) => {
+    if (id !== undefined) void auth.fetchCustomers()
+  },
+  { immediate: true },
+)
+
+// Archived workspaces stay hidden unless the user is standing in one,
+// which happens when someone archives the workspace they were working in.
+const visibleCustomers = computed(() =>
+  auth.customers.filter(
+    (customer) => !customer.archived || customer.id === auth.activeCustomer?.id,
+  ),
+)
+
+async function onWorkspaceChange(customerId: number) {
+  if (customerId === auth.activeCustomer?.id) return
+  await auth.switchCustomer(customerId)
+  // Every page's data is scoped to the active workspace; reloading is the
+  // simplest correct way to refetch all of it without a cross-view data bus.
+  window.location.reload()
+}
+
+async function signOut() {
+  await auth.logout()
+  await router.push({ name: 'login' })
+}
 </script>
 
 <template>
-  <div class="app-shell">
+  <div v-if="!auth.user" class="auth-shell">
+    <RouterView />
+  </div>
+  <div v-else class="app-shell">
     <header class="app-topbar">
-      <span class="app-title">modelfit</span>
+      <span class="app-title">PromptRack</span>
     </header>
     <div class="app-body">
       <nav class="app-sidenav">
@@ -53,6 +101,28 @@ const sections: NavSection[] = [
           >
             {{ item.label }}
           </span>
+        </div>
+        <div class="nav-spacer" />
+        <div class="nav-section">
+          <h2 class="nav-section-label">Workspace</h2>
+          <Select
+            :model-value="auth.activeCustomer?.id"
+            :options="visibleCustomers"
+            option-label="name"
+            option-value="id"
+            placeholder="Select workspace"
+            class="workspace-select"
+            @update:model-value="onWorkspaceChange"
+          >
+            <template #option="{ option }">
+              {{ option.name }}{{ option.archived ? ' (archived)' : '' }}
+            </template>
+          </Select>
+        </div>
+        <div class="nav-section account-section">
+          <span class="account-email">{{ auth.user.email }}</span>
+          <span class="account-role">{{ auth.user.role }}</span>
+          <Button label="Sign out" text size="small" class="sign-out-button" @click="signOut" />
         </div>
       </nav>
       <main class="app-content">
@@ -143,5 +213,47 @@ const sections: NavSection[] = [
   min-width: 0;
   padding: 1.5rem;
   overflow: auto;
+}
+
+.auth-shell {
+  min-height: 100vh;
+}
+
+.nav-spacer {
+  flex: 1;
+}
+
+.workspace-select {
+  width: 100%;
+}
+
+.account-section {
+  padding: 0.75rem 0.75rem 0;
+  border-top: 1px solid var(--p-content-border-color);
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0;
+}
+
+.account-email {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8125rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-role {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--p-text-muted-color);
+}
+
+.sign-out-button {
+  flex-shrink: 0;
 }
 </style>

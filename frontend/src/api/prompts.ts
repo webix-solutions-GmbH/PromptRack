@@ -1,0 +1,126 @@
+// Contract this is built against (Task 3.3, backend/app/api/prompts.py —
+// not yet landed alongside this task; see the plan's Task 3.3 section, the
+// spec's "Data model" §prompts/prompt_versions, and backend/app/repos/{prompts,
+// prompt_versions}.py + backend/app/services/attribution.py, which this
+// mirrors field-for-field). Assumed shape:
+//
+//   GET    /api/prompts                        -> Prompt[]
+//   POST   /api/prompts                          PromptInput -> Prompt
+//   GET    /api/prompts/{id}                    -> Prompt
+//   PATCH  /api/prompts/{id}                     PromptDraftInput -> Prompt   (edits the draft)
+//   DELETE /api/prompts/{id}                    -> (204; cascades its versions)
+//   POST   /api/prompts/{id}/commit              { message } -> PromptVersion
+//   GET    /api/prompts/{id}/versions           -> PromptVersion[]           (newest first)
+//   GET    /api/prompts/versions/{versionId}    -> PromptVersion
+//   POST   /api/prompts/{id}/deploy              { version_id } -> Prompt
+//   POST   /api/prompts/{id}/restore             { version_id } -> Prompt    (copies content -> draft only; does not commit)
+//   POST   /api/prompts/versions/{versionId}/baseline  { run_id } -> PromptVersion
+//   GET    /api/prompts/{id}/diff?from=&to=     -> DiffResult                (from/to: a version id, or the literal "draft")
+//
+// `Prompt.dirty`, `head_version` and `deployed_version` are computed by the
+// backend (plan: "Response for a prompt includes head_version, deployed_version,
+// dirty (draft ≠ head)") — this module never re-derives dirtiness client-side,
+// the same way `machines.ts` never re-derives `loaded_count`.
+//
+// Deviation flagged for reconciliation with Task 3.3: `PromptVersion.created_by`
+// is modeled here as the bare user id (matching `backend/app/models/prompts.py`
+// exactly), since no user-lookup endpoint exists yet for the history panel to
+// join against for an author name. `VersionHistory.vue` renders it as `user #N`
+// until a richer shape (e.g. `created_by_name`) lands.
+//
+// `setBaseline` is part of the Task 3.3 contract but has no caller in this
+// task's UI — Task 3.6's own action list for a version is view/diff/deploy/
+// restore only; baseline-setting is a run-side workflow (Task 4.5's "Verify"
+// flow). Included here for the same reason `machinesApi.test` ships alongside
+// `discover` even where only one is wired into a given view: the module is the
+// full client for its backend contract.
+import { api } from './client'
+
+export interface PromptVersionSummary {
+  id: number
+  version: number
+}
+
+export interface Prompt {
+  id: number
+  name: string
+  /** The mutable draft — what the editor writes and what a run always tests. */
+  content: string
+  deployed_version_id: number | null
+  deployed_at: string | null
+  deployed_by: number | null
+  created_at: string
+  updated_at: string
+  head_version: PromptVersionSummary | null
+  deployed_version: PromptVersionSummary | null
+  /** `content` differs from `head_version`'s frozen text (or nothing is
+   * committed yet at all) — the editor's dirty indicator, computed server-side. */
+  dirty: boolean
+}
+
+export interface PromptInput {
+  name: string
+  content?: string
+}
+
+export interface PromptDraftInput {
+  content: string
+}
+
+export interface PromptVersion {
+  id: number
+  prompt_id: number
+  version: number
+  content: string
+  message: string
+  created_at: string
+  created_by: number | null
+  baseline_run_id: number | null
+}
+
+export interface DiffResult {
+  diff: string
+}
+
+/** A version id or the literal `"draft"`, as the diff endpoint's `from`/`to`
+ * accept per the plan. */
+export type DiffRef = 'draft' | number
+
+function diffRefParam(ref: DiffRef): string {
+  return ref === 'draft' ? 'draft' : String(ref)
+}
+
+export const promptsApi = {
+  list: () => api.get<Prompt[]>('/prompts'),
+  get: (id: number) => api.get<Prompt>(`/prompts/${id}`),
+  create: (input: PromptInput) => api.post<Prompt>('/prompts', input),
+  updateDraft: (id: number, input: PromptDraftInput) =>
+    api.patch<Prompt>(`/prompts/${id}`, input),
+  remove: (id: number) => api.delete<void>(`/prompts/${id}`),
+  commit: (id: number, message: string) =>
+    api.post<PromptVersion>(`/prompts/${id}/commit`, { message }),
+  listVersions: (id: number) => api.get<PromptVersion[]>(`/prompts/${id}/versions`),
+  getVersion: (versionId: number) => api.get<PromptVersion>(`/prompts/versions/${versionId}`),
+  deploy: (id: number, versionId: number) =>
+    api.post<Prompt>(`/prompts/${id}/deploy`, { version_id: versionId }),
+  restore: (id: number, versionId: number) =>
+    api.post<Prompt>(`/prompts/${id}/restore`, { version_id: versionId }),
+  setBaseline: (versionId: number, runId: number) =>
+    api.post<PromptVersion>(`/prompts/versions/${versionId}/baseline`, { run_id: runId }),
+  diff: (id: number, from: DiffRef, to: DiffRef) =>
+    api.get<DiffResult>(
+      `/prompts/${id}/diff?from=${encodeURIComponent(diffRefParam(from))}&to=${encodeURIComponent(diffRefParam(to))}`,
+    ),
+}
+
+/** The list/editor's one-glance "is what's live what we last verified"
+ * signal (spec: "deployed v3, head is v5"). Pure so both `PromptsView` and
+ * `PromptEditView` render the identical sentence for the identical state. */
+export function describeVersionStatus(prompt: Prompt): string {
+  if (!prompt.head_version) return 'not committed yet'
+  if (!prompt.deployed_version) return `head v${prompt.head_version.version} · not deployed`
+  if (prompt.deployed_version.version === prompt.head_version.version) {
+    return `deployed v${prompt.head_version.version}`
+  }
+  return `deployed v${prompt.deployed_version.version}, head is v${prompt.head_version.version}`
+}

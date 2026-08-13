@@ -44,9 +44,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-CONTAINER_NAME = "modelfit-test-pg"
+CONTAINER_NAME = "promptrack-test-pg"
 PORT = 55432
-DEFAULT_TEST_DATABASE_URL = f"postgres://agentval:test@127.0.0.1:{PORT}/agentval_test"
+DEFAULT_TEST_DATABASE_URL = f"postgres://promptrack:test@127.0.0.1:{PORT}/promptrack_test"
 
 
 def _docker(*args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -72,11 +72,11 @@ def _start_container() -> None:
         "-p",
         f"127.0.0.1:{PORT}:5432",
         "-e",
-        "POSTGRES_USER=agentval",
+        "POSTGRES_USER=promptrack",
         "-e",
         "POSTGRES_PASSWORD=test",
         "-e",
-        "POSTGRES_DB=agentval_test",
+        "POSTGRES_DB=promptrack_test",
         # UTF8/C: prompt content can carry Unicode Tags (U+E0000+).
         "-e",
         "POSTGRES_INITDB_ARGS=--encoding=UTF8 --lc-collate=C --lc-ctype=C",
@@ -99,9 +99,9 @@ def _wait_ready(deadline_s: float = 60) -> None:
             CONTAINER_NAME,
             "pg_isready",
             "-U",
-            "agentval",
+            "promptrack",
             "-d",
-            "agentval_test",
+            "promptrack_test",
             capture_output=True,
         )
         if probe.returncode == 0:

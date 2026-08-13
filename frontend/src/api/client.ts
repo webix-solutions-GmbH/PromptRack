@@ -5,11 +5,16 @@
 
 export class ApiError extends Error {
   readonly status: number
+  /** The parsed error body, if any — callers that need more than `message`
+   * (e.g. the auth store reading `setup_required` off a 401) read it here
+   * rather than every error shape growing its own constructor field. */
+  readonly details: unknown
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, details?: unknown) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.details = details
   }
 }
 
@@ -30,7 +35,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       (data && typeof data === 'object' && 'message' in data && typeof data.message === 'string'
         ? data.message
         : undefined) ?? response.statusText
-    throw new ApiError(response.status, message)
+    throw new ApiError(response.status, message, data)
   }
 
   return data as T

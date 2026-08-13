@@ -76,7 +76,7 @@ class Session(Base):
 class ApiToken(Base):
     """A per-user bearer token for the MCP endpoint, hashed at rest.
 
-    32 random bytes prefixed `amv_`, stored as SHA-256 (a 256-bit random secret
+    32 random bytes prefixed `prk_`, stored as SHA-256 (a 256-bit random secret
     has nothing to brute-force, and every MCP request would otherwise pay an
     argon2), shown exactly once. A token acts as its owner and carries their
     role. There is deliberately no customer column: a call names its workspace.

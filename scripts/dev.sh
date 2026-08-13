@@ -14,7 +14,7 @@ docker compose -f docker-compose.dev.yml up -d postgres
 
 echo "[dev] waiting for postgres to accept connections"
 deadline=$((SECONDS + 60))
-until docker compose -f docker-compose.dev.yml exec -T postgres pg_isready -U agentval -d agentval >/dev/null 2>&1; do
+until docker compose -f docker-compose.dev.yml exec -T postgres pg_isready -U promptrack -d promptrack >/dev/null 2>&1; do
   if [ "$SECONDS" -ge "$deadline" ]; then
     echo "[dev] postgres did not become ready within 60s" >&2
     exit 1

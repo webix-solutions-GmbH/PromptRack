@@ -1,1 +1,1 @@
-"""modelfit backend application package."""
+"""PromptRack backend application package."""

@@ -1,6 +1,6 @@
-# modelfit
+# PromptRack
 
-modelfit answers two questions for a consultancy that sells AI solutions to businesses:
+PromptRack answers two questions for a consultancy that sells AI solutions to businesses:
 which model is good enough for a customer's actual job, and what hardware that takes.
 It is also "git for your customers' prompts" — the system prompts behind an agentic
 tool are versioned assets with immutable history, a deployed pointer, and a baseline run
