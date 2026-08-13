@@ -6,13 +6,28 @@ endpoint, local or hosted, in one matrix.
 
 ## What it can test
 
+Each step adds one thing to the one above it.
+
 | | |
 | --- | --- |
-| **Plain prompt** | One completion, rated against an expected output. |
-| **Tool definitions** | Tools offered, wanted calls recorded, nothing executed. |
-| **Mocked tools** | Canned tool responses, identical for every model. No ERP or RAG index needed. |
-| **Live MCP tools** | Tools discovered from an MCP server and executed for real. |
-| **Injection resistance** | Seeded attacks via tool results and tool descriptions, scored for resistance *and* over-defense. |
+| **Prompt** | Can the model do the task at all? |
+| **+ expected output** | Graded against a rubric instead of a vibe. |
+| **+ tool definitions** | Does it pick the right tool, with the right arguments? Nothing executes. |
+| **+ mocked tools** | The full multi-turn loop. Canned responses, identical for every model, so no ERP or RAG index has to exist. |
+| **+ live MCP tools** | The same loop against the customer's real stack. |
+
+**Example.** A supplier invoice says 10 units; the purchase order says 8. The model gets
+one tool, `lookup_purchase_order`.
+
+Prompt only tells you whether it reconciles the two numbers at all. Add the mocked tool and
+you see whether it looks the PO up *before* deciding, and whether it stops and asks rather
+than booking a wrong amount — with the same canned response for every model, so the
+difference you measure is the model. Point that toolset at the customer's MCP server and
+the identical test runs against their ERP.
+
+Seeded suites cover invoice intake, an invoice agent, general capability, and prompt
+injection through the tool-result and tool-description channels — scored for resistance
+*and* for over-defense.
 
 ## Quick start
 
