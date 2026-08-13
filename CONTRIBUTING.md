@@ -7,10 +7,10 @@ nvm use 22            # Node 22+
 npm install
 cp .env.example .env.local
 # fill in BETTER_AUTH_SECRET at minimum: openssl rand -base64 32
-npm run dev            # brings up a dockerized dev postgres, migrates, serves /agent-val
+npm run dev            # brings up a dockerized dev postgres, migrates, serves the app
 ```
 
-Open `http://localhost:3000/agent-val/login` and create the first account — it
+Open `http://localhost:3000/login` and create the first account — it
 becomes the administrator.
 
 ## Before opening a PR

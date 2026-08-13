@@ -17,8 +17,8 @@ describe('apiRoot', () => {
   });
 
   it('leaves a base without /v1 alone', () => {
-    expect(apiRoot('http://host:3000/agent-val/api/mock-llm')).toBe(
-      'http://host:3000/agent-val/api/mock-llm',
+    expect(apiRoot('http://host:3000/api/mock-llm')).toBe(
+      'http://host:3000/api/mock-llm',
     );
   });
 

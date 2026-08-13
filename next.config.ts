@@ -2,8 +2,9 @@ import type { NextConfig } from "next";
 import { BASE_PATH } from "./src/lib/base-path";
 
 const nextConfig: NextConfig = {
-  // The app is served under a sub-path so it can share a hostname with other
-  // services behind a reverse proxy. Change it in src/lib/base-path.ts (build-time).
+  // Empty by default (root). Set a sub-path in src/lib/base-path.ts (build-time)
+  // if the app ever needs to share a hostname with other services behind a
+  // reverse proxy — Next accepts '' as a first-class basePath value.
   basePath: BASE_PATH,
   experimental: {
     // Lets a page answer a refused role with `forbidden()` / `unauthorized()`

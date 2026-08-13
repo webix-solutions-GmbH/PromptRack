@@ -9,7 +9,7 @@ Postgres (`pg`). MIT licensed.
 
 ## Security
 
-- **The first account created at `/agent-val/login` becomes the administrator**,
+- **The first account created at `/login` becomes the administrator**,
   and sign-up closes from then on — every further account is created by an
   admin or provisioned by SSO. See [Accounts and roles](#accounts-and-roles).
 - Three roles: **admin** / **member** / **viewer**.
@@ -30,7 +30,7 @@ development database.
 nvm use 22
 npm install
 cp .env.example .env.local     # optional; npm run dev writes DATABASE_URL if missing
-npm run dev                    # starts postgres in docker, migrates, serves /agent-val
+npm run dev                    # starts postgres in docker, migrates, serves the app
 npm run db:seed                # optional: sample toolsets + prompt groups
 ```
 
@@ -53,11 +53,11 @@ these — a signing key has to be yours):
 
 ```bash
 BETTER_AUTH_SECRET=$(openssl rand -base64 32)
-BETTER_AUTH_URL=http://localhost:3000/agent-val   # origin *including* the basePath
+BETTER_AUTH_URL=http://localhost:3000
 ```
 
-The app lives under its basePath: open
-`http://localhost:3000/agent-val/login` and **the first account you create
+The app serves at the root: open
+`http://localhost:3000/login` and **the first account you create
 becomes the administrator** — see [Accounts and roles](#accounts-and-roles).
 
 `npm run dev` runs `scripts/dev-db.mjs` first, which brings up the
@@ -90,26 +90,27 @@ app), which waits for the database to report healthy before it starts.
   refuses to start without it. `DATABASE_URL` is optional and overrides the
   bundled database with an external one.
 - `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` go in the same `.env`.
-  `BETTER_AUTH_URL` is the **public** origin including the basePath
-  (e.g. `https://your-host.example/agent-val`); every auth URL, the OIDC
+  `BETTER_AUTH_URL` is the **public** origin
+  (e.g. `https://your-host.example`); every auth URL, the OIDC
   `redirect_uri` included, is built from it.
 - State lives in the named volume `pgdata` — there is no bind mount and no uid
   matching to get right. Back it up with
   `docker compose exec -T postgres pg_dump -U agentval agentval > backup.sql`.
 - The compose service is `agent-val`, listening on port 3000 in the container,
-  published on `127.0.0.1:3100` by default (`http://localhost:3100/agent-val`
+  published on `127.0.0.1:3100` by default (`http://localhost:3100`
   from the host). `docker-compose.yml` joins no external network out of the
   box; a commented block shows how to attach it to a reverse-proxy stack's
   network so the proxy can reach it as `agent-val:3000`. If the proxy adds its
   own HTTP basic auth in front of the app, an MCP client has to send both
   credentials at once: basic auth in `Authorization` and its API token in
   `x-api-key` (which is why that header is read first).
-- The app is built with `basePath: '/agent-val'` (see `src/lib/base-path.ts`),
-  so it expects that prefix everywhere — including in dev
-  (`http://localhost:3000/agent-val`). Raw `fetch()` calls to our own API routes
-  must go through `apiPath()` from `src/lib/base-path.ts`; `next/link` and the
-  router add the prefix automatically. Path-prefix routing on a reverse proxy
-  must forward `/agent-val*` to `agent-val:3000`.
+- The app is built with `basePath: ''` (see `src/lib/base-path.ts`), so it
+  serves at the root everywhere — including in dev (`http://localhost:3000`).
+  Raw `fetch()` calls to our own API routes must go through `apiPath()` from
+  `src/lib/base-path.ts`; `next/link` and the router add the (currently empty)
+  prefix automatically. Set a non-empty `BASE_PATH` there and rebuild if the
+  app ever needs to share a hostname with other services behind a reverse
+  proxy — a proxy would then forward `/<prefix>*` to `agent-val:3000`.
 
 ### Schema bootstrap on start
 
@@ -140,7 +141,7 @@ is `db:generate` followed by it.
 Sign-in is email + password, optionally single sign-on. There is no public
 registration: **the first account ever created is the administrator**, and the
 sign-up endpoint is refused from then on. Every further account is created by an
-admin under `/agent-val/admin/users` or provisioned by your identity provider.
+admin under `/admin/users` or provisioned by your identity provider.
 
 | Role | May |
 | --- | --- |
@@ -237,8 +238,8 @@ push the system prompts and prompts of another project straight in, start a run,
 and read the measurements back — instead of copying someone else's prompts into
 the web UI by hand.
 
-- Endpoint: `POST /agent-val/api/mcp` (streamable HTTP, stateless).
-- Auth: a **per-user API token**, created under `/agent-val/account/tokens` and
+- Endpoint: `POST /api/mcp` (streamable HTTP, stateless).
+- Auth: a **per-user API token**, created under `/account/tokens` and
   sent as the `x-api-key` header (or `Authorization: Bearer <token>`). Tokens
   are stored as a SHA-256 hash and shown exactly once, at creation.
 - A token **acts as the user who created it and carries their role**, so a
@@ -258,13 +259,13 @@ the web UI by hand.
 Register it with Claude Code — production and dev:
 
 ```bash
-claude mcp add --transport http agent-val https://your-host.example/agent-val/api/mcp \
+claude mcp add --transport http agent-val https://your-host.example/api/mcp \
   --header "x-api-key: amv_…" \
   --header "x-customer: Acme GmbH"
   # add --header "Authorization: Basic $(printf 'user:password' | base64)" too
   # if a reverse proxy in front of the app demands its own basic auth
 
-claude mcp add --transport http agent-val-dev http://localhost:3000/agent-val/api/mcp \
+claude mcp add --transport http agent-val-dev http://localhost:3000/api/mcp \
   --header "x-api-key: amv_…" \
   --header "x-customer: Default"
 ```

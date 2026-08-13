@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
  * It implements only what the client actually exercises: `initialize`,
  * `tools/list` and `tools/call`, answering with plain JSON rather than an SSE
  * stream (which the spec allows for a single response). Register a toolset with
- * URL `http://localhost:3000/agent-val/api/mock-mcp`, hit Discover, and the
+ * URL `http://localhost:3000/api/mock-mcp`, hit Discover, and the
  * tools below show up.
  *
  * Query parameters steer it: `?hide=echo_upper` drops a tool from

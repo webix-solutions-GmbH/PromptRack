@@ -1,7 +1,7 @@
 /**
  * Authentication for the MCP endpoint.
  *
- * The credential is a per-user API token from /agent-val/account/tokens, read
+ * The credential is a per-user API token from /account/tokens, read
  * from `X-Api-Key` *first* and only then from `Authorization: Bearer` — that
  * way a client behind a reverse proxy that demands basic auth can send both
  * credentials at once without either overwriting the other. A browser session
@@ -30,7 +30,7 @@ export async function authenticateMcp(request: Request): Promise<McpAuthResult> 
     return {
       ok: false,
       status: 401,
-      message: `Missing API token. Create one at /agent-val/account/tokens and send it as the "${API_KEY_HEADER}" header (or as "Authorization: Bearer <token>").`,
+      message: `Missing API token. Create one at /account/tokens and send it as the "${API_KEY_HEADER}" header (or as "Authorization: Bearer <token>").`,
       challenge: true,
     };
   }

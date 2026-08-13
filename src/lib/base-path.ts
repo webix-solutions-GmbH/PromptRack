@@ -1,12 +1,13 @@
 /**
- * The app is served under a sub-path (`/agent-val`) rather than at the root, so it can
- * sit behind a reverse proxy alongside other services on the same hostname without an
- * extra DNS record. It is a build-time constant: change it here and rebuild.
+ * The app is served at the site root. It is a build-time constant: set it back
+ * to a sub-path (e.g. `/agent-val`) here and rebuild if it ever needs to sit
+ * behind a reverse proxy alongside other services on the same hostname without
+ * an extra DNS record.
  *
  * next/link and the router prefix this automatically; raw fetch() calls to our
  * own API routes do NOT, so they must go through apiPath().
  */
-export const BASE_PATH = '/agent-val';
+export const BASE_PATH = '';
 
 export function apiPath(path: string): string {
   return `${BASE_PATH}${path}`;

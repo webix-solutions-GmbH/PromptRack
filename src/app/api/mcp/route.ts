@@ -86,7 +86,7 @@ function unauthorized(status: number, message: string, challenge?: boolean) {
       error: { code: -32001, message },
       server: SERVER_INFO.name,
       protocolVersion: LATEST_PROTOCOL_VERSION,
-      hint: `Create a token under /agent-val/account/tokens and send it as the ${API_KEY_HEADER} header.`,
+      hint: `Create a token under /account/tokens and send it as the ${API_KEY_HEADER} header.`,
     },
     {
       status,

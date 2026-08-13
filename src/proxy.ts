@@ -10,9 +10,11 @@ const PUBLIC_PATHS = ['/login'];
  * pages; this exists so a signed-out visitor lands on /login instead of on a
  * rendered, empty app shell.
  *
- * Note on basePath: `nextUrl.pathname` is *without* /agent-val, and cloning
- * nextUrl keeps the basePath on the way out. Never build the redirect from
- * `request.url`, which would drop it.
+ * Note on basePath: `nextUrl.pathname` is always without whatever basePath is
+ * configured, and cloning nextUrl keeps it on the way out. Never build the
+ * redirect from `request.url`, which would drop it. Currently a no-op in
+ * practice since BASE_PATH is empty (root deployment), but this stays correct
+ * if a prefix is restored in base-path.ts.
  */
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

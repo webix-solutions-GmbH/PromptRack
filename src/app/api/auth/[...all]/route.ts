@@ -9,11 +9,17 @@ const handlers = toNextJsHandler(auth);
 /**
  * Puts the Next basePath back on the request URL.
  *
- * Next strips `/agent-val` before a route handler sees `request.url`, but
- * better-auth routes by comparing that pathname against its own configured
- * mount point — and that mount point has to keep the basePath, because the same
- * value is what every absolute URL it builds (the OIDC `redirect_uri` above
- * all) is derived from. Handing it the public URL is what makes both agree.
+ * Next strips whatever basePath is configured before a route handler sees
+ * `request.url`, but better-auth routes by comparing that pathname against its
+ * own configured mount point — and that mount point has to keep the basePath,
+ * because the same value is what every absolute URL it builds (the OIDC
+ * `redirect_uri` above all) is derived from. Handing it the public URL is what
+ * makes both agree.
+ *
+ * With `BASE_PATH` empty (root deployment) this is a no-op: `${BASE_PATH}/`
+ * is just `/`, which every pathname already starts with, so the early return
+ * always fires. It stays written this way rather than special-cased so a
+ * future non-empty BASE_PATH needs no change here.
  *
  * The body is buffered rather than piped: auth payloads are a few hundred
  * bytes, and a streamed body would need `duplex` handling for nothing.

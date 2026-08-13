@@ -84,7 +84,8 @@ export function mapProfileToUser(profile: Record<string, unknown>) {
 
 export const auth = betterAuth({
   // Both carry the Next basePath, so every auth URL better-auth builds
-  // (including the OIDC redirect_uri) is /agent-val/api/auth/...
+  // (including the OIDC redirect_uri) is <BASE_PATH>/api/auth/... — currently
+  // just /api/auth/... since BASE_PATH is empty (root deployment).
   baseURL: authBaseUrl(),
   basePath: AUTH_BASE_PATH,
   secret: process.env.BETTER_AUTH_SECRET,
