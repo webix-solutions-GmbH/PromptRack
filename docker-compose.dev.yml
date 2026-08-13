@@ -1,4 +1,4 @@
-# Development database only. Production compose is docker-compose.yml.
+# Development database only. Production compose (Task 6.3) is docker-compose.yml.
 services:
   postgres:
     image: postgres:17-alpine
@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: agentval
       POSTGRES_PASSWORD: dev
       POSTGRES_DB: agentval
-      # UTF8 is mandatory: seeded prompts carry Unicode Tags (U+E0000+).
+      # UTF8 is mandatory: prompt content can carry Unicode Tags (U+E0000+).
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
     ports:
       - "127.0.0.1:5433:5432"

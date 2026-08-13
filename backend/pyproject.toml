@@ -1,0 +1,58 @@
+[project]
+name = "modelfit-backend"
+version = "0.1.0"
+description = "modelfit backend: FastAPI + async SQLAlchemy + Alembic"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# One event loop for the whole session, not one per test: the integration
+# suite's Postgres engine (backend/tests/integration/conftest.py) is a single
+# module-level object built once at import time, and asyncpg connections it
+# opens are bound to whichever loop was running when they were created —
+# reusing one across pytest-asyncio's default per-function loops raises
+# `MissingGreenlet` (the async framework equivalent of the old JS suite's
+# `fileParallelism: false`, which existed because those suites share one
+# database and one client). Harmless for the pure suite, which has no async
+# tests today.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+pythonpath = ["."]
+testpaths = ["tests"]
+# tests/integration/** needs a real Postgres (see its own conftest.py) and
+# must stay out of the default `uv run pytest` run, the same split the old
+# Node app made between `npm test` and `npm run test:integration`. An
+# explicit `pytest tests/integration` still collects it — pytest resolves
+# that path directly rather than through this ignore.
+addopts = "--ignore=tests/integration"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+# Without this, ruff's isort treats the local `alembic/` directory (this
+# project's migration scripts) as shadowing the third-party `alembic`
+# package and misclassifies `import alembic` as first-party.
+known-third-party = ["alembic"]
