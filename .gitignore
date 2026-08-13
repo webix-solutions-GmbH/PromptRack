@@ -49,3 +49,4 @@ next-env.d.ts
 
 # drizzle/ (SQL migrations generated from src/db/schema.ts) is committed, not ignored.
 docs/notes.md
+docs/superpowers/
