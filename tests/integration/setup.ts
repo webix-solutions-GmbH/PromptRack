@@ -15,7 +15,6 @@ export const ALL_TABLES = [
   'prompt_toolsets',
   'runs',
   'run_results',
-  '__app_seeds',
 ] as const;
 
 let defaultId = 0;

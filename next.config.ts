@@ -14,9 +14,9 @@ const nextConfig: NextConfig = {
   // Emit `.next/standalone` so the Docker runner image does not need node_modules.
   output: "standalone",
   // `pg` is on Next's built-in server-external list, so it is never bundled.
-  // These globs exist because scripts/init-db.mjs and scripts/seed-prompts.mjs
-  // run *inside* the standalone image and import modules the app itself never
-  // does (drizzle's migrator), which the tracer therefore cannot see.
+  // These globs exist because scripts/init-db.mjs runs *inside* the standalone
+  // image and imports modules the app itself never does (drizzle's migrator),
+  // which the tracer therefore cannot see.
   outputFileTracingIncludes: {
     "/*": [
       "node_modules/pg/**",

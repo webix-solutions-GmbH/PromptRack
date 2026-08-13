@@ -108,13 +108,6 @@ const TABLES = [
     bool: ['tokens_estimated'],
     serial: true,
   },
-  {
-    name: '__app_seeds',
-    cols: ['kind', 'scope', 'name', 'seeded_at'],
-    ts: ['seeded_at'],
-    bool: [],
-    serial: false,
-  },
 ];
 
 const BATCH = 500;

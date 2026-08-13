@@ -43,6 +43,13 @@
       "when": 1786570933301,
       "tag": "0005_customer_id_required",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786624001849,
+      "tag": "0006_drop_app_seeds",
+      "breakpoints": true
     }
   ]
 }

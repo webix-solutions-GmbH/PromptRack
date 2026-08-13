@@ -25,9 +25,10 @@ than booking a wrong amount — with the same canned response for every model, s
 difference you measure is the model. Point that toolset at the customer's MCP server and
 the identical test runs against their ERP.
 
-Seeded suites cover invoice intake, an invoice agent, general capability, and prompt
-injection through the tool-result and tool-description channels — scored for resistance
-*and* for over-defense.
+A worked suite of 38 prompts is written up in
+[docs/example-suite](docs/example-suite/) — invoice intake, an invoice agent, general
+capability, and prompt injection through the tool-result and tool-description channels.
+Point your agent at it and tell it to set the same thing up for your customer.
 
 ## Quick start
 
@@ -35,7 +36,6 @@ injection through the tool-result and tool-description channels — scored for r
 nvm use 22 && npm install
 cp .env.example .env.local   # set BETTER_AUTH_SECRET=$(openssl rand -base64 32)
 npm run dev                  # postgres in docker, migrations, app on :3000
-npm run db:seed              # optional sample suite
 ```
 
 The first account created at `/login` becomes the administrator. Settings:

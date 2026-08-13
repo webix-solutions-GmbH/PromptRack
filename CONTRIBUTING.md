@@ -17,8 +17,8 @@ npm run dev            # brings up a dockerized dev postgres, migrates, serves t
 ```
 
 Open `http://localhost:3000/login` and create the first account — it
-becomes the administrator. `npm run db:seed` then fills one workspace with
-sample toolsets and prompt groups if you want something to run.
+becomes the administrator. `docs/example-suite/` is a worked evaluation suite
+an agent can build into a workspace over MCP if you want something to run.
 
 `CLAUDE.md` is the architecture document: it records the decisions and the
 reasoning behind them, and is worth reading before a non-trivial change.

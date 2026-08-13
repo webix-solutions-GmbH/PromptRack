@@ -24,7 +24,6 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node scripts/init-db.mjs",
     "db:init": "drizzle-kit generate && node scripts/init-db.mjs",
-    "db:seed": "node scripts/seed-prompts.mjs",
     "db:reset": "node scripts/dev-db.mjs --reset",
     "test": "vitest run",
     "test:integration": "node scripts/test-db.mjs run"

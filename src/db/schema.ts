@@ -369,33 +369,6 @@ export type RunResult = typeof runResults.$inferSelect;
 export type NewRunResult = typeof runResults.$inferInsert;
 
 // ---------------------------------------------------------------------------
-// __app_seeds — ledger owned by scripts/seed-prompts.mjs
-//
-// Not application data: it records which seeded toolsets/prompt groups have ever
-// been inserted, so seeding is additive and respects deletions. It lives here (and
-// not only in the seed script) so migration tooling knows it exists and can never
-// offer to drop it. `scope` is the group name for a prompt, empty for a toolset.
-//
-// The ledger is keyed per workspace: seeding the standard suite into a new
-// engagement's workspace must not be suppressed by a prompt someone deleted in
-// another one. `cascade` and not `restrict` here — this is bookkeeping about a
-// workspace, not content, and it must never be what blocks a delete.
-// ---------------------------------------------------------------------------
-export const appSeeds = pgTable(
-  '__app_seeds',
-  {
-    customerId: integer('customer_id')
-      .notNull()
-      .references(() => customers.id, { onDelete: 'cascade' }),
-    kind: text('kind').notNull(),
-    scope: text('scope').notNull(),
-    name: text('name').notNull(),
-    seededAt: timestamp('seeded_at', { withTimezone: true, mode: 'date' }).notNull(),
-  },
-  (table) => [primaryKey({ columns: [table.customerId, table.kind, table.scope, table.name] })],
-);
-
-// ---------------------------------------------------------------------------
 // auth (better-auth core tables — table names are better-auth's defaults)
 //
 // Global infrastructure rather than workspace data: these tables are what a
