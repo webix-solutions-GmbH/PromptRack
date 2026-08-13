@@ -27,8 +27,8 @@ const SUPPORTED_PROTOCOL_VERSIONS = [
 ];
 
 export const SERVER_INFO = {
-  name: 'agent-model-evaluator',
-  title: 'Agent Model Evaluator',
+  name: 'modelfit',
+  title: 'modelfit',
   version: '0.1.0',
 } as const;
 
@@ -164,8 +164,9 @@ export async function handleMcpMessage(
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
         instructions:
-          'Authoring and reading an LLM benchmark: prompt groups, system prompts and prompts (optionally tool tests), then runs against a registered machine and their measured results. ' +
-          'Every call is scoped to one customer workspace: pass `customer` (name or id) on each call, or send an `X-Customer` header on the connection. `list_customers` lists them. ' +
+          'modelfit evaluates which model fits a customer\'s real job — invoice agents, document data extraction, MCP tool calls over their own RAG — and what hardware it takes. ' +
+          'Author the evaluation here: prompt groups, system prompts and prompts (optionally tool tests), then runs against a registered machine (an OpenAI-compatible endpoint, self-hosted or hosted) and their measured results. ' +
+          'Every call is scoped to one customer engagement\'s workspace: pass `customer` (name or id) on each call, or send an `X-Customer` header on the connection. `list_customers` lists them. ' +
           `You are authenticated as ${ctx.actor.email} (${ctx.actor.role})` +
           `${canWrite(ctx.actor.role) ? '.' : ', which is read-only: only the read tools will answer.'}`,
       });

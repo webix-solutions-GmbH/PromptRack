@@ -10,7 +10,7 @@
  */
 import { spawnSync } from 'node:child_process';
 
-const NAME = 'agent-val-test-pg';
+const NAME = 'modelfit-test-pg';
 const PORT = 55432;
 export const TEST_DATABASE_URL = `postgres://agentval:test@127.0.0.1:${PORT}/agentval_test`;
 

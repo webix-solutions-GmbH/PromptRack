@@ -1,6 +1,6 @@
 /**
  * Best-effort probing of an OpenAI-compatible endpoint for information about
- * the server and the model that is about to be benchmarked.
+ * the server and the model that is about to be evaluated.
  *
  * The OpenAI surface itself is deliberately thin, so besides the model's entry
  * in `/v1/models` we knock on the provider-specific side doors of the servers

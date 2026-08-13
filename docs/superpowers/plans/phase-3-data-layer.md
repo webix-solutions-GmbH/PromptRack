@@ -1,5 +1,7 @@
 # Phase 3 — Scoped data-access layer
 
+*Historical implementation plan, kept as a record of how the app was built. It describes the app under its former name and may not match the current code.*
+
 Implementation plan. Source spec: `docs/superpowers/specs/2026-08-12-platform-evolution-design.md`
 (§ "Phase 3 — Data-access layer"). Architecture context: `CLAUDE.md` (read it — the
 **snapshot invariant** and the **content vs. credentials** line are the two rules this

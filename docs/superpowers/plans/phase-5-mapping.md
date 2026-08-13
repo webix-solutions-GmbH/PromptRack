@@ -1,5 +1,7 @@
 # Phase 5 preflight mapping (working notes)
 
+*Historical implementation plan, kept as a record of how the app was built. It describes the app under its former name and may not match the current code.*
+
 Discovered on the `platform-evolution` branch before Task 2. Substitute these for the
 role-names the plan uses.
 

@@ -18,8 +18,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Agent Model Evaluator",
-  description: "Evaluate and compare local LLM models across machines.",
+  title: "modelfit",
+  description:
+    "Evaluate which model fits a customer's real work — invoice agents, document data extraction, MCP tool calls over their own RAG — and what hardware it takes to run it.",
 };
 
 export default async function RootLayout({
@@ -43,7 +44,7 @@ export default async function RootLayout({
           <div className="flex min-h-screen flex-1">
             <aside className="flex w-56 shrink-0 flex-col border-r border-zinc-200 dark:border-zinc-800">
               <div className="px-4 py-4 text-sm font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-                Agent Model Evaluator
+                modelfit
               </div>
               <WorkspaceSwitcher
                 customers={workspace.customers}

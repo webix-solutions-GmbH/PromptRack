@@ -90,7 +90,7 @@ function unauthorized(status: number, message: string, challenge?: boolean) {
     },
     {
       status,
-      ...(challenge ? { headers: { 'WWW-Authenticate': 'Bearer realm="agent-val-mcp"' } } : {}),
+      ...(challenge ? { headers: { 'WWW-Authenticate': 'Bearer realm="modelfit-mcp"' } } : {}),
     },
   );
 }

@@ -1,7 +1,9 @@
 # Phase 5 — Customer workspaces (implementation plan)
 
+*Historical implementation plan, kept as a record of how the app was built. It describes the app under its former name and may not match the current code.*
+
 Source spec: `docs/superpowers/specs/2026-08-12-platform-evolution-design.md` (§ Phase 5).
-Target repo: `/Users/phil/Projects/Webix.AI.Agent-Model-Eval` (branch `master`).
+Target repo: `<repo root>` (branch `master`).
 
 Goal: a `customers` table; a **NOT NULL** `customer_id` on the five root tables
 (`machines`, `system_prompts`, `toolsets`, `prompt_groups`, `runs`); child tables inherit
@@ -82,7 +84,7 @@ Run and record:
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
-cd /Users/phil/Projects/Webix.AI.Agent-Model-Eval
+cd <repo root>
 grep -rn "from '@/db'" src | sort            # must be ONLY the data-access layer after phase 3
 ls src/db src/lib | sort
 grep -rn "export function\|export async function\|export interface\|export type" src/db/access/*.ts | head -80
@@ -776,7 +778,7 @@ Architecture section end-to-end for contradictions with the pre-phase-5 text.
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
-cd /Users/phil/Projects/Webix.AI.Agent-Model-Eval
+cd <repo root>
 npm test                     # whole vitest suite, incl. scope/customer/mcp tests — green
 npx vitest run tests/integration
 npx tsc --noEmit             # zero errors

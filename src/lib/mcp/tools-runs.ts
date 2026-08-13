@@ -1,13 +1,13 @@
 /**
- * MCP tools for running the benchmark and reading the measurements back.
+ * MCP tools for running the evaluation and reading the measurements back.
  *
  * Creating a run goes through `createRunRecord`, the same function the new-run
  * form uses, so an MCP-created run is snapshotted identically and shows up in
  * the UI as an ordinary run.
  *
  * Execution is fire-and-forget: `execute_run` starts the sequential executor and
- * returns immediately, because a run of a dozen prompts against a local model
- * outlives any sane tool-call timeout. Progress is read back with `get_run`, and
+ * returns immediately, because a run of a dozen prompts outlives any sane
+ * tool-call timeout. Progress is read back with `get_run`, and
  * the invariants that make that safe already exist — every result row is
  * persisted as it finishes, and a crashed execution leaves the rest of the run
  * `pending` for a later resume.

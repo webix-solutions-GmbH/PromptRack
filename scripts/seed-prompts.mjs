@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Seeds ready-to-run benchmark toolsets and prompt groups.
+ * Seeds ready-to-run evaluation toolsets and prompt groups.
  *
  * Like `init-db.mjs` this depends on nothing but `pg`, so it can
  * run inside the standalone container image (`node scripts/seed-prompts.mjs`)

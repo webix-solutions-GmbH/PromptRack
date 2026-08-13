@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:17-alpine
-    container_name: agent-val-db
+    container_name: modelfit-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: agentval
@@ -17,11 +17,11 @@ services:
       timeout: 3s
       retries: 30
     networks:
-      - agentval
+      - modelfit
 
-  agent-val:
+  modelfit:
     build: .
-    container_name: agent-val
+    container_name: modelfit
     restart: unless-stopped
     depends_on:
       postgres:
@@ -47,13 +47,13 @@ services:
     ports:
       - "127.0.0.1:3100:3000"
     networks:
-      - agentval
+      - modelfit
 
     # If you front the app with a reverse proxy that runs in its own compose stack, join
-    # that stack's network here and reach the app as `agent-val:3000`:
+    # that stack's network here and reach the app as `modelfit:3000`:
     #
     # networks:
-    #   - agentval
+    #   - modelfit
     #   - proxy
     #
     # networks:
@@ -65,4 +65,4 @@ volumes:
   pgdata:
 
 networks:
-  agentval:
+  modelfit:

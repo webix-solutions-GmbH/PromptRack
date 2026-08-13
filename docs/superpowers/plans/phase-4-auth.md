@@ -1,7 +1,9 @@
 # Phase 4 — Auth (better-auth, OIDC, roles, API tokens)
 
+*Historical implementation plan, kept as a record of how the app was built. It describes the app under its former name and may not match the current code.*
+
 Implementation plan. Source spec: `docs/superpowers/specs/2026-08-12-platform-evolution-design.md` (Phase 4).
-Target repo: `/Users/phil/Projects/Webix.AI.Agent-Model-Eval`. Branch: `master`.
+Target repo: `<repo root>`. Branch: `master`.
 
 **Environment for every shell command:**
 

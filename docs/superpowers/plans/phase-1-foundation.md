@@ -1,5 +1,7 @@
 # Phase 1 — Foundation: migrations that work
 
+*Historical implementation plan, kept as a record of how the app was built. It describes the app under its former name and may not match the current code.*
+
 Spec: `docs/superpowers/specs/2026-08-12-platform-evolution-design.md` (Phase 1).
 Target: **SQLite only.** Postgres is Phase 2 and will rewrite `src/db/schema.ts`,
 `src/db/index.ts`, `scripts/init-db.mjs` and `scripts/seed-prompts.mjs` wholesale —
@@ -66,7 +68,7 @@ directory against this repo's `drizzle-kit@0.31.10` / `drizzle-orm@0.45.2`.
 ## Conventions for every task
 
 - Shell prefix for all commands: `export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"` (see R1).
-- Repo root: `/Users/phil/Projects/Webix.AI.Agent-Model-Eval`. All paths below are repo-relative.
+- Repo root: `<repo root>`. All paths below are repo-relative.
 - Work on branch `master` (project convention; remote is Azure DevOps). Do not commit unless asked.
 - A scratch dir for verification: use `$SCRATCH` = your session scratchpad. Never point verification
   commands at `data/app.db` unless the task says so.

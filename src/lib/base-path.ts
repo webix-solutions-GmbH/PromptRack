@@ -1,6 +1,6 @@
 /**
  * The app is served at the site root. It is a build-time constant: set it back
- * to a sub-path (e.g. `/agent-val`) here and rebuild if it ever needs to sit
+ * to a sub-path (e.g. `/modelfit`) here and rebuild if it ever needs to sit
  * behind a reverse proxy alongside other services on the same hostname without
  * an extra DNS record.
  *

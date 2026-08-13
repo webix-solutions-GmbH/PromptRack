@@ -1,5 +1,5 @@
 /**
- * MCP tools for authoring the benchmark: prompt groups, system prompts and
+ * MCP tools for authoring the evaluation: prompt groups, system prompts and
  * prompts (including tool tests).
  *
  * These are the write side of the app's own UI, reachable from an agent — the

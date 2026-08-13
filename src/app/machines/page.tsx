@@ -47,8 +47,8 @@ export default async function MachinesPage() {
               Machines
             </h1>
             <p className="max-w-prose text-sm text-zinc-600 dark:text-zinc-400">
-              OpenAI-compatible endpoints (Ollama, LM Studio, vLLM, ...) that host models to
-              benchmark.
+              OpenAI-compatible endpoints that serve the models you are evaluating — Ollama, LM
+              Studio or vLLM on your own hardware, or a hosted API.
             </p>
           </div>
         }

@@ -1,12 +1,14 @@
 # GitHub Prep — Implementation Plan
 
+*Historical implementation plan, kept as a record of how the app was built. It describes the app under its former name and may not match the current code.*
+
 Date: 2026-08-12
 Source spec: `docs/superpowers/specs/2026-08-12-platform-evolution-design.md` (row "GitHub")
 Runs: **after Phase 1** (migrations/`db:init`). Independent of Phases 2–5.
 Scope: make this repo publishable as an MIT open-source project. **Not in scope:** creating the
 GitHub remote, pushing, or any publish step — the user does that by hand afterwards.
 
-Repo root for every path below: `/Users/phil/Projects/Webix.AI.Agent-Model-Eval`
+Repo root for every path below: `<repo root>`
 (all paths in this plan are relative to it unless absolute).
 
 Every shell command in this plan must be prefixed with:
@@ -29,7 +31,7 @@ export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
    silent failure in this plan.
 3. **Git history is public once pushed.** History was audited: 19 commits, no `.env`, no `data/`,
    no `*.db`, no key material ever added (`git log --diff-filter=A --name-only`). But commits carry
-   two author identities, one tied to an internal company email domain, and the current remote is Azure DevOps.
+   two author identities, and the current remote is Azure DevOps.
    *Decision needed from the user:* publish history as-is (recommended — nothing sensitive) or start
    the public repo from a squashed initial commit. **Do not rewrite history without explicit
    approval.** Task 12 only reports.
@@ -52,7 +54,7 @@ export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
 8. **Seed data contains invented German company names** (`Müller Bürotechnik GmbH`,
    `Nordlicht Handels GmbH & Co. KG`, …) in `scripts/seed-prompts.mjs`. These are fictional example
    invoices, not customer data. Task 12 re-confirms by inspection; no change expected.
-9. Copyright holder for the licence is **Webix Solutions GmbH** (given). Year **2026**. Do not ask.
+9. Copyright holder for the licence is given (see LICENSE). Year **2026**. Do not ask.
 
 ---
 
@@ -65,7 +67,7 @@ export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
 Run:
 
 ```bash
-cd /Users/phil/Projects/Webix.AI.Agent-Model-Eval
+cd <repo root>
 node -e "const p=require('./package.json');console.log(Object.keys(p.scripts))"
 ls drizzle/ 2>/dev/null | head
 git check-ignore -v drizzle/ ; echo "check-ignore exit: $?"
@@ -91,7 +93,7 @@ Standard MIT text, first line exactly:
 ```
 MIT License
 
-Copyright (c) 2026 Webix Solutions GmbH
+Copyright (c) 2026 the copyright holder
 ```
 
 followed by the verbatim MIT body ("Permission is hereby granted, free of charge, …" through
@@ -258,7 +260,7 @@ constant is defined two lines above it).
 **Verify:**
 
 ```bash
-grep -rnI "the production host\|webix\.de" src next.config.ts ; echo "exit=$? (want 1 / no matches)"
+grep -rnI "the production host" src next.config.ts ; echo "exit=$? (want 1 / no matches)"
 npx tsc --noEmit && npx vitest run src/lib/mcp --silent
 ```
 Expected: no matches; typecheck clean; MCP tests pass.
@@ -400,7 +402,7 @@ skip.*
 **Verify:**
 
 ```bash
-grep -rnI "the production host\|webix\.de\|the internal host path\|the external LLM network" CLAUDE.md AGENTS.md ; echo "exit=$? (want 1)"
+grep -rnI "the production host\|the internal host path\|the external LLM network" CLAUDE.md AGENTS.md ; echo "exit=$? (want 1)"
 git check-ignore -v CLAUDE.local.md   # want: a match (it IS ignored)
 git status --short                    # CLAUDE.local.md must NOT appear
 ```
@@ -480,7 +482,7 @@ Structure, in order:
 **Verify:**
 
 ```bash
-grep -nI "the production host\|webix\.de\|the internal host path\|the external LLM network\|Caddy\|db:push" README.md ; echo "exit=$? (want 1)"
+grep -nI "the production host\|the internal host path\|the external LLM network\|Caddy\|db:push" README.md ; echo "exit=$? (want 1)"
 grep -c "db:init" README.md   # want: >=1
 ```
 Every command that appears in the README must be one that exists in `package.json` — cross-check:
@@ -535,7 +537,7 @@ Also add this plan and any sibling phase plans under `docs/superpowers/plans/` t
 currently untracked) **only if the user chose "keep docs public"** in risk item 4. Delete the empty
 `docs/notes.md` (0 bytes, untracked) or leave it untracked — do not commit an empty file.
 
-**Verify:** `grep -rnI "the production host\|webix\.de" docs/` → no matches.
+**Verify:** `grep -rnI "the production host" docs/` → no matches.
 
 ---
 
@@ -564,9 +566,9 @@ note it as a residual risk for the user to check.
 **Files:** none (read-only). Run and paste the output into the final report:
 
 ```bash
-cd /Users/phil/Projects/Webix.AI.Agent-Model-Eval
+cd <repo root>
 # 1. no internal identifiers anywhere in the working tree
-grep -rnIE "the production host|webix\.de|the internal host path|the external LLM network|dev\.azure\.com" . \
+grep -rnIE "the production host|the internal host path|the external LLM network|dev\.azure\.com" . \
   --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.git \
   --exclude=CLAUDE.local.md
 echo "sweep exit=$? (want 1 = clean)"
@@ -597,9 +599,9 @@ invented example vendors (`Müller Bürotechnik`, `NetParts`, `TechSupply`, `Nor
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
-SCRATCH=/private/tmp/claude-501/-Users-phil-Projects-Webix-AI-Agent-Model-Eval/0f139089-86db-4ace-a3a0-9b6b09f02244/scratchpad/clone-check
+SCRATCH=/tmp/clone-check
 rm -rf "$SCRATCH" && mkdir -p "$SCRATCH"
-git clone /Users/phil/Projects/Webix.AI.Agent-Model-Eval "$SCRATCH/app"
+git clone <repo root> "$SCRATCH/app"
 cd "$SCRATCH/app" && npm ci
 npm run db:init
 npm run db:seed
@@ -627,7 +629,7 @@ Run all of these from the repo root; every one must pass before reporting done:
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
-cd /Users/phil/Projects/Webix.AI.Agent-Model-Eval
+cd <repo root>
 
 npm test              # vitest run — expect the full suite green (~210 tests), 0 failures
 npx tsc --noEmit      # expect no output
@@ -637,9 +639,9 @@ npm run build         # expect a successful production build (catches route/RSC 
 
 Phase-specific checks (all must hold):
 
-1. `grep -rnIE "the production host|webix\.de|the internal host path|the external LLM network" . --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.git --exclude=CLAUDE.local.md` → **no matches**.
+1. `grep -rnIE "the production host|the internal host path|the external LLM network" . --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.git --exclude=CLAUDE.local.md` → **no matches**.
 2. `git check-ignore .env.example` → exit 1 (**not** ignored); `git check-ignore CLAUDE.local.md` → exit 0 (ignored).
-3. `head -3 LICENSE` → `MIT License` / blank / `Copyright (c) 2026 Webix Solutions GmbH`.
+3. `head -3 LICENSE` → `MIT License` / blank / `Copyright (c) 2026 the copyright holder`.
 4. `node -e "console.log(require('./package.json').license)"` → `MIT`.
 5. Every `npm run <script>` mentioned in `README.md` / `CONTRIBUTING.md` exists in `package.json`.
 6. `docker compose config` parses; `grep -c the external LLM network docker-compose.yml` → 0.

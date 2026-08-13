@@ -1,9 +1,11 @@
 # Phase 2 — Postgres
 
+*Historical implementation plan, kept as a record of how the app was built. It describes the app under its former name and may not match the current code.*
+
 Implementation plan. Source spec: `docs/superpowers/specs/2026-08-12-platform-evolution-design.md`
 (section "Phase 2 — Postgres"). Written for an implementor with no prior context.
 
-Repo: `/Users/phil/Projects/Webix.AI.Agent-Model-Eval`, branch `master`.
+Repo: `<repo root>`, branch `master`.
 **Node 22 is nvm-only.** Prepend to every shell command:
 
 ```bash
@@ -101,7 +103,7 @@ tested against, and it can only be produced by the code as it exists *right now*
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
-cd /Users/phil/Projects/Webix.AI.Agent-Model-Eval
+cd <repo root>
 FIX=/tmp/agent-val-phase2-fixture
 mkdir -p "$FIX"
 
@@ -1252,7 +1254,7 @@ Run all of this from a clean checkout state, in order. Every step must pass.
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
-cd /Users/phil/Projects/Webix.AI.Agent-Model-Eval
+cd <repo root>
 
 # 1. Static
 npx tsc --noEmit            # zero errors

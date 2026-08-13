@@ -97,7 +97,7 @@ export function LoginForm({
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
           {bootstrap
             ? 'This account becomes the administrator, and public registration closes afterwards. Every further account is created here by an admin or provisioned by your identity provider.'
-            : 'Agent Model Evaluator'}
+            : 'modelfit'}
         </p>
       </div>
 

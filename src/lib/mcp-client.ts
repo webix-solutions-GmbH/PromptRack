@@ -37,7 +37,7 @@ export class McpError extends Error {
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000;
-const CLIENT_INFO = { name: 'agent-model-evaluator', version: '0.1.0' };
+const CLIENT_INFO = { name: 'modelfit', version: '0.1.0' };
 
 /** Parses a toolset's stored `mcp_headers` column. */
 export function parseMcpHeaders(raw: string | null | undefined): Record<string, string> | null {

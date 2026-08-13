@@ -6,7 +6,13 @@ network or behind a reverse proxy you control.
 
 ## Reporting a vulnerability
 
-Please report vulnerabilities by opening an issue, or by email to
-security@<your-domain>.
+Please report vulnerabilities **privately**, through GitHub's *Report a
+vulnerability* button under this repository's Security tab, which opens a
+private advisory visible only to the maintainers. Do not open a public issue for
+a vulnerability — a public issue discloses it to everyone running the app before
+there is a fix.
+
+Use a normal issue for anything that is a hardening suggestion rather than an
+exploitable flaw.
 
 There is no bug bounty and no guaranteed response time.

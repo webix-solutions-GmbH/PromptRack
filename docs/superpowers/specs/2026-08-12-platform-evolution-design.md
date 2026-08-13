@@ -1,5 +1,7 @@
 # Platform Evolution: Multi-User, Customer-Scoped Benchmarking — Design
 
+*Historical design spec, kept as a record of how the app was built. It describes the app under its former name and may not match the current code.*
+
 Date: 2026-08-12
 Status: approved pending user review
 
