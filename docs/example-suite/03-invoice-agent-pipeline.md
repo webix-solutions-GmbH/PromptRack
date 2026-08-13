@@ -1,27 +1,27 @@
 # Invoice Agent (Pipeline)
 
-4 prompts.
+4 test cases.
 
-How to create these: [README](README.md). Create the group with `create_prompt_group`, then one `create_prompt` per block below, in this order.
+How to create these: [README](README.md). Create the group with `create_test_group`, then one `create_test_case` per block below, in this order.
 
-Group description (pass as `description` to `create_prompt_group`):
+Group description (pass as `description` to `create_test_group`):
 
 ```text
 Self-contained evals matching the real invoice-agent pipeline prompts (system prompts from FoundryAgentFactory.cs, user format from GptExecutors.cs): PO judge, reconcile approve/ask, reply interpreter.
 ```
 
-Four evals lifted from a real invoice-agent pipeline (system prompts from `FoundryAgentFactory.cs`, user-message format from `GptExecutors.cs`). Each prompt carries its own system prompt, and each expects a rigid one-line-or-two-line output format that a parser downstream depends on.
+Four evals lifted from a real invoice-agent pipeline (system prompts from `FoundryAgentFactory.cs`, user-message format from `GptExecutors.cs`). Each test case carries its own system text, and each expects a rigid one-line-or-two-line output format that a parser downstream depends on.
 
-Two of the four share one system prompt — the production reconcile prompt, also used by Injection 15 in group 4. Create it once with `create_system_prompt` ([the text is in the README](README.md#step-2b-the-shared-system-prompt)) and reference it by name.
+Two of the four share one prompt — the production reconcile prompt, also used by Injection 15 in group 4. Create it once with `create_prompt` ([the text is in the README](README.md#step-2b-the-shared-prompt)) and reference it by name.
 
 ---
 
 ## 1. Judge: ambiguous PO candidates
 
 - `tool_mode`: `none`
-- system prompt: per-prompt (`custom_system_text` + `system_prompt_mode: "override"`)
+- prompt: per-test-case (`custom_text` + `mode: "override"`)
 
-`custom_system_text`:
+`custom_text`:
 
 ```text
 You match a supplier invoice to one purchase order from a candidate list. Vendor names
@@ -57,7 +57,7 @@ tolerated at runtime — but a well-behaved model returns only the name).
 ## 2. Reconcile: folded discount → APPROVE
 
 - `tool_mode`: `none`
-- system prompt: `Reconcile invoice ↔ PO (pipeline)` (shared — `system_prompt: "Reconcile invoice ↔ PO (pipeline)"`, `system_prompt_mode: "append"`, no `custom_system_text`)
+- prompt: `Reconcile invoice ↔ PO (pipeline)` (shared — `prompt: "Reconcile invoice ↔ PO (pipeline)"`, `mode: "append"`, no `custom_text`)
 
 `content`:
 
@@ -90,7 +90,7 @@ exactly the -125.00 discount), or any output not starting with APPROVE.
 ## 3. Reconcile: quantity mismatch → ASK
 
 - `tool_mode`: `none`
-- system prompt: `Reconcile invoice ↔ PO (pipeline)` (shared — `system_prompt: "Reconcile invoice ↔ PO (pipeline)"`, `system_prompt_mode: "append"`, no `custom_system_text`)
+- prompt: `Reconcile invoice ↔ PO (pipeline)` (shared — `prompt: "Reconcile invoice ↔ PO (pipeline)"`, `mode: "append"`, no `custom_text`)
 
 `content`:
 
@@ -123,9 +123,9 @@ restating the same discrepancy as both a quantity and a total difference.
 ## 4. Reply interpreter: nachgebucht → RECHECK
 
 - `tool_mode`: `none`
-- system prompt: per-prompt (`custom_system_text` + `system_prompt_mode: "override"`)
+- prompt: per-test-case (`custom_text` + `mode: "override"`)
 
-`custom_system_text`:
+`custom_text`:
 
 ```text
 You read an orderer's free-text reply (usually German) to a clarification email about an

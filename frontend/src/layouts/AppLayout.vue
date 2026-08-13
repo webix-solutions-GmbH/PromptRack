@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // App shell: a top bar naming the product and a side nav grouped the way the
-// work happens (configure it, run it, read it). Later tasks add routes and
-// views for the sections below; until then, items with no route yet render
-// as inert labels rather than dead links.
+// work happens (configure it, run it, read it). Every item below has a route
+// as of Task 5.2 (Results was the last inert label); `NavItem.to` stays
+// optional so a future addition can still land ahead of its view.
 //
 // The shell itself is auth-gated: /login and /setup render with no nav at
 // all (there is nothing scoped to a workspace to show yet), everything else
@@ -29,7 +29,10 @@ const sections: NavSection[] = [
   },
   {
     label: 'Evaluate',
-    items: [{ label: 'Runs', to: '/runs' }, { label: 'Results' }],
+    items: [
+      { label: 'Runs', to: '/runs' },
+      { label: 'Results', to: '/results' },
+    ],
   },
   {
     label: 'Settings',

@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import HomeView from '../views/HomeView.vue'
+import DashboardView from '../views/DashboardView.vue'
 import LoginView from '../views/LoginView.vue'
 import SetupView from '../views/SetupView.vue'
 import MachinesView from '../views/MachinesView.vue'
@@ -14,6 +14,7 @@ import CustomersView from '../views/CustomersView.vue'
 import RunsView from '../views/RunsView.vue'
 import RunNewView from '../views/RunNewView.vue'
 import RunDetailView from '../views/RunDetailView.vue'
+import ResultsView from '../views/ResultsView.vue'
 import { useAuthStore } from '../stores/auth'
 
 declare module 'vue-router' {
@@ -31,7 +32,7 @@ const router = createRouter({
     {
       path: '/',
       name: 'home',
-      component: HomeView,
+      component: DashboardView,
     },
     {
       path: '/login',
@@ -114,6 +115,11 @@ const router = createRouter({
       name: 'run-detail',
       component: RunDetailView,
       props: true,
+    },
+    {
+      path: '/results',
+      name: 'results',
+      component: ResultsView,
     },
   ],
 })

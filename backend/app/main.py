@@ -1,16 +1,22 @@
 """FastAPI application entrypoint."""
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.api import router as api_router
 from app.auth.oidc import oidc_configured
 from app.config import get_settings
+from app.mcp import mcp_lifespan, mount_mcp
 
-app = FastAPI(title="PromptRack")
+# `mcp_lifespan` runs the streamable-HTTP session manager's task group for the
+# app's lifetime: the MCP endpoint is registered as a route rather than as a
+# sub-application, so nothing else would ever hand it the lifespan protocol.
+app = FastAPI(title="PromptRack", lifespan=mcp_lifespan)
 
 _settings = get_settings()
 if oidc_configured(_settings):
@@ -21,6 +27,41 @@ if oidc_configured(_settings):
     app.add_middleware(SessionMiddleware, secret_key=_settings.session_secret, same_site="lax")
 
 app.include_router(api_router, prefix="/api")
+
+# After the API router, so a concrete `/api/...` route always wins; `/api/mcp`
+# is not one of them, and this app authenticates itself (see
+# `app.mcp.server.McpAuthMiddleware`) rather than through the FastAPI guards.
+mount_mcp(app)
+
+# Task 6.3: the production image bakes the built SPA in here as `static/`
+# (`frontend/dist`, copied by the Dockerfile) so one process on one port
+# serves the API, the MCP endpoint and the frontend. In dev this directory
+# never exists — `uv run uvicorn` serves the API only, and `npm run dev`'s
+# vite dev server + proxy is what serves the SPA there — so the block below
+# registers nothing and dev behaviour is unchanged.
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+if _STATIC_DIR.is_dir():
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str) -> FileResponse:
+        """Serve a built asset if the path names one, else `index.html`.
+
+        vue-router runs in HTML5 history mode (`createWebHistory`), so a
+        direct load or refresh of a client route like `/prompts/5` has to
+        resolve server-side to the SPA shell, which then resolves the route
+        itself. A concrete `/api/...` route registered above matches before
+        this catch-all does, but a path *under* `/api` that matches no route
+        at all (a typo, a disabled mock) would otherwise fall through to here
+        too — excluded explicitly, so it still 404s as JSON via the handler
+        below rather than 200ing the SPA shell.
+        """
+        if full_path == "api" or full_path.startswith("api/"):
+            raise StarletteHTTPException(status_code=404, detail="Not Found")
+        candidate = (_STATIC_DIR / full_path).resolve()
+        if candidate.is_file() and _STATIC_DIR in candidate.parents:
+            return FileResponse(candidate)
+        return FileResponse(_STATIC_DIR / "index.html")
 
 
 # Every error the API returns carries a `message`, because that is the single

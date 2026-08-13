@@ -1,47 +1,58 @@
-# Contributing to modelfit
+# Contributing to PromptRack
 
-modelfit evaluates whether a given model is good enough for a specific
+PromptRack evaluates whether a given model is good enough for a specific
 customer's job — invoice agents, document and data extraction, MCP tool calls
-over a company's own RAG — and what hardware that job takes. It is not a
-benchmark suite, so changes are welcome that make a real workload easier to
-express and its result easier to judge.
+over a company's own RAG — and what hardware that job takes. It is also "git
+for your customers' prompts": the system prompts behind an agentic tool are
+versioned assets with immutable history, a deployed pointer, and a baseline
+run that proves a version worked. It is not a benchmark suite, so changes are
+welcome that make a real workload easier to express and its result easier to
+judge.
 
 ## Setup
 
 ```bash
-nvm use 22            # Node 22+
-npm install
-cp .env.example .env.local   # optional; npm run dev writes DATABASE_URL if it is missing
-# fill in BETTER_AUTH_SECRET at minimum: openssl rand -base64 32
-npm run dev            # brings up a dockerized dev postgres, migrates, serves the app
+# Backend (Python 3.12+, uv)
+docker compose -f docker-compose.dev.yml up -d   # postgres:17-alpine on :5433
+cd backend && uv run alembic upgrade head && uv run uvicorn app.main:app --reload
+
+# Frontend (Node 22+), in a second terminal
+cd frontend && npm install && npm run dev
 ```
 
-Open `http://localhost:3000/login` and create the first account — it
-becomes the administrator. `docs/example-suite/` is a worked evaluation suite
-an agent can build into a workspace over MCP if you want something to run.
+Or bring both dev servers up together, after the database is up:
+`scripts/dev.sh`.
+
+Open `http://localhost:5173` and create the first account — it becomes the
+administrator. `docs/example-suite/` is a worked evaluation suite an agent can
+build into a workspace over MCP if you want something to run.
 
 `CLAUDE.md` is the architecture document: it records the decisions and the
 reasoning behind them, and is worth reading before a non-trivial change.
-`AGENTS.md` is the standing warning that this Next.js version differs from what
-most tooling assumes.
+`AGENTS.md` is the standing warning that this stack differs from what most
+tooling assumes.
 
 ## Before opening a PR
 
 ```bash
-npm test                 # vitest — pure suite, no database
-npm run test:integration # spins up a throwaway postgres in docker
-npx tsc --noEmit
-npm run lint
+cd backend && uv run pytest && uv run ruff check .
+cd frontend && npm run build && npm run typecheck
 ```
 
-All four must pass.
+Integration tests (`backend/tests/integration/`, `scripts/test-integration.sh`)
+spin up a throwaway Postgres in Docker and are worth running for anything that
+touches a repository function, the run executor, or the MCP server.
+
+All of the above must pass.
 
 ## Schema changes
 
-Edit `src/db/schema.ts`, then run `npm run db:generate` (drizzle-kit) to write
-the migration under `drizzle/`. The generated SQL **must be committed** —
-`drizzle-kit generate` can prompt interactively when it suspects a rename, so
-run it in a real terminal when renaming a table or column.
+Edit the SQLAlchemy models under `backend/app/models/`, then run
+`cd backend && uv run alembic revision --autogenerate -m "..."` to write the
+migration under `backend/alembic/versions/`. Read the generated migration
+before committing it — autogenerate does not always get renames or
+constraint-only changes right — and the migration file itself **must be
+committed**.
 
 ## Notes for reviewers
 

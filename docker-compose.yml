@@ -1,0 +1,83 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: promptrack-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: promptrack
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: promptrack
+      # UTF8 is mandatory: prompt content can carry Unicode Tags (U+E0000+).
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U promptrack -d promptrack"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      - promptrack
+
+  # Service name stays `modelfit` (not `promptrack`) so an existing reverse
+  # proxy pointed at `modelfit:<port>` for the old deployment keeps working
+  # against this one — see root CLAUDE.local.md's rename notes. Everything
+  # else (Postgres role/database, volumes, network) uses the new name.
+  modelfit:
+    build: .
+    container_name: modelfit
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Point this at an external/managed database to bypass the bundled one.
+      # `$POSTGRES_PASSWORD` is deliberately unbraced: compose 2.12 cannot
+      # parse a nested `${...}` inside a default value and fails the whole
+      # file.
+      - DATABASE_URL=${DATABASE_URL:-postgres://promptrack:$POSTGRES_PASSWORD@postgres:5432/promptrack}
+      # Signs the short-lived cookie Authlib uses for OIDC's state/nonce
+      # across the redirect to the identity provider and back. Pin it in a
+      # multi-process deployment so a callback landing on a different worker
+      # than the redirect still verifies; a random per-start value is fine
+      # for a single instance.
+      - SESSION_SECRET=${SESSION_SECRET:-}
+      # Optional generic OIDC provider; an empty OIDC_ISSUER disables SSO
+      # entirely — no routes mounted, no button shown.
+      - OIDC_ISSUER=${OIDC_ISSUER:-}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-}
+      - OIDC_SCOPES=${OIDC_SCOPES:-}
+      - OIDC_DEFAULT_ROLE=${OIDC_DEFAULT_ROLE:-}
+      # Off by default even here: ENABLE_MOCKS has to be deliberately opted
+      # into, so a production image never accidentally exposes a fake
+      # OpenAI/MCP endpoint. ENVIRONMENT=production is already baked into
+      # the image (Dockerfile), which is what makes the mock routes 404 in
+      # the first place.
+      - ENABLE_MOCKS=${ENABLE_MOCKS:-false}
+    # Published on localhost only. Change to "0.0.0.0:8000:8000" to expose it
+    # on the LAN, or front it with a reverse proxy on the `promptrack`
+    # network below.
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks:
+      - promptrack
+
+    # If you front the app with a reverse proxy that runs in its own compose
+    # stack, join that stack's network here and reach the app as
+    # `modelfit:8000`:
+    #
+    # networks:
+    #   - promptrack
+    #   - proxy
+    #
+    # networks:
+    #   proxy:
+    #     external: true
+    #     name: <the network your proxy stack created>
+
+volumes:
+  pgdata:
+
+networks:
+  promptrack:

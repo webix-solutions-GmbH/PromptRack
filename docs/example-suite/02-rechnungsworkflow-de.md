@@ -1,10 +1,10 @@
 # Rechnungsworkflow (DE)
 
-8 prompts.
+8 test cases.
 
-How to create these: [README](README.md). Create the group with `create_prompt_group`, then one `create_prompt` per block below, in this order.
+How to create these: [README](README.md). Create the group with `create_test_group`, then one `create_test_case` per block below, in this order.
 
-Group description (pass as `description` to `create_prompt_group`):
+Group description (pass as `description` to `create_test_group`):
 
 ```text
 Deutsche Prompts für einen Kreditoren-Workflow: Extraktion, ERP-Abgleich, Prüfung, Freigabe.
@@ -12,14 +12,14 @@ Deutsche Prompts für einen Kreditoren-Workflow: Extraktion, ERP-Abgleich, Prüf
 
 A German accounts-payable workflow: extraction, ERP reconciliation, arithmetic checking, coding, discount terms, supplier correspondence, release decision, duplicate detection.
 
-All eight are plain one-shot tests: `tool_mode: none`, no system prompt, no toolsets. **Keep the German text exactly as written** — the point of the group is German-language behaviour, and two prompts (`Kontierungsvorschlag`, `Freigabeentscheidung`) grade on German output strings.
+All eight are plain one-shot tests: `tool_mode: none`, no prompt, no toolsets. **Keep the German text exactly as written** — the point of the group is German-language behaviour, and two test cases (`Kontierungsvorschlag`, `Freigabeentscheidung`) grade on German output strings.
 
 ---
 
 ## 1. Rechnungsdaten extrahieren
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -66,7 +66,7 @@ Prüfen: gültiges JSON ohne Codeblöcke, exakte Schlüssel, Datum ISO, Zahlen m
 ## 2. Abgleich Rechnung ↔ Bestellung (ERP)
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -112,7 +112,7 @@ Patchpanel 24-Port: OK.
 ## 3. Rechnerische Prüfung
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -141,7 +141,7 @@ Fehler 2: Der Bruttobetrag ist folglich falsch — korrekt wären 840,14 EUR sta
 ## 4. Kontierungsvorschlag
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -173,7 +173,7 @@ Prüfen: Markdown-Tabelle, jede Position genau eine Kategorie, keine Zusatztexte
 ## 5. Skonto und Zahlungsziel
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -204,7 +204,7 @@ Gib die Daten im Format TT.MM.JJJJ und die Beträge in EUR an, mit kurzem Rechen
 ## 6. Klärungs-E-Mail an Lieferant
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -226,7 +226,7 @@ _none — this prompt is rated by reading the answer._
 ## 7. Freigabeentscheidung (JSON)
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -257,7 +257,7 @@ Prüfen: entscheidung muss "freigeben" sein (Betrag unter 5.000 EUR, Bestellbezu
 ## 8. Duplikatprüfung
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 

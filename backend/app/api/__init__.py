@@ -6,6 +6,7 @@ from app.api.customers import router as customers_router
 from app.api.machines import router as machines_router
 from app.api.mocks import router as mocks_router
 from app.api.prompts import router as prompts_router
+from app.api.results import router as results_matrix_router
 from app.api.runs import results_router
 from app.api.runs import router as runs_router
 from app.api.test_cases import router as test_cases_router
@@ -33,6 +34,10 @@ router.include_router(toolsets_router)
 router.include_router(test_groups_router)
 router.include_router(test_cases_router)
 router.include_router(runs_router)
+# Strictly before `results_router`: routes match in registration order, and
+# `/results/{result_id}` would otherwise swallow `/results/matrix` and answer a
+# 422 for "matrix is not an integer".
+router.include_router(results_matrix_router)
 router.include_router(results_router)
 # Always mounted (unlike the OIDC router below): `app.api.mocks` gates every
 # route itself with `mocks_enabled()`, returning a 404 rather than the route

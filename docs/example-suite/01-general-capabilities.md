@@ -1,25 +1,25 @@
 # General Capabilities
 
-11 prompts.
+11 test cases.
 
-How to create these: [README](README.md). Create the group with `create_prompt_group`, then one `create_prompt` per block below, in this order.
+How to create these: [README](README.md). Create the group with `create_test_group`, then one `create_test_case` per block below, in this order.
 
-Group description (pass as `description` to `create_prompt_group`):
+Group description (pass as `description` to `create_test_group`):
 
 ```text
 Broad capability tests: reasoning, extraction, formatting, code. Language: English.
 ```
 
-Reasoning, extraction, formatting, code, and three tool-calling tests. English. The three tool prompts need **Demo Utilities (mock)** to exist first.
+Reasoning, extraction, formatting, code, and three tool-calling tests. English. The three tool test cases need **Demo Utilities (mock)** to exist first.
 
-Eight prompts are plain one-shot tests (`tool_mode: none`, no system prompt) — for those, `create_prompt` needs only `group`, `title`, `content`, `expected_output`.
+Eight test cases are plain one-shot tests (`tool_mode: none`, no prompt) — for those, `create_test_case` needs only `group`, `title`, `content`, `expected_output`.
 
 ---
 
 ## 1. Three-bullet summary
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -45,7 +45,7 @@ Check: exactly 3 bullets, no intro/outro text, each bullet has at most 15 words.
 ## 2. JSON extraction
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -78,7 +78,7 @@ Check: valid JSON, no code fences, exact key names, numbers as numbers (not stri
 ## 3. Multi-step logic
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -105,7 +105,7 @@ Ben sits in seat 1, Anna in seat 2, Clara in seat 3, David in seat 4.
 ## 4. Arithmetic word problem
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -125,7 +125,7 @@ $991.44
 ## 5. Strict instruction following
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -145,7 +145,7 @@ Example of a valid answer: "the capital city is paris"
 ## 6. Code generation
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -178,7 +178,7 @@ Behavioral contract to check:
 ## 7. Bug finding
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -206,7 +206,7 @@ Corrected line: for i in range(len(values) - window + 1):
 ## 8. Long-form generation
 
 - `tool_mode`: `none`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -224,7 +224,7 @@ _none — this prompt is rated by reading the answer._
 
 - `tool_mode`: `definitions`
 - `toolsets`: `Demo Utilities (mock)`
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -249,7 +249,7 @@ Note: this prompt runs in "definitions" mode — nothing is executed, so judge t
 - `tool_mode`: `execute`
 - `toolsets`: `Demo Utilities (mock)`
 - `max_turns`: 6
-- system prompt: none
+- prompt: none
 
 `content`:
 
@@ -276,7 +276,7 @@ Fail: picking the 1049.00 or 979.00 item, only calling one of the two tools, inv
 
 - `tool_mode`: `definitions`
 - `toolsets`: `Demo Utilities (mock)`
-- system prompt: none
+- prompt: none
 
 `content`:
 

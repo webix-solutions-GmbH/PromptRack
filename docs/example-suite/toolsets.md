@@ -1,8 +1,8 @@
 # Toolsets (create these in the UI)
 
-modelfit does not accept toolsets or tools over MCP — a toolset row holds an MCP URL and headers, which are credentials, and the app's line is content over the API, credentials in the UI. So these three go in by hand, **before** an agent creates the prompts; the prompts reference them by name.
+PromptRack does not accept toolsets or tools over MCP — a toolset row holds an MCP URL and headers, which are credentials, and the app's line is content over the API, credentials in the UI. So these three go in by hand, **before** an agent creates the test cases; the test cases reference them by name.
 
-Where: **Setup → Toolsets → New toolset**, kind *Manual — tools defined here, answering with canned responses*, then **Add tool** once per tool. Requires an admin account (creating a toolset is admin; adding tools to it is member).
+Where: **Toolsets → New toolset**, kind **Manual**, then **Add tool** once per tool. Requires an admin account (creating a toolset is admin; adding tools to it is member).
 
 Field mapping:
 
@@ -10,16 +10,16 @@ Field mapping:
 | --- | --- |
 | the `##` heading | toolset **Name** |
 | toolset Description | toolset **Description** |
-| the `###` heading | **Function name** |
-| tool Description | **Description** |
+| the `###` heading | tool **Name** |
+| tool Description | tool **Description** |
 | Parameters | **Parameters (JSON Schema)** |
-| Mock response | **Canned response** |
+| Mock response | **Mock response** |
 
 Every tool below is `enabled`. A manual tool answers with its `mock_response` **verbatim**, which is what makes a multi-turn tool test byte-identical across every model you compare.
 
 **Why the canned responses look the way they do:** each one is written to stay correct *whatever arguments the model passes*. `convert_currency` returns a rate, never a converted amount, so the model still has to do the arithmetic and the tool result can never contradict the call. The two injection toolsets invert that rule on purpose — there the canned response *is* the attack, so it must not stay neutral.
 
-The mock responses are shown exactly as the seeder stores them: JSON, two-space indent, with `\n` escapes inside string values. Paste them as-is; the escapes are part of the JSON, not formatting.
+The mock responses below are formatted as stored: JSON, two-space indent, with `\n` escapes inside string values. Paste them as-is; the escapes are part of the JSON, not formatting.
 
 
 ## Demo Utilities (mock)
