@@ -29,11 +29,11 @@ export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
    silent failure in this plan.
 3. **Git history is public once pushed.** History was audited: 19 commits, no `.env`, no `data/`,
    no `*.db`, no key material ever added (`git log --diff-filter=A --name-only`). But commits carry
-   two author identities, one of which is `baum@webix.de`, and the current remote is Azure DevOps.
+   two author identities, one tied to an internal company email domain, and the current remote is Azure DevOps.
    *Decision needed from the user:* publish history as-is (recommended — nothing sensitive) or start
    the public repo from a squashed initial commit. **Do not rewrite history without explicit
    approval.** Task 12 only reports.
-4. **`docs/superpowers/` becomes public.** It contains the roadmap spec, which names `ki01` twice.
+4. **`docs/superpowers/` becomes public.** It contains the roadmap spec, which names the production host twice.
    Recommendation: keep the directory (an honest roadmap is an asset for an OSS repo) and scrub the
    two hostname mentions (Task 10). Alternative if the user prefers: add `docs/superpowers/` to
    `.gitignore` and `git rm -r --cached` it. Ask before choosing; default to scrub-and-keep.
@@ -258,7 +258,7 @@ constant is defined two lines above it).
 **Verify:**
 
 ```bash
-grep -rnI "ki01\|webix\.de" src next.config.ts ; echo "exit=$? (want 1 / no matches)"
+grep -rnI "the production host\|webix\.de" src next.config.ts ; echo "exit=$? (want 1 / no matches)"
 npx tsc --noEmit && npx vitest run src/lib/mcp --silent
 ```
 Expected: no matches; typecheck clean; MCP tests pass.
@@ -301,7 +301,7 @@ services:
     #     name: <the network your proxy stack created>
 ```
 
-Notes for the implementor: the external `llm_default` network is removed entirely, not renamed — an
+Notes for the implementor: the external LLM network join is removed entirely, not renamed — an
 external network that does not exist makes `docker compose up` fail outright, which is a terrible
 first experience for a cloned repo. The commented block preserves the recipe.
 The default uid changes from `1001` to `1000` (the common first-user id on Debian/Ubuntu); the
@@ -312,7 +312,7 @@ out explicitly in the final report**, it is a live-deployment-affecting change.
 
 ```bash
 docker compose config >/dev/null && echo "compose file valid"
-grep -c "llm_default" docker-compose.yml   # want: 0
+grep -c "the external LLM network" docker-compose.yml   # want: 0
 ```
 Expected: compose parses (if the `docker` CLI is unavailable, fall back to
 `node -e "require('node:fs').readFileSync('docker-compose.yml','utf8')"` plus a YAML lint of your
@@ -327,7 +327,7 @@ choice, and say so in the report).
 `CLAUDE.md` stays accurate but carries nothing internal. Three edits:
 
 **7a.** Line ~66 (MCP-is-HTTP-only bullet): replace
-"…so real integrations run as their own containers on `llm_default`…" with
+"…so real integrations run as their own containers on `the external LLM network`…" with
 "…so real integrations run as their own containers on whatever network the proxy stack uses…".
 
 **7b.** Line ~109 (MCP auth bullet): replace
@@ -335,7 +335,7 @@ choice, and say so in the report).
 "a reverse proxy in front of the app may also demand HTTP basic auth".
 
 **7c.** The whole `## Deployment` section (currently two paragraphs, one naming
-`/home/baum/llm/caddy/Caddyfile` and `https://ki01.webix.de/agent-val`) becomes:
+`the internal Caddy config path` and `https://prod.example.internal/agent-val`) becomes:
 
 ```markdown
 ## Deployment
@@ -368,10 +368,10 @@ internal detail verbatim, so nothing is lost for the user's own machine:
 ```markdown
 # Local deployment notes (not published)
 
-Production: Caddy (config `/home/baum/llm/caddy/Caddyfile`, separate stack) serves
-`https://ki01.webix.de/agent-val` via a `handle /agent-val*` block with basic auth; everything
+Production: Caddy (config `the internal Caddy config path`, separate stack) serves
+`https://prod.example.internal/agent-val` via a `handle /agent-val*` block with basic auth; everything
 else on that host goes to vLLM. `docker-compose.yml` must join the external network
-`llm_default` in that deployment, and `APP_UID=1001` / `APP_GID=1001` belong in the server's
+`the external LLM network` in that deployment, and `APP_UID=1001` / `APP_GID=1001` belong in the server's
 `.env` (the compose default is 1000:1000).
 
 Caddy gotcha: the Caddyfile is bind-mounted as a single file into the caddy container —
@@ -400,7 +400,7 @@ skip.*
 **Verify:**
 
 ```bash
-grep -rnI "ki01\|webix\.de\|/home/baum\|llm_default" CLAUDE.md AGENTS.md ; echo "exit=$? (want 1)"
+grep -rnI "the production host\|webix\.de\|the internal host path\|the external LLM network" CLAUDE.md AGENTS.md ; echo "exit=$? (want 1)"
 git check-ignore -v CLAUDE.local.md   # want: a match (it IS ignored)
 git status --short                    # CLAUDE.local.md must NOT appear
 ```
@@ -465,7 +465,7 @@ Structure, in order:
 8. **How it works** — keep the existing Machines / Models / Prompts / Runs / Results prose verbatim
    (it is already generic); update the ratings mention from "👍/👎" to good / meh / bad, which is
    what `src/lib/rating.ts` actually implements.
-9. **MCP API** — keep the existing section and tool table, with these edits: drop the `ki01.webix.de`
+9. **MCP API** — keep the existing section and tool table, with these edits: drop the `prod.example.internal`
    example (use `https://your-host.example/agent-val/api/mcp`); drop the "Caddi basic auth" bullet
    or generalize it to "a reverse proxy's basic auth"; keep the `x-api-key`-before-`Authorization`
    rationale; keep the `openssl rand -hex 24` snippet and point at `.env.example`.
@@ -480,7 +480,7 @@ Structure, in order:
 **Verify:**
 
 ```bash
-grep -nI "ki01\|webix\.de\|/home/baum\|llm_default\|Caddy\|db:push" README.md ; echo "exit=$? (want 1)"
+grep -nI "the production host\|webix\.de\|the internal host path\|the external LLM network\|Caddy\|db:push" README.md ; echo "exit=$? (want 1)"
 grep -c "db:init" README.md   # want: >=1
 ```
 Every command that appears in the README must be one that exists in `package.json` — cross-check:
@@ -527,15 +527,15 @@ support commitment.
 **Edit:** `docs/superpowers/specs/2026-08-12-platform-evolution-design.md` (two lines only; leave
 everything else byte-identical — this is a historical record).
 
-- Line ~18: "ki01 production history (runs, ratings, prompts) survives" → "the existing production
+- Line ~18: "the production host's production history (runs, ratings, prompts) survives" → "the existing production
   history (runs, ratings, prompts) survives".
-- Line ~25: "Scrub internal hostnames (`ki01.webix.de`)" → "Scrub internal hostnames".
+- Line ~25: "Scrub internal hostnames (`prod.example.internal`)" → "Scrub internal hostnames".
 
 Also add this plan and any sibling phase plans under `docs/superpowers/plans/` to git (they are
 currently untracked) **only if the user chose "keep docs public"** in risk item 4. Delete the empty
 `docs/notes.md` (0 bytes, untracked) or leave it untracked — do not commit an empty file.
 
-**Verify:** `grep -rnI "ki01\|webix\.de" docs/` → no matches.
+**Verify:** `grep -rnI "the production host\|webix\.de" docs/` → no matches.
 
 ---
 
@@ -566,7 +566,7 @@ note it as a residual risk for the user to check.
 ```bash
 cd /Users/phil/Projects/Webix.AI.Agent-Model-Eval
 # 1. no internal identifiers anywhere in the working tree
-grep -rnIE "ki01|webix\.de|/home/baum|llm_default|dev\.azure\.com" . \
+grep -rnIE "the production host|webix\.de|the internal host path|the external LLM network|dev\.azure\.com" . \
   --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.git \
   --exclude=CLAUDE.local.md
 echo "sweep exit=$? (want 1 = clean)"
@@ -582,7 +582,7 @@ echo "history exit=$? (want 1 = nothing)"
 git log --format='%an <%ae>' | sort -u
 ```
 
-Expected: sweeps 1–3 find nothing; sweep 4 prints two identities, one of which is a `@webix.de`
+Expected: sweeps 1–3 find nothing; sweep 4 prints two identities, one of which is a `@the internal company domain`
 address — **report it and let the user decide** (risk item 3). Do not rewrite history.
 
 Also eyeball `scripts/seed-prompts.mjs` around lines 520–1050: confirm the company names are the
@@ -637,12 +637,12 @@ npm run build         # expect a successful production build (catches route/RSC 
 
 Phase-specific checks (all must hold):
 
-1. `grep -rnIE "ki01|webix\.de|/home/baum|llm_default" . --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.git --exclude=CLAUDE.local.md` → **no matches**.
+1. `grep -rnIE "the production host|webix\.de|the internal host path|the external LLM network" . --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.git --exclude=CLAUDE.local.md` → **no matches**.
 2. `git check-ignore .env.example` → exit 1 (**not** ignored); `git check-ignore CLAUDE.local.md` → exit 0 (ignored).
 3. `head -3 LICENSE` → `MIT License` / blank / `Copyright (c) 2026 Webix Solutions GmbH`.
 4. `node -e "console.log(require('./package.json').license)"` → `MIT`.
 5. Every `npm run <script>` mentioned in `README.md` / `CONTRIBUTING.md` exists in `package.json`.
-6. `docker compose config` parses; `grep -c llm_default docker-compose.yml` → 0.
+6. `docker compose config` parses; `grep -c the external LLM network docker-compose.yml` → 0.
 7. Task 13's fresh-clone rehearsal returned HTTP 200 on `/agent-val` and `/agent-val/prompts`.
 8. `git status --short` shows only intended changes; no `data/`, no `.env`, no `CLAUDE.local.md`.
 

@@ -33,7 +33,7 @@ versions of those files are specified here in full anyway.
 
 **Phase 1's SQLite migration SQL is discarded by this phase.** Task 4 deletes
 `drizzle/` and regenerates a single Postgres baseline. That is correct and
-intended: the only existing database (ki01 production) is migrated by a
+intended: the only existing database (production) is migrated by a
 one-time data-copy script (Task 12), not by replaying SQL. No migration
 continuity between the SQLite and Postgres journals is needed or possible.
 
@@ -70,19 +70,19 @@ continuity between the SQLite and Postgres journals is needed or possible.
 3. **Pool starvation from the advisory lock.** Task 10 holds one pooled
    connection for the whole duration of a run (minutes to hours). `max` must
    exceed `concurrent runs + normal request concurrency`. Plan sets `max: 10`
-   and documents it. Open question for the reviewer: is 10 right for ki01?
+   and documents it. Open question for the reviewer: is 10 right for production?
 4. **`init-db.mjs` and `seed-prompts.mjs` run inside the standalone image**,
    which only contains files Next's tracer saw. `drizzle-orm/node-postgres/migrator`
    is never imported by app code and will **not** be traced automatically.
    Task 11 adds `outputFileTracingIncludes` globs; Task 11's verification is
    an actual container run, and the fallback is to widen the globs.
-5. **`ki01` production cutover is a user-run operation.** Per CLAUDE.md,
+5. **The production cutover is a user-run operation.** Per CLAUDE.md,
    production container actions must be run by the user. The implementor writes
    and locally tests Task 12's script against a fixture; the real cutover is a
    handover step, not a task here.
 6. **`data/app.db` in this working copy is empty (4096 bytes).** Task 0 creates
    a populated fixture so Task 12 can actually be tested. The real production
-   database must be pulled from ki01 by the user for the rehearsal in Task 12's
+   database must be pulled from production by the user for the rehearsal in Task 12's
    optional verification.
 7. **Timestamp ripple.** Task 7 lists every site. If `npx tsc --noEmit` after
    Task 7 shows errors in files not on that list, stop and report rather than
@@ -966,14 +966,14 @@ services:
       - "127.0.0.1:3100:3000"
     networks:
       - agentval
-      - llm_default
+      - the-external-llm-network
 
 volumes:
   pgdata:
 
 networks:
   agentval:
-  llm_default:
+  the-external-llm-network:
     external: true
 ```
 
@@ -1095,7 +1095,7 @@ docker exec agent-val-dev-db psql -U agentval -d agentval -c \
 Then browse `http://localhost:3000/agent-val/runs` and `/agent-val/results` and
 confirm the imported runs render with correct dates, ratings and metrics.
 
-**Handover note for the user (not an implementor task):** the ki01 cutover is
+**Handover note for the user (not an implementor task):** the production cutover is
 `docker compose down` → copy `data/app.db` off the host → bring up the new
 compose stack → run `scripts/migrate-sqlite-to-pg.mjs` against it → verify →
 keep `app.db` as the rollback.

@@ -15,14 +15,14 @@ to size the hardware to sell with it. Published on GitHub as open source (MIT).
 | Topic | Decision |
 |---|---|
 | Database | Postgres. Compose bundles a postgres service; `DATABASE_URL` overrides for external/managed DBs. SQLite is dropped, not dual-supported. |
-| Existing data | One-time SQLite→Postgres migration script; ki01 production history (runs, ratings, prompts) survives. |
+| Existing data | One-time SQLite→Postgres migration script; the existing production history (runs, ratings, prompts) survives. |
 | Migrations | `drizzle/` committed to git; real incremental diffs; no `IF NOT EXISTS` rewriting; switch to drizzle's own migrator (`migrate()` from a startup script), which owns its `__drizzle_migrations` ledger — `__app_migrations` retired, `__app_seeds` added to `schema.ts` so `push`-style tooling can never offer to drop it. |
 | Auth | better-auth. Local email/password **plus** generic OIDC (issuer/client via env — works with Entra ID, Keycloak, Authentik, …). Auto-provision on first OIDC login. First account created becomes admin. |
 | Roles | `admin` / `member` / `viewer`. Admin: user management + infrastructure credentials (machines, toolset URLs/headers). Member: all content work — prompts, runs, ratings, customers. Viewer: read-only. |
 | API auth | Per-user API tokens replace the global `MCP_API_KEY`; MCP writes become attributable and individually revocable. |
 | Customer model | A customer is a **workspace label**, not a hard tenant. Customers never log in. Team members switch between customer workspaces. |
 | Scoping | **Everything** is customer-scoped, including machines — each engagement registers its own endpoints with its own API keys (confirmed: per-customer boxes get per-customer LLM API keys). No shared pool for now; can be added later if duplication hurts. |
-| GitHub | Public repo, MIT license. Scrub internal hostnames (`ki01.webix.de`), host paths (`/home/baum/…`), add `.env.example` + working quickstart. |
+| GitHub | Public repo, MIT license. Scrub internal hostnames and host paths, add `.env.example` + working quickstart. |
 
 ## Phases
 

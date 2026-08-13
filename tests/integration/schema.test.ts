@@ -22,7 +22,7 @@ async function seedEverything() {
 
   const [machine] = await db
     .insert(machines)
-    .values({ customerId, name: 'ki01', baseUrl: 'http://x/v1', createdAt: NOW, updatedAt: NOW })
+    .values({ customerId, name: 'test-box', baseUrl: 'http://x/v1', createdAt: NOW, updatedAt: NOW })
     .returning({ id: machines.id });
 
   const [model] = await db
@@ -85,7 +85,7 @@ async function seedEverything() {
     .values({
       customerId,
       machineId: machine.id,
-      machineSnapshot: '{"name":"ki01"}',
+      machineSnapshot: '{"name":"test-box"}',
       modelId: 'qwen3-32b',
       groupNames: '["General"]',
       status: 'completed',

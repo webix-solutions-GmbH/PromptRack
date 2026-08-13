@@ -5,7 +5,21 @@ OpenAI-compatible endpoints, keep a library of prompts, run those prompts
 against a model, rate the answers, and compare runs side by side.
 
 Stack: Next.js 16 (App Router) · TypeScript · Tailwind v4 · Drizzle ORM +
-Postgres (`pg`).
+Postgres (`pg`). MIT licensed.
+
+## Security
+
+- **The first account created at `/agent-val/login` becomes the administrator**,
+  and sign-up closes from then on — every further account is created by an
+  admin or provisioned by SSO. See [Accounts and roles](#accounts-and-roles).
+- Three roles: **admin** / **member** / **viewer**.
+- The MCP API is gated by **per-user API tokens** (`x-api-key`), never a shared
+  secret — see [MCP API](#mcp-api).
+- **Endpoint API keys and MCP toolset headers are stored in the database in
+  plaintext.** Treat the database — and any backup of it — as sensitive.
+- `ENABLE_MOCKS` must stay unset in production; it exposes the mock LLM/MCP
+  endpoints (`/api/mock-llm`, `/api/mock-mcp`), which accept and echo whatever
+  is sent to them.
 
 ## Development
 
@@ -42,9 +56,9 @@ BETTER_AUTH_SECRET=$(openssl rand -base64 32)
 BETTER_AUTH_URL=http://localhost:3000/agent-val   # origin *including* the basePath
 ```
 
-The app lives under its basePath: `http://localhost:3000/agent-val`. Open it and
-**the first account you create becomes the administrator** — see [Accounts and
-roles](#accounts-and-roles).
+The app lives under its basePath: open
+`http://localhost:3000/agent-val/login` and **the first account you create
+becomes the administrator** — see [Accounts and roles](#accounts-and-roles).
 
 `npm run dev` runs `scripts/dev-db.mjs` first, which brings up the
 `docker-compose.dev.yml` postgres on `127.0.0.1:5433`, waits for it and applies
@@ -77,25 +91,25 @@ app), which waits for the database to report healthy before it starts.
   bundled database with an external one.
 - `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` go in the same `.env`.
   `BETTER_AUTH_URL` is the **public** origin including the basePath
-  (`https://ki01.webix.de/agent-val`); every auth URL, the OIDC `redirect_uri`
-  included, is built from it.
+  (e.g. `https://your-host.example/agent-val`); every auth URL, the OIDC
+  `redirect_uri` included, is built from it.
 - State lives in the named volume `pgdata` — there is no bind mount and no uid
   matching to get right. Back it up with
   `docker compose exec -T postgres pg_dump -U agentval agentval > backup.sql`.
-- The compose service is `agent-val`, listening on port 3000 in the container.
-- It joins the **external** network `llm_default` (created by the LLM stack);
-  Caddy serves the app at `https://ki01.webix.de/agent-val` (path-based routing
-  via a `handle /agent-val*` block → `agent-val:3000`). Caddy's HTTP basic auth
-  is now **optional** — the app authenticates users itself. If you keep it, an
-  MCP client has to send both credentials at once: basic auth in `Authorization`
-  and its API token in `x-api-key` (which is why that header is read first).
+- The compose service is `agent-val`, listening on port 3000 in the container,
+  published on `127.0.0.1:3100` by default (`http://localhost:3100/agent-val`
+  from the host). `docker-compose.yml` joins no external network out of the
+  box; a commented block shows how to attach it to a reverse-proxy stack's
+  network so the proxy can reach it as `agent-val:3000`. If the proxy adds its
+  own HTTP basic auth in front of the app, an MCP client has to send both
+  credentials at once: basic auth in `Authorization` and its API token in
+  `x-api-key` (which is why that header is read first).
 - The app is built with `basePath: '/agent-val'` (see `src/lib/base-path.ts`),
   so it expects that prefix everywhere — including in dev
   (`http://localhost:3000/agent-val`). Raw `fetch()` calls to our own API routes
   must go through `apiPath()` from `src/lib/base-path.ts`; `next/link` and the
-  router add the prefix automatically.
-- `127.0.0.1:3100:3000` is published for LAN/debug access from the host only
-  (`http://localhost:3100/agent-val`).
+  router add the prefix automatically. Path-prefix routing on a reverse proxy
+  must forward `/agent-val*` to `agent-val:3000`.
 
 ### Schema bootstrap on start
 
@@ -230,8 +244,9 @@ the web UI by hand.
 - A token **acts as the user who created it and carries their role**, so a
   viewer's token is refused every tool that writes — with the refusal as
   `isError` tool content, which is what the calling model reads.
-- `x-api-key` is checked before `Authorization` on purpose: if Caddy still wants
-  HTTP basic auth for `/agent-val*`, both credentials have to fit in one request.
+- `x-api-key` is checked before `Authorization` on purpose: if a reverse proxy
+  in front of the app still wants HTTP basic auth, both credentials have to
+  fit in one request.
 - **Every call names a customer workspace** — pass `customer` (name or id) as a
   tool argument, or send an `X-Customer` header on the connection so it applies
   to all of them. An explicit argument wins over the header. `list_customers` is
@@ -240,13 +255,14 @@ the web UI by hand.
   names no workspace is refused, with the list of workspaces in the message,
   because a write with no defined destination is worse than an error.
 
-Register it with Claude Code — production (behind Caddy basic auth) and dev:
+Register it with Claude Code — production and dev:
 
 ```bash
-claude mcp add --transport http agent-val https://ki01.webix.de/agent-val/api/mcp \
+claude mcp add --transport http agent-val https://your-host.example/agent-val/api/mcp \
   --header "x-api-key: amv_…" \
-  --header "x-customer: Acme GmbH" \
-  --header "Authorization: Basic $(printf 'user:password' | base64)"
+  --header "x-customer: Acme GmbH"
+  # add --header "Authorization: Basic $(printf 'user:password' | base64)" too
+  # if a reverse proxy in front of the app demands its own basic auth
 
 claude mcp add --transport http agent-val-dev http://localhost:3000/agent-val/api/mcp \
   --header "x-api-key: amv_…" \

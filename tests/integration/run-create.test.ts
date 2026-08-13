@@ -43,7 +43,7 @@ async function seedFixture() {
 
   const [machine] = await db
     .insert(machines)
-    .values({ customerId, name: 'ki01', baseUrl: 'http://127.0.0.1:9/v1', createdAt: NOW, updatedAt: NOW })
+    .values({ customerId, name: 'test-box', baseUrl: 'http://127.0.0.1:9/v1', createdAt: NOW, updatedAt: NOW })
     .returning({ id: machines.id });
 
   const [systemPrompt] = await db

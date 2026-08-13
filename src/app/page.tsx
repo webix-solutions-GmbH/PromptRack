@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { currentScope } from '@/db/scope';
+import { onPage, requireActor } from '@/lib/auth/guards';
 import { listMachines } from '@/db/repo/machines';
 import { countPrompts } from '@/db/repo/prompts';
 import {
@@ -26,6 +27,7 @@ function StatCard({ label, value }: { label: string; value: string }) {
 }
 
 export default async function Home() {
+  await onPage(requireActor);
   // Archiving a run takes it out of the picture here too — the dashboard is a
   // view of work in play, not an all-time total.
   const scope = await currentScope();

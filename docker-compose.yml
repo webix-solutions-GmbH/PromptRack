@@ -43,18 +43,26 @@ services:
       - OIDC_SCOPES=${OIDC_SCOPES:-}
       - OIDC_BUTTON_LABEL=${OIDC_BUTTON_LABEL:-}
       - OIDC_DEFAULT_ROLE=${OIDC_DEFAULT_ROLE:-}
-    # Caddy reaches the app over the shared llm_default network as agent-val:3000.
-    # The published port is only for LAN/debug access from the host.
+    # Published on localhost only. Change to "0.0.0.0:3100:3000" to expose it on the LAN.
     ports:
       - "127.0.0.1:3100:3000"
     networks:
       - agentval
-      - llm_default
+
+    # If you front the app with a reverse proxy that runs in its own compose stack, join
+    # that stack's network here and reach the app as `agent-val:3000`:
+    #
+    # networks:
+    #   - agentval
+    #   - proxy
+    #
+    # networks:
+    #   proxy:
+    #     external: true
+    #     name: <the network your proxy stack created>
 
 volumes:
   pgdata:
 
 networks:
   agentval:
-  llm_default:
-    external: true

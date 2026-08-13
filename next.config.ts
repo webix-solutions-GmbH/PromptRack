@@ -2,7 +2,8 @@ import type { NextConfig } from "next";
 import { BASE_PATH } from "./src/lib/base-path";
 
 const nextConfig: NextConfig = {
-  // Served at https://ki01.webix.de/agent-val (path-based routing in Caddy).
+  // The app is served under a sub-path so it can share a hostname with other
+  // services behind a reverse proxy. Change it in src/lib/base-path.ts (build-time).
   basePath: BASE_PATH,
   experimental: {
     // Lets a page answer a refused role with `forbidden()` / `unauthorized()`

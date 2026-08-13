@@ -1,6 +1,7 @@
 /**
- * The app is served under a sub-path of ki01.webix.de (path-based routing in
- * Caddy instead of a subdomain, so no extra DNS record is needed).
+ * The app is served under a sub-path (`/agent-val`) rather than at the root, so it can
+ * sit behind a reverse proxy alongside other services on the same hostname without an
+ * extra DNS record. It is a build-time constant: change it here and rebuild.
  *
  * next/link and the router prefix this automatically; raw fetch() calls to our
  * own API routes do NOT, so they must go through apiPath().

@@ -18,13 +18,13 @@ describe('optionalString', () => {
   });
 
   it('trims what it returns', () => {
-    expect(optionalString(fd({ name: '  ki01  ' }), 'name')).toBe('ki01');
+    expect(optionalString(fd({ name: '  box-1  ' }), 'name')).toBe('box-1');
   });
 });
 
 describe('requiredString', () => {
   it('trims what it returns', () => {
-    expect(requiredString(fd({ name: '  ki01  ' }), 'name')).toBe('ki01');
+    expect(requiredString(fd({ name: '  box-1  ' }), 'name')).toBe('box-1');
   });
 
   it('names the key it was missing', () => {

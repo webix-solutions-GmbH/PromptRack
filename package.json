@@ -2,6 +2,9 @@
   "name": "agent-model-evaluator",
   "version": "0.1.0",
   "private": true,
+  "description": "Multi-user, workspace-aware benchmarking tool for self-hosted LLMs: prompt library, tool/MCP tests, timed runs against OpenAI-compatible endpoints, manual ratings, comparison matrix.",
+  "license": "MIT",
+  "keywords": ["llm", "benchmark", "evaluation", "mcp", "ollama", "vllm", "openai-compatible"],
   "scripts": {
     "dev": "node scripts/dev-db.mjs && next dev",
     "build": "next build",

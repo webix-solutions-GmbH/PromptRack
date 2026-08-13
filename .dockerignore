@@ -9,3 +9,7 @@ npm-debug.log*
 .env*
 .DS_Store
 README.md
+LICENSE
+CONTRIBUTING.md
+SECURITY.md
+docs

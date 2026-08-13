@@ -61,7 +61,7 @@ plays*, and substitute the real one:
    additive change later.
 4. **Deleting a customer is `ON DELETE RESTRICT`, deliberately.** A cascade would silently
    destroy run history. Archiving (`customers.archived_at`) is the soft path.
-5. **Production data (ki01).** Everything existing lands in one workspace named `Default`.
+5. **Existing production data.** Everything existing lands in one workspace named `Default`.
    Verify row counts before/after (Task 5 verification). Take a `pg_dump` first.
 6. **The MCP surface gains a required workspace selection** — an existing external caller's
    scripts break until they pass a customer. That is intended (an unscoped write has no

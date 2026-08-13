@@ -31,7 +31,7 @@ migration test harnesses or tooling beyond what the verification steps below nee
   Prepending the nvm path is harmless (it just falls through), so keep doing it for consistency
   with project docs, but do not assume Node 22 locally. The Docker image is `node:22-alpine`
   and is unaffected. Do not "fix" `CLAUDE.md`'s environment section in this phase — ask the user.
-- **R2 — The production database at ki01 must be adopted, not re-created.** It has all app
+- **R2 — The existing production database must be adopted, not re-created.** It has all app
   tables plus `__app_migrations`, and no `__drizzle_migrations`. Running a bare `migrate()`
   against it throws `table machines already exists` and the container would crash-loop on start.
   Task 4 therefore contains a one-shot **baseline/adoption** block. It is verified below
