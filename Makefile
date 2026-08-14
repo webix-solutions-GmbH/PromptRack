@@ -4,11 +4,11 @@
 help: ## List the available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-run: ## Dev environment: postgres, migrations, backend and frontend together
-	@scripts/dev.sh
+run: db migrate ## Dev environment: postgres, migrations, backend and frontend together
+	@cd frontend && npm run --silent dev:all
 
-db: ## Start the dev postgres on 127.0.0.1:5433
-	@docker compose -f docker-compose.dev.yml up -d
+db: ## Start the dev postgres on 127.0.0.1:5433 and wait for it
+	@docker compose -f docker-compose.dev.yml up -d --wait
 
 migrate: ## Apply migrations to the dev database
 	@cd backend && uv run alembic upgrade head

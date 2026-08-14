@@ -15,8 +15,9 @@ cd backend && uv run alembic upgrade head                 # apply migrations
 cd backend && uv run uvicorn app.main:app --reload         # http://localhost:8000
 cd frontend && npm install && npm run dev                  # http://localhost:5173, proxies /api
 
-scripts/dev.sh                       # both dev servers together, db + migrations first
-make run                             # the same thing; `make` lists every target
+make run                             # db (waits for healthy) + migrations + both dev
+                                     # servers via concurrently; ctrl-c stops both.
+                                     # `make` alone lists every target
 
 cd backend && uv run pytest                                 # pure suite, no database
 cd backend && uv run pytest tests/test_llm.py                # single test file

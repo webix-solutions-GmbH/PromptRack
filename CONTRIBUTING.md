@@ -20,8 +20,8 @@ cd backend && uv run alembic upgrade head && uv run uvicorn app.main:app --reloa
 cd frontend && npm install && npm run dev
 ```
 
-Or bring both dev servers up together, after the database is up:
-`scripts/dev.sh`.
+Or `make run`, which starts the database, applies migrations and runs both dev
+servers under `concurrently` so one ctrl-c stops the pair.
 
 Open `http://localhost:5173` and create the first account — it becomes the
 administrator. `docs/example-suite/` is a worked evaluation suite an agent can
