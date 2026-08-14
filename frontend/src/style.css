@@ -79,3 +79,12 @@ pre {
 .w-full {
   width: 100%;
 }
+
+/* Global rather than scoped: PrimeVue teleports the Dialog root to <body>,
+ * so it never carries the view's `data-v-*` scope attribute — a scoped
+ * `.form-dialog` rule compiles to a selector that can never match it. One
+ * shared width for every creation dialog across the app. */
+.form-dialog {
+  width: 42rem;
+  max-width: 90vw;
+}

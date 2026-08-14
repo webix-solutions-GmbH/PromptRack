@@ -316,11 +316,6 @@ async function removeCustomer(customer: Customer) {
   justify-content: flex-end;
 }
 
-.form-dialog {
-  width: 28rem;
-  max-width: 90vw;
-}
-
 .dialog-form {
   display: flex;
   flex-direction: column;

@@ -806,11 +806,6 @@ async function removeTestCase() {
   padding-top: 1rem;
 }
 
-.form-dialog {
-  width: 34rem;
-  max-width: 90vw;
-}
-
 .dialog-form {
   display: flex;
   flex-direction: column;

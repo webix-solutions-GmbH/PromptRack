@@ -233,11 +233,6 @@ async function submitForm() {
   color: var(--p-text-muted-color);
 }
 
-.form-dialog {
-  width: 32rem;
-  max-width: 90vw;
-}
-
 .dialog-form {
   display: flex;
   flex-direction: column;

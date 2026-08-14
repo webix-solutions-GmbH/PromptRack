@@ -48,8 +48,11 @@ and recreate a column instead), so a rename needs the generated file hand-edited
 terminal for the equivalent case in the old stack.
 
 Git: branch is `rewrite`, built on top of `master` (the retired Next.js/TypeScript
-implementation, kept for reference — see "This is a rewrite" below). `origin` is GitHub
-(`philphilphil/modelfit`).
+implementation, kept for reference — see "This is a rewrite" below). Two remotes:
+`origin` is GitHub (`philphilphil/promptrack`, renamed from `modelfit` — the remote URL
+still carries the old name and resolves through GitHub's redirect) and `azure` is Azure
+DevOps (`webixsolutionsgmbh/Development/Webix.AI.Agent-Model-Eval`, the work remote, whose
+project name predates the PromptRack rename). Both currently hold only `master`.
 
 ## What this is
 
@@ -124,6 +127,12 @@ versioning design itself.
   `app/main.py`'s exception handlers write (`{"message": ...}` on every error, so a
   guard's 403 and a validation 422 read the same to the client). `vite.config.ts` proxies
   `/api` to `http://localhost:8077` in dev.
+- **Creation is a dialog or a page, and which one is deliberate.** A `Dialog` (the shared
+  `.form-dialog` + `.dialog-form` markup) is right where the useful minimum is two or
+  three fields and the full editor is a page reached afterwards — a prompt, a toolset, a
+  machine, a test group. A full page is right where there is no meaningful minimal form:
+  a test case needs a group, a title, content, both prompt slots, a tool mode, toolsets
+  and a rubric, so a dialog would be a speed bump in front of the same page.
 - **Auth is session-cookie-based**, checked by FastAPI dependencies
   (`app/auth/guards.py`): `CurrentUser`, `Writer` (`require_writer`), `Admin`
   (`require_admin`). There is no client-side route "protection" beyond a

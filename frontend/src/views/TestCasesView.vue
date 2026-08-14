@@ -1,20 +1,33 @@
 <script setup lang="ts">
 // Test cases list — the regression suite (the old app's `/prompts`, renamed
 // per the pivot: a test case is now input + rubric + tool config, and
-// references a *prompt* asset rather than duplicating it). Two panels, same
-// split as the old `GroupSidebar` + `PromptsPanel`
-// (`git show master:src/components/prompts/{group-sidebar,prompts-panel}.tsx`):
-// groups on the left (create/rename/delete, member-writable — a group is
-// content, not credentials), test cases of the selected group on the right.
-// The selected group lives in the URL (`?group=<id>`) so a link to one
-// group's suite is shareable, same as the old `/prompts?group=`.
-import { computed, onMounted, ref, watch } from 'vue'
+// references a *prompt* asset rather than duplicating it).
+//
+// Group-first, single column: one collapsible `Panel` per test group, all of
+// them on the page at once, each holding its own table of cases. The suite's
+// structure *is* groups-containing-cases, and the old two-pane split (a
+// sidebar of group names, a flat table of whichever one was selected — the
+// old `GroupSidebar` + `PromptsPanel`) showed one group at a time and read as
+// a filter rather than as the shape of the suite. `Panel` over `Accordion`
+// because each header carries its own edit/delete/new-case controls and every
+// group collapses independently; neither component is used anywhere else in
+// the app, so there was no existing idiom to follow.
+//
+// `?group=<id>` now solos one group (that group alone, expanded) rather than
+// filtering a table — still the whole state of the view, so a link to one
+// group's suite stays shareable exactly as `/prompts?group=` was. Every group
+// starts **expanded**: with 5 groups the page is one scroll, and a
+// collapsed-by-default page would open on nothing but five bars, hiding the
+// content the page exists to show behind a click each.
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
+import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
+import Panel from 'primevue/panel'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useConfirm } from 'primevue/useconfirm'
@@ -34,20 +47,21 @@ const testCases = ref<TestCase[]>([])
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 
-const selectedGroupId = computed<number | null>(() => {
+/** The group `?group=<id>` solos, if any. */
+const soloGroupId = computed<number | null>(() => {
   const raw = route.query.group
   const id = Number(Array.isArray(raw) ? raw[0] : raw)
   return Number.isFinite(id) && id > 0 ? id : null
 })
 
+// Every case is fetched once and bucketed client-side: the page renders all
+// groups anyway, and soloing one is then a filter over data already in hand
+// rather than a round trip.
 async function load() {
   loading.value = true
   loadError.value = null
   try {
-    const [groupRows, caseRows] = await Promise.all([
-      testGroupsApi.list(),
-      testCasesApi.list(selectedGroupId.value ?? undefined),
-    ])
+    const [groupRows, caseRows] = await Promise.all([testGroupsApi.list(), testCasesApi.list()])
     groups.value = groupRows
     testCases.value = caseRows
   } catch (err) {
@@ -58,10 +72,38 @@ async function load() {
 }
 
 onMounted(load)
-watch(selectedGroupId, load)
 
-function selectGroup(groupId: number | null) {
+const casesByGroup = computed(() => {
+  const byGroup = new Map<number, TestCase[]>()
+  for (const testCase of testCases.value) {
+    const bucket = byGroup.get(testCase.group_id)
+    if (bucket) bucket.push(testCase)
+    else byGroup.set(testCase.group_id, [testCase])
+  }
+  return byGroup
+})
+
+function casesFor(groupId: number): TestCase[] {
+  return casesByGroup.value.get(groupId) ?? []
+}
+
+const visibleGroups = computed(() =>
+  soloGroupId.value === null
+    ? groups.value
+    : groups.value.filter((group) => group.id === soloGroupId.value),
+)
+
+const collapsedGroupIds = ref(new Set<number>())
+
+function soloGroup(groupId: number | null) {
+  // A soloed group is shown expanded whatever it was collapsed to before.
+  if (groupId !== null) collapsedGroupIds.value.delete(groupId)
   router.push({ query: { ...route.query, group: groupId ?? undefined } })
+}
+
+function setCollapsed(groupId: number, collapsed: boolean) {
+  if (collapsed) collapsedGroupIds.value.add(groupId)
+  else collapsedGroupIds.value.delete(groupId)
 }
 
 /** Both slots in one column, prefixed by which channel each one is sent on —
@@ -73,46 +115,74 @@ function promptRefFor(caseRow: TestCase): string {
   return refs.length > 0 ? refs.join(' · ') : '—'
 }
 
-// --- group create / rename / delete --------------------------------------
+function newCaseIn(groupId: number) {
+  router.push({ path: '/test-cases/new', query: { group: groupId } })
+}
 
-const editingGroupId = ref<number | null>(null)
-// `sort_order` is not editable here, but the rename route replaces the whole
-// group — leaving it out of the body would reset it to 0.
-const groupForm = ref({ name: '', description: '', sort_order: 0 })
-const groupFormError = ref<string | null>(null)
-const savingGroup = ref(false)
+// --- group create / edit dialog -------------------------------------------
 
-function startEditGroup(group: TestGroup) {
-  editingGroupId.value = group.id
-  groupForm.value = {
+interface GroupFormState {
+  name: string
+  description: string
+  // Not editable here, but the update route replaces the whole group —
+  // leaving it out of the body would reset it to 0.
+  sort_order: number
+}
+
+const dialogOpen = ref(false)
+const editingGroup = ref<TestGroup | null>(null)
+const form = ref<GroupFormState>({ name: '', description: '', sort_order: 0 })
+const formError = ref<string | null>(null)
+const saving = ref(false)
+
+function openCreateGroup() {
+  editingGroup.value = null
+  form.value = { name: '', description: '', sort_order: 0 }
+  formError.value = null
+  dialogOpen.value = true
+}
+
+function openEditGroup(group: TestGroup) {
+  editingGroup.value = group
+  form.value = {
     name: group.name,
     description: group.description ?? '',
     sort_order: group.sort_order,
   }
-  groupFormError.value = null
+  formError.value = null
+  dialogOpen.value = true
 }
 
-function cancelEditGroup() {
-  editingGroupId.value = null
-}
-
-async function saveGroup(groupId: number) {
-  groupFormError.value = null
-  savingGroup.value = true
+async function submitForm() {
+  formError.value = null
+  saving.value = true
   try {
-    await testGroupsApi.update(groupId, {
-      name: groupForm.value.name,
-      description: groupForm.value.description || null,
-      sort_order: groupForm.value.sort_order,
-    })
-    editingGroupId.value = null
+    if (editingGroup.value) {
+      await testGroupsApi.update(editingGroup.value.id, {
+        name: form.value.name,
+        description: form.value.description || null,
+        sort_order: form.value.sort_order,
+      })
+      toast.add({ severity: 'success', summary: 'Group saved', life: 3000 })
+    } else {
+      // Not soloed after creating: every group is on the page already, so
+      // jumping into the new (empty) one would only hide the rest.
+      await testGroupsApi.create({
+        name: form.value.name,
+        description: form.value.description || null,
+      })
+      toast.add({ severity: 'success', summary: 'Group created', life: 3000 })
+    }
+    dialogOpen.value = false
     await load()
   } catch (err) {
-    groupFormError.value = err instanceof ApiError ? err.message : 'Failed to save the group.'
+    formError.value = err instanceof ApiError ? err.message : 'Failed to save the group.'
   } finally {
-    savingGroup.value = false
+    saving.value = false
   }
 }
+
+// --- group delete ---------------------------------------------------------
 
 function confirmDeleteGroup(group: TestGroup) {
   confirm.require({
@@ -127,11 +197,9 @@ function confirmDeleteGroup(group: TestGroup) {
 async function removeGroup(group: TestGroup) {
   try {
     await testGroupsApi.remove(group.id)
-    if (selectedGroupId.value === group.id) {
-      selectGroup(null)
-    } else {
-      await load()
-    }
+    // Soloing a group that no longer exists would leave the page empty.
+    if (soloGroupId.value === group.id) soloGroup(null)
+    await load()
   } catch (err) {
     toast.add({
       severity: 'error',
@@ -139,31 +207,6 @@ async function removeGroup(group: TestGroup) {
       detail: err instanceof ApiError ? err.message : undefined,
       life: 5000,
     })
-  }
-}
-
-const newGroupName = ref('')
-const newGroupDescription = ref('')
-const creatingGroup = ref(false)
-const createGroupError = ref<string | null>(null)
-
-async function createGroup() {
-  if (!newGroupName.value.trim()) return
-  createGroupError.value = null
-  creatingGroup.value = true
-  try {
-    const group = await testGroupsApi.create({
-      name: newGroupName.value.trim(),
-      description: newGroupDescription.value || null,
-    })
-    newGroupName.value = ''
-    newGroupDescription.value = ''
-    await load()
-    selectGroup(group.id)
-  } catch (err) {
-    createGroupError.value = err instanceof ApiError ? err.message : 'Failed to create the group.'
-  } finally {
-    creatingGroup.value = false
   }
 }
 
@@ -201,137 +244,161 @@ async function removeCase(testCase: TestCase) {
 
 <template>
   <div class="page">
-    <div class="page-heading">
-      <h1>Test Cases</h1>
-      <p class="subtitle">
-        The regression suite: one input plus its rubric plus the tool config to run it with, each
-        referencing a prompt asset rather than duplicating it.
-      </p>
+    <div class="page-header">
+      <div class="page-heading">
+        <h1>Test Cases</h1>
+        <p class="subtitle">
+          The regression suite: one input plus its rubric plus the tool config to run it with, each
+          referencing a prompt asset rather than duplicating it.
+        </p>
+      </div>
+      <div v-if="auth.canWrite" class="header-actions">
+        <Button label="New group" icon="pi pi-plus" outlined @click="openCreateGroup" />
+        <!-- Kept alongside each panel's own prefilled button: with no groups
+             yet, this is the only way into the editor (which picks the group
+             itself). -->
+        <Button
+          label="New test case"
+          icon="pi pi-plus"
+          @click="router.push({ path: '/test-cases/new' })"
+        />
+      </div>
     </div>
 
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
-    <div class="layout">
-      <aside class="sidebar">
-        <h2>Groups</h2>
-        <ul class="group-list">
-          <li v-if="groups.length === 0" class="empty">No groups yet.</li>
-          <li
-            v-for="group in groups"
-            :key="group.id"
-            :class="['group-item', { active: group.id === selectedGroupId }]"
+    <div v-if="soloGroupId !== null" class="solo-row">
+      <button type="button" class="clear-filter" @click="soloGroup(null)">Show all groups</button>
+    </div>
+
+    <p v-if="loading" class="empty">Loading…</p>
+    <p v-else-if="visibleGroups.length === 0" class="empty">
+      {{
+        soloGroupId === null
+          ? 'No groups yet — add one with "New group".'
+          : 'That group no longer exists.'
+      }}
+    </p>
+
+    <Panel
+      v-for="group in visibleGroups"
+      :key="group.id"
+      class="group-panel"
+      toggleable
+      :collapsed="collapsedGroupIds.has(group.id)"
+      @update:collapsed="setCollapsed(group.id, $event)"
+    >
+      <template #header>
+        <div class="group-title">
+          <button
+            v-if="soloGroupId === null"
+            type="button"
+            class="group-name"
+            title="Show only this group"
+            @click="soloGroup(group.id)"
           >
-            <template v-if="editingGroupId === group.id">
-              <form class="group-edit-form" @submit.prevent="saveGroup(group.id)">
-                <InputText v-model="groupForm.name" required placeholder="Group name" size="small" />
-                <Textarea
-                  v-model="groupForm.description"
-                  rows="2"
-                  auto-resize
-                  placeholder="description (optional)"
-                />
-                <Message v-if="groupFormError" severity="error" :closable="false">{{
-                  groupFormError
-                }}</Message>
-                <div class="group-edit-actions">
-                  <Button type="submit" label="Save" size="small" :loading="savingGroup" />
-                  <Button
-                    type="button"
-                    label="Cancel"
-                    size="small"
-                    text
-                    @click="cancelEditGroup"
-                  />
-                </div>
-              </form>
-            </template>
-            <template v-else>
-              <button type="button" class="group-link" @click="selectGroup(group.id)">
-                {{ group.name }} <span class="count">({{ group.test_case_count }})</span>
-              </button>
-              <div v-if="auth.canWrite" class="group-actions">
-                <button type="button" class="link-action" @click="startEditGroup(group)">
-                  edit
-                </button>
-                <button
-                  type="button"
-                  class="link-action danger"
-                  @click="confirmDeleteGroup(group)"
-                >
-                  delete
-                </button>
-              </div>
-            </template>
-          </li>
-        </ul>
-
-        <button
-          v-if="selectedGroupId !== null"
-          type="button"
-          class="clear-filter"
-          @click="selectGroup(null)"
-        >
-          Show all groups
-        </button>
-
-        <form v-if="auth.canWrite" class="new-group-form" @submit.prevent="createGroup">
-          <label for="new-group-name">New group</label>
-          <InputText id="new-group-name" v-model="newGroupName" required placeholder="Group name" />
-          <Textarea v-model="newGroupDescription" rows="2" auto-resize placeholder="description (optional)" />
-          <Message v-if="createGroupError" severity="error" :closable="false">{{
-            createGroupError
-          }}</Message>
-          <Button type="submit" label="Create group" :loading="creatingGroup" size="small" />
-        </form>
-      </aside>
-
-      <section class="main">
-        <div class="page-header">
-          <h2>
-            {{ selectedGroupId === null ? 'All test cases' : (groups.find((g) => g.id === selectedGroupId)?.name ?? 'Test cases') }}
-          </h2>
+            {{ group.name }}
+          </button>
+          <span v-else class="group-name static">{{ group.name }}</span>
+          <span class="count">
+            {{ group.test_case_count }} test case{{ group.test_case_count === 1 ? '' : 's' }}
+          </span>
+        </div>
+      </template>
+      <template #icons>
+        <template v-if="auth.canWrite">
           <Button
-            v-if="auth.canWrite"
             label="New test case"
             icon="pi pi-plus"
-            @click="router.push({ path: '/test-cases/new', query: selectedGroupId ? { group: selectedGroupId } : {} })"
+            text
+            size="small"
+            @click="newCaseIn(group.id)"
+          />
+          <Button label="Edit" text size="small" @click="openEditGroup(group)" />
+          <Button
+            label="Delete"
+            text
+            size="small"
+            severity="danger"
+            @click="confirmDeleteGroup(group)"
+          />
+        </template>
+      </template>
+
+      <p v-if="group.description" class="group-description">{{ group.description }}</p>
+
+      <DataTable :value="casesFor(group.id)" data-key="id" class="table">
+        <template #empty>No test cases in this group yet.</template>
+        <Column field="title" header="Title">
+          <template #body="{ data }: { data: TestCase }">
+            <RouterLink :to="`/test-cases/${data.id}`" class="name-link">{{ data.title }}</RouterLink>
+          </template>
+        </Column>
+        <Column header="Prompt">
+          <template #body="{ data }: { data: TestCase }">{{ promptRefFor(data) }}</template>
+        </Column>
+        <Column header="Tools">
+          <template #body="{ data }: { data: TestCase }">
+            <Tag
+              :value="data.tool_mode"
+              :severity="data.tool_mode === 'none' ? 'secondary' : 'info'"
+            />
+          </template>
+        </Column>
+        <Column header="" class="actions-column">
+          <template #body="{ data }: { data: TestCase }">
+            <Button
+              v-if="auth.canWrite"
+              label="Delete"
+              text
+              size="small"
+              severity="danger"
+              :loading="deletingCaseId === data.id"
+              @click="confirmDeleteCase(data)"
+            />
+          </template>
+        </Column>
+      </DataTable>
+    </Panel>
+
+    <Dialog
+      v-model:visible="dialogOpen"
+      modal
+      :header="editingGroup ? 'Edit group' : 'New group'"
+      class="form-dialog"
+    >
+      <form class="dialog-form" @submit.prevent="submitForm">
+        <div class="field">
+          <label for="group-name">Name *</label>
+          <InputText
+            id="group-name"
+            v-model="form.name"
+            required
+            placeholder="Invoice extraction"
+            autofocus
           />
         </div>
-
-        <DataTable :value="testCases" :loading="loading" data-key="id" class="table">
-          <template #empty>No test cases yet — add one with "New test case".</template>
-          <Column field="title" header="Title">
-            <template #body="{ data }: { data: TestCase }">
-              <RouterLink :to="`/test-cases/${data.id}`" class="name-link">{{ data.title }}</RouterLink>
-            </template>
-          </Column>
-          <Column header="Prompt">
-            <template #body="{ data }: { data: TestCase }">{{ promptRefFor(data) }}</template>
-          </Column>
-          <Column header="Tools">
-            <template #body="{ data }: { data: TestCase }">
-              <Tag
-                :value="data.tool_mode"
-                :severity="data.tool_mode === 'none' ? 'secondary' : 'info'"
-              />
-            </template>
-          </Column>
-          <Column header="" class="actions-column">
-            <template #body="{ data }: { data: TestCase }">
-              <Button
-                v-if="auth.canWrite"
-                label="Delete"
-                text
-                size="small"
-                severity="danger"
-                :loading="deletingCaseId === data.id"
-                @click="confirmDeleteCase(data)"
-              />
-            </template>
-          </Column>
-        </DataTable>
-      </section>
-    </div>
+        <div class="field">
+          <label for="group-description">Description</label>
+          <Textarea
+            id="group-description"
+            v-model="form.description"
+            rows="3"
+            auto-resize
+            placeholder="What this group of test cases covers"
+          />
+        </div>
+        <Message v-if="formError" severity="error" :closable="false">{{ formError }}</Message>
+        <div class="dialog-actions">
+          <Button type="button" label="Cancel" text @click="dialogOpen = false" />
+          <Button
+            type="submit"
+            :label="editingGroup ? 'Save group' : 'Create group'"
+            :loading="saving"
+          />
+        </div>
+      </form>
+    </Dialog>
   </div>
 </template>
 
@@ -339,7 +406,15 @@ async function removeCase(testCase: TestCase) {
 .page {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1rem;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
 }
 
 .page-heading h1 {
@@ -355,61 +430,46 @@ async function removeCase(testCase: TestCase) {
   margin: 0;
 }
 
-.layout {
-  display: grid;
-  grid-template-columns: 16rem 1fr;
-  gap: 2rem;
-  align-items: start;
-}
-
-.sidebar {
+.header-actions {
   display: flex;
-  flex-direction: column;
-  gap: 1rem;
+  gap: 0.5rem;
+  flex-shrink: 0;
 }
 
-.sidebar h2 {
-  font-size: 1.0625rem;
-  font-weight: 600;
-  margin: 0;
+.solo-row {
+  display: flex;
 }
 
-.group-list {
-  list-style: none;
-  margin: 0;
+.clear-filter {
+  background: none;
+  border: none;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+  font-size: 0.8125rem;
+  color: var(--p-text-muted-color);
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .empty {
   font-size: 0.875rem;
   color: var(--p-text-muted-color);
+  margin: 0;
 }
 
-.group-item {
+.group-title {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  border-radius: var(--p-content-border-radius);
-  padding: 0.375rem 0.625rem;
-}
-
-.group-item.active {
-  background: var(--p-highlight-background);
-  color: var(--p-highlight-color);
-}
-
-.group-link {
-  flex: 1;
+  align-items: baseline;
+  gap: 0.625rem;
   min-width: 0;
-  text-align: left;
+}
+
+.group-name {
   background: none;
   border: none;
   padding: 0;
   font: inherit;
+  font-size: 1.0625rem;
+  font-weight: 600;
   color: inherit;
   cursor: pointer;
   overflow: hidden;
@@ -417,92 +477,26 @@ async function removeCase(testCase: TestCase) {
   white-space: nowrap;
 }
 
+.group-name.static {
+  cursor: default;
+}
+
+.group-name:not(.static):hover {
+  text-decoration: underline;
+}
+
 .count {
-  opacity: 0.7;
-}
-
-.group-actions {
-  display: flex;
-  gap: 0.5rem;
-  font-size: 0.75rem;
-  flex-shrink: 0;
-}
-
-.link-action {
-  background: none;
-  border: none;
-  padding: 0;
-  font: inherit;
-  color: inherit;
-  text-decoration: underline;
-  cursor: pointer;
-  opacity: 0.8;
-}
-
-.link-action:hover {
-  opacity: 1;
-}
-
-.link-action.danger {
-  color: var(--p-red-500);
-}
-
-.group-edit-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  width: 100%;
-  padding: 0.25rem 0;
-}
-
-.group-edit-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.clear-filter {
-  align-self: flex-start;
-  background: none;
-  border: none;
-  padding: 0;
   font-size: 0.8125rem;
+  font-weight: 400;
   color: var(--p-text-muted-color);
-  text-decoration: underline;
-  cursor: pointer;
+  white-space: nowrap;
 }
 
-.new-group-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  border-top: 1px solid var(--p-content-border-color);
-  padding-top: 1rem;
-}
-
-.new-group-form label {
-  font-size: 0.8125rem;
-  font-weight: 500;
+.group-description {
+  font-size: 0.875rem;
   color: var(--p-text-muted-color);
-}
-
-.main {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  min-width: 0;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.page-header h2 {
-  font-size: 1.0625rem;
-  font-weight: 600;
-  margin: 0;
+  margin: 0 0 0.75rem;
+  max-width: 60rem;
 }
 
 .name-link {
@@ -518,5 +512,29 @@ async function removeCase(testCase: TestCase) {
 .actions-column {
   width: 1%;
   white-space: nowrap;
+}
+
+.dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.field label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--p-text-muted-color);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 </style>

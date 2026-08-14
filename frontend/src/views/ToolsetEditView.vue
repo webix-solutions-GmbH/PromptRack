@@ -648,9 +648,4 @@ async function removeTool(tool: Tool) {
   gap: 0.25rem;
   justify-content: flex-end;
 }
-
-.form-dialog {
-  width: 32rem;
-  max-width: 90vw;
-}
 </style>
