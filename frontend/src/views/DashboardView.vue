@@ -55,7 +55,7 @@ async function load() {
       runsApi.list({ archived: 'exclude', limit: 5 }),
       promptsApi.list(),
     ])
-    counts.value = customers.find((customer) => customer.id === auth.activeCustomer?.id)?.counts ?? null
+    counts.value = customers.find((customer) => customer.id === auth.activeCustomer?.id)?.content ?? null
     recentRuns.value = runs
     driftedPrompts.value = prompts.filter(isDrifted)
   } catch (err) {
