@@ -786,6 +786,14 @@ including the versioning cases and the Base/global-sharing cases
 login/session/sign-up-closes flow (`test_auth_flow.py`), and every domain router's CRUD
 (`test_*_api.py`, including `test_endpoints_api.py`).
 
+For checking the running app itself (dev server, `http://localhost:5177`) there is a
+dedicated agent account in the local dev database: `claude-dev@example.com` /
+`claude-dev-pw-1`, role `member`. Sign in with it (e.g. via Playwright) instead of touching
+Phil's session in Chrome; sign-up is closed after the first account, so if the dev database
+was recreated, re-insert it with `app.auth.passwords.hash_password` via `uv run python`
+rather than through the UI. Local-only: the account exists in this machine's dev Postgres,
+not in the repo or any deployment.
+
 Everything else is verified against the dev server + the mocks (`backend/app/api/mocks.py`,
 gated by `mocks_enabled()` — dev, or `ENABLE_MOCKS=true` in production; the refusal is a
 **404, not a 403**, so these routes should not appear to exist in production):
