@@ -47,7 +47,7 @@ class TestGroupWriteRequest(BaseModel):
     name: str = Field(min_length=1)
     description: str | None = None
     #: Ordering, not content, and nothing in the UI edits it — so `PUT` treats
-    #: it patch-like the same way `app.api.machines` treats a machine's
+    #: it patch-like the same way `app.api.endpoints` treats an endpoint's
     #: `api_key`: omit it and the stored order is left alone (0 on create).
     #: A rename that dropped the field would otherwise silently collapse the
     #: whole suite's ordering to 0.

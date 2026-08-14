@@ -16,11 +16,12 @@
 import { api } from './client'
 
 export interface CustomerCounts {
-  machines: number
+  endpoints: number
   prompts: number
   toolsets: number
   test_groups: number
   runs: number
+  total: number
 }
 
 export interface Customer {
@@ -28,6 +29,10 @@ export interface Customer {
   name: string
   description: string | null
   archived: boolean
+  /** The workspace that owns the global endpoints and toolsets. Read-only on
+   * the wire — the client uses it to label Base in the switcher and to hide
+   * the delete/archive controls the API would refuse anyway. */
+  is_base: boolean
   created_at: string
   updated_at: string
   content: CustomerCounts

@@ -206,7 +206,7 @@ async def switch_customer(
     """Every signed-in user may switch into every workspace.
 
     A workspace is a label, not a tenant: customers never log in, and the
-    separation it buys is that one engagement's machines — i.e. base URLs with
+    separation it buys is that one engagement's endpoints — i.e. base URLs with
     API keys — stay out of another's. So this needs no role beyond being signed
     in.
     """

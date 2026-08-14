@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from sqlalchemy import ForeignKey, Index, Text, UniqueConstraint, func, true
+from sqlalchemy import ForeignKey, Index, Text, UniqueConstraint, false, func, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -34,6 +34,16 @@ class Toolset(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id", ondelete="RESTRICT"))
+    #: Readable from every workspace, writable only from the one that owns it,
+    #: and settable only on a row owned by the Base workspace — see
+    #: `Endpoint.is_global`, which this mirrors exactly. The same three mock
+    #: toolsets are wanted in every engagement, and an `mcp_url` plus headers
+    #: is the other credential worth registering once.
+    #:
+    #: Deleting a global toolset is guarded (`app.repos.toolsets`): the
+    #: `test_case_toolsets` FK cascades, so an ungated delete would silently
+    #: strip the toolset from every engagement's test cases.
+    is_global: Mapped[bool] = mapped_column(server_default=false())
     name: Mapped[str]
     description: Mapped[str | None]
     kind: Mapped[ToolsetKind] = mapped_column(Text, server_default="manual")
@@ -49,7 +59,7 @@ class Toolset(Base):
 class Tool(Base):
     """One callable function.
 
-    Like `machine_models`, MCP-discovered rows are upserted and **never
+    Like `endpoint_models`, MCP-discovered rows are upserted and **never
     deleted** — a tool that disappears from `tools/list` only flips `enabled`
     false, so a past run can still explain what it sent.
 

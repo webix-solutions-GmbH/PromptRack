@@ -16,6 +16,12 @@ workspace is decided.
   workspace". Reads under it span all of them; writes raise, because a new row
   has no defensible workspace to land in.
 
+Since endpoints and toolsets became shareable there are **two** questions, not
+one: *what may I write to* (:func:`scope_where`, ownership, unchanged) and
+*what may I see* (:func:`visible_where`, ownership plus the global rows). Read
+:func:`visible_where`'s docstring before adding a seam of your own — which of
+the two a query asks for is the whole of "read-only outside Base".
+
 This module deliberately does not import :mod:`app.db`: it is importable by the
 database-free unit tests, and nothing here needs a connection.
 """
@@ -24,9 +30,10 @@ from collections.abc import Iterable, Sequence
 from dataclasses import InitVar, dataclass
 from typing import Literal
 
-from sqlalchemy import ColumnElement, and_
+from sqlalchemy import ColumnElement, and_, or_
+from sqlalchemy.orm import InstrumentedAttribute
 
-from app.models import Machine, Prompt, Run, TestGroup, Toolset
+from app.models import Endpoint, Prompt, Run, TestGroup, Toolset
 
 #: Where a scope came from: a user's session, a row it was derived from, or the
 #: system escape hatch.
@@ -120,18 +127,67 @@ def require_customer_id(scope: Scope) -> int:
 
 #: The five root tables that carry `customer_id`. Every other table inherits its
 #: scope through a foreign key to one of these.
-type ScopedRoot = type[Machine] | type[Prompt] | type[Toolset] | type[TestGroup] | type[Run]
+type ScopedRoot = type[Endpoint] | type[Prompt] | type[Toolset] | type[TestGroup] | type[Run]
 
 
 def scope_where(scope: Scope, model: ScopedRoot) -> ColumnElement[bool] | None:
-    """Restricts a root-table query to the scope's workspace.
+    """Restricts a root-table query to the scope's workspace — **ownership**.
 
     ``None`` means "no predicate", which for a system scope is the documented
     "every workspace" read.
+
+    This is the predicate every ``UPDATE`` and ``DELETE`` uses, and the one
+    :func:`scope_values` mirrors on an insert. It says nothing about global
+    rows on purpose: a workspace that can see a shared endpoint still may not
+    rename it, and keeping that fact in the predicate rather than in a guard is
+    what makes "read-only outside Base" cost no new permission layer.
     """
     if scope.customer_id is None:
         return None
     return model.customer_id == scope.customer_id
+
+
+#: The root tables whose rows can be shared: an endpoint is a base URL plus an
+#: API key, a toolset an MCP URL plus headers, and those are exactly the two
+#: things a consultancy registers once and reuses across every engagement.
+#: Nothing else is here, and nothing else may be added: prompts, test groups,
+#: test cases and runs are the engagement's own material, and keeping one
+#: customer's suite out of another's is the whole reason a workspace exists.
+_SHAREABLE: dict[ScopedRoot, InstrumentedAttribute[bool]] = {
+    Endpoint: Endpoint.is_global,
+    Toolset: Toolset.is_global,
+}
+
+
+def visible_where(scope: Scope, model: ScopedRoot) -> ColumnElement[bool] | None:
+    """Ownership, OR the global rows every workspace may read.
+
+    Identical to :func:`scope_where` for every table but the two in
+    :data:`_SHAREABLE`, where it additionally admits rows flagged
+    ``is_global``. Only **read** paths take it; a write asks
+    :func:`scope_where`, which is why a shared endpoint can be selected for a
+    run from any workspace and renamed from none but its own.
+
+    **The failure direction is deliberate and must stay this way.** A read path
+    that forgets to opt in does not see globals — a shared endpoint missing
+    from a picker, i.e. a missing feature someone reports. The inverse design
+    (a permissive default, opted out of for writes) would turn the identical
+    omission into a cross-workspace disclosure. Nothing here may ever become
+    the default for that reason, the same reasoning that keeps
+    :func:`system_scope` an explicit, grep-able call rather than an implicit
+    state.
+
+    A system scope still returns ``None``: "every workspace" already includes
+    the global rows, and narrowing it here would make the escape hatch see less
+    than an ordinary scope does.
+    """
+    own = scope_where(scope, model)
+    if own is None:
+        return None
+    shared = _SHAREABLE.get(model)
+    if shared is None:
+        return own
+    return or_(own, shared.is_(True))
 
 
 def scope_values(scope: Scope) -> dict[str, int]:
@@ -162,6 +218,20 @@ def where_scoped(
 ) -> ColumnElement[bool] | None:
     """The scope predicate for ``model`` AND-ed with the caller's own conditions."""
     return combine([scope_where(scope, model), *conditions])
+
+
+def where_visible(
+    scope: Scope,
+    model: ScopedRoot,
+    *conditions: ColumnElement[bool] | None,
+) -> ColumnElement[bool] | None:
+    """:func:`where_scoped`'s read-side twin — see :func:`visible_where`.
+
+    Spelled as its own function rather than a flag on ``where_scoped`` so a
+    call site says which of the two questions it is asking, and a reviewer
+    grepping for the shared-row surface finds every one of them.
+    """
+    return combine([visible_where(scope, model), *conditions])
 
 
 @dataclass(frozen=True)

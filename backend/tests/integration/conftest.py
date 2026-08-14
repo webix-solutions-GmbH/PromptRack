@@ -158,8 +158,8 @@ from app.scope import Scope, scope_from_row  # noqa: E402
 #: regardless of which tables reference which.
 ALL_TABLES = [
     "customers",
-    "machines",
-    "machine_models",
+    "endpoints",
+    "endpoint_models",
     "prompts",
     "prompt_versions",
     "toolsets",

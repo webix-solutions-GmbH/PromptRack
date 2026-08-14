@@ -91,8 +91,8 @@ class TestParseRowRef:
         assert parse_row_ref(3.0, '"group"') == RowRef.by_id(3)
 
     def test_the_label_names_the_argument(self) -> None:
-        with pytest.raises(McpToolError, match='"machine"'):
-            parse_row_ref({}, '"machine"')
+        with pytest.raises(McpToolError, match='"endpoint"'):
+            parse_row_ref({}, '"endpoint"')
 
 
 class TestParseRowRefs:
@@ -226,10 +226,10 @@ class TestResolveCustomerRef:
 
 #: Exactly the surface the plan specifies. `deploy` is deliberately absent —
 #: marking a version deployed is a human claim about a customer's production
-#: system — as are machines, toolsets and customer workspaces as writes.
+#: system — as are endpoints, toolsets and customer workspaces as writes.
 EXPECTED_TOOLS = {
     "list_customers": False,
-    "list_machines": False,
+    "list_endpoints": False,
     "list_test_groups": False,
     "create_test_group": True,
     "list_prompts": False,
@@ -259,9 +259,10 @@ class TestRegistry:
     async def test_exactly_the_specified_tools_are_offered(self) -> None:
         assert set(await _tools()) == set(EXPECTED_TOOLS)
 
-    async def test_no_tool_writes_to_machines_toolsets_or_workspaces(self) -> None:
+    async def test_no_tool_writes_to_endpoints_toolsets_or_workspaces(self) -> None:
         names = set(await _tools())
-        assert not {name for name in names if name.startswith(("create_machine", "update_machine"))}
+        writes = ("create_endpoint", "update_endpoint")
+        assert not {name for name in names if name.startswith(writes)}
         assert not {name for name in names if "toolset" in name}
         assert not {name for name in names if name.startswith("create_customer")}
         assert "deploy" not in names and "mark_deployed" not in names
@@ -297,7 +298,7 @@ class TestRegistry:
             "title",
         }
         assert set(tools["set_rating"].input_schema["required"]) == {"result_id", "rating"}
-        assert set(tools["create_run"].input_schema["required"]) == {"machine", "groups"}
+        assert set(tools["create_run"].input_schema["required"]) == {"endpoint", "groups"}
 
     async def test_a_name_or_an_id_is_accepted_wherever_a_row_is_named(self) -> None:
         schema = (await _tools())["create_test_case"].input_schema

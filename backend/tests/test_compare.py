@@ -38,7 +38,8 @@ from app.services.compare import (
     parse_model_column_keys,
     parse_run_ids,
     serialize_run_ids,
-    snapshot_machine_name,
+    shared_expected_output,
+    snapshot_endpoint_name,
     split_model_column_key,
 )
 
@@ -67,6 +68,7 @@ def cell(run_id: int, **overrides: Any) -> CompareCellView:
         "test_case_text": "text",
         "system_prompt_text": None,
         "task_prompt_text": None,
+        "expected_output": None,
         "tools_snapshot": None,
         "tool_mode": "none",
         "tool_choice": None,
@@ -156,21 +158,21 @@ class TestParseCompareMode:
 
 
 class TestModelColumnKey:
-    def test_round_trips_machine_id_and_model_id(self) -> None:
+    def test_round_trips_endpoint_id_and_model_id(self) -> None:
         parsed = split_model_column_key(model_column_key(3, "qwen3:32b"))
         assert parsed is not None
-        assert (parsed.machine_id, parsed.model_id) == (3, "qwen3:32b")
+        assert (parsed.endpoint_id, parsed.model_id) == (3, "qwen3:32b")
 
     def test_keeps_a_model_id_containing_separator_adjacent_characters(self) -> None:
         parsed = split_model_column_key(model_column_key(7, "Qwen/Qwen3-32B-AWQ"))
         assert parsed is not None
         assert parsed.model_id == "Qwen/Qwen3-32B-AWQ"
 
-    def test_maps_a_deleted_machine_to_id_zero_and_back_to_none(self) -> None:
+    def test_maps_a_deleted_endpoint_to_id_zero_and_back_to_none(self) -> None:
         assert model_column_key(None, "m") == "0|m"
         parsed = split_model_column_key("0|m")
         assert parsed is not None
-        assert (parsed.machine_id, parsed.model_id) == (None, "m")
+        assert (parsed.endpoint_id, parsed.model_id) == (None, "m")
 
     def test_rejects_malformed_keys(self) -> None:
         assert split_model_column_key("nope") is None
@@ -191,15 +193,15 @@ class TestParseModelColumnKeys:
         assert parse_model_column_keys(["1|a", "2|b", "3|c"], 2) == ["1|a", "2|b"]
 
 
-class TestSnapshotMachineName:
+class TestSnapshotEndpointName:
     def test_reads_the_frozen_name(self) -> None:
-        assert snapshot_machine_name('{"name": "box", "base_url": "x"}') == "box"
+        assert snapshot_endpoint_name('{"name": "box", "base_url": "x"}') == "box"
 
     def test_degrades_rather_than_raising(self) -> None:
         # A run whose snapshot is missing or unreadable still has to render.
-        assert snapshot_machine_name(None) == "(deleted machine)"
-        assert snapshot_machine_name("not json") == "(deleted machine)"
-        assert snapshot_machine_name('{"name": ""}') == "(deleted machine)"
+        assert snapshot_endpoint_name(None) == "(deleted endpoint)"
+        assert snapshot_endpoint_name("not json") == "(deleted endpoint)"
+        assert snapshot_endpoint_name('{"name": ""}') == "(deleted endpoint)"
 
 
 # ---------------------------------------------------------------------------
@@ -404,8 +406,8 @@ def model_cell(run_id: int, column_key: str, **overrides: Any) -> CompareCellVie
 def run(run_id: int, **overrides: Any) -> ModelColumnRun:
     defaults: dict[str, Any] = {
         "id": run_id,
-        "machine_id": 1,
-        "machine_name": "box",
+        "endpoint_id": 1,
+        "endpoint_name": "box",
         "model_id": "model-a",
         "created_at": at(1000),
         "archived": False,
@@ -420,12 +422,13 @@ def result(run_id: int, **overrides: Any) -> ModelColumnResult:
         "status": "ok",
         "rating": None,
         "tokens_per_sec": None,
+        "duration_ms": None,
     }
     return ModelColumnResult(**{**defaults, **overrides})
 
 
 class TestBuildModelColumns:
-    def test_groups_runs_of_the_same_model_and_machine_into_one_column(self) -> None:
+    def test_groups_runs_of_the_same_model_and_endpoint_into_one_column(self) -> None:
         columns = build_model_columns(
             [run(1, created_at=at(1)), run(2, created_at=at(2))],
             [result(1), result(2, test_case_id=2)],
@@ -437,9 +440,9 @@ class TestBuildModelColumns:
         assert columns[0].test_case_count == 2
         assert columns[0].latest_run_at == at(2)
 
-    def test_keeps_the_same_model_on_two_machines_apart(self) -> None:
+    def test_keeps_the_same_model_on_two_endpoints_apart(self) -> None:
         columns = build_model_columns(
-            [run(1, machine_id=1), run(2, machine_id=2, machine_name="other")],
+            [run(1, endpoint_id=1), run(2, endpoint_id=2, endpoint_name="other")],
             [result(1), result(2)],
         )
 
@@ -479,13 +482,54 @@ class TestBuildModelColumns:
     def test_names_a_column_after_its_most_recent_run_snapshot(self) -> None:
         columns = build_model_columns(
             [
-                run(1, created_at=at(1), machine_name="old name"),
-                run(2, created_at=at(2), machine_name="new name"),
+                run(1, created_at=at(1), endpoint_name="old name"),
+                run(2, created_at=at(2), endpoint_name="new name"),
             ],
             [result(1), result(2)],
         )
 
-        assert columns[0].machine_name == "new name"
+        assert columns[0].endpoint_name == "new name"
+
+
+class TestModelColumnTotalDuration:
+    """`total_duration_ms` mirrors `avg_rate`'s null handling: a sum over the
+    measured durations, skipping (not zeroing) any row with none, and `None`
+    rather than `0` once nothing at all was measured — the same distinction
+    SQL's own `sum()` draws over an all-NULL column in run mode.
+    """
+
+    def test_sums_durations_skipping_unmeasured_rows(self) -> None:
+        columns = build_model_columns(
+            [run(1)],
+            [
+                result(1, test_case_id=1, duration_ms=1000),
+                result(1, test_case_id=2, duration_ms=None),
+                result(1, test_case_id=3, duration_ms=2500),
+            ],
+        )
+
+        assert columns[0].total_duration_ms == 3500
+
+    def test_an_all_null_column_reports_none_not_zero(self) -> None:
+        columns = build_model_columns(
+            [run(1)],
+            [result(1, test_case_id=1, duration_ms=None)],
+        )
+
+        assert columns[0].total_duration_ms is None
+
+    def test_only_usable_results_contribute(self) -> None:
+        # Same "usable results only" rule `avg_rate` already follows: an
+        # errored row's duration must not pad the total.
+        columns = build_model_columns(
+            [run(1)],
+            [
+                result(1, test_case_id=1, duration_ms=1000),
+                result(1, test_case_id=2, status="error", duration_ms=9999),
+            ],
+        )
+
+        assert columns[0].total_duration_ms == 1000
 
 
 class TestBuildModelMatrix:
@@ -667,6 +711,17 @@ class TestDescribeRowDrift:
         assert describe_row_drift([None, None]) == []
         assert describe_row_drift([None, cell(1)]) == []
 
+    def test_names_a_rubric_the_cells_disagree_about(self) -> None:
+        # The rubric is never sent, but a row graded two different ways is not
+        # a comparison — and it is the only signal left once the row header
+        # refuses to show one cell's rubric as the row's.
+        assert describe_row_drift(
+            [
+                cell(1, expected_output="the PO number"),
+                cell(2, expected_output="the PO number and the total"),
+            ]
+        ) == ["expected output"]
+
 
 class TestTextPartsDriftIndependently:
     """The payoff of freezing three texts instead of one derived message.
@@ -838,3 +893,90 @@ class TestAnnotateDrift:
         )
 
         assert annotate_drift(rows, live_by_test_case={10: live()})[0].drift == []
+
+
+# ---------------------------------------------------------------------------
+# The row-level rubric
+# ---------------------------------------------------------------------------
+
+
+class TestSharedExpectedOutput:
+    """What the row header may claim the whole row was graded against.
+
+    The rubric is row-level information, so it is shown once beside the test
+    case text rather than repeated in every column — but only when every cell
+    of the row really froze it. Anything else is `None`, and a disagreement
+    speaks through drift instead.
+    """
+
+    def test_a_rubric_every_cell_froze_is_the_rows(self) -> None:
+        assert (
+            shared_expected_output(
+                [cell(1, expected_output="the PO number"), cell(2, expected_output="the PO number")]
+            )
+            == "the PO number"
+        )
+
+    def test_a_row_without_a_rubric_has_none(self) -> None:
+        # Many test cases carry no rubric, and a disclosure that opens onto
+        # "(none)" is not information.
+        assert shared_expected_output([cell(1), cell(2)]) is None
+
+    def test_a_blank_rubric_is_no_rubric(self) -> None:
+        assert shared_expected_output([cell(1, expected_output="  \n")]) is None
+
+    def test_cells_that_disagree_have_none(self) -> None:
+        cells = [cell(1, expected_output="the PO"), cell(2, expected_output="the total")]
+        assert shared_expected_output(cells) is None
+        # …and the reader is told why rather than just losing it.
+        assert describe_row_drift(cells) == ["expected output"]
+
+    def test_a_rubric_only_one_cell_froze_is_a_disagreement(self) -> None:
+        cells = [cell(1, expected_output=None), cell(2, expected_output="the PO")]
+        assert shared_expected_output(cells) is None
+        assert describe_row_drift(cells) == ["expected output"]
+
+    def test_whitespace_alone_is_not_a_disagreement(self) -> None:
+        # The identity rule is the one drift uses, so the two can never
+        # disagree: a trailing newline must not blank the row header while
+        # drift stays silent about where the rubric went.
+        cells = [
+            cell(1, expected_output="the PO  number"),
+            cell(2, expected_output=" the PO number\n"),
+        ]
+        assert shared_expected_output(cells) == "the PO  number"
+        assert describe_row_drift(cells) == []
+
+    def test_empty_columns_are_ignored(self) -> None:
+        assert shared_expected_output([None, None]) is None
+        assert shared_expected_output([None, cell(1, expected_output="the PO")]) == "the PO"
+
+    def test_run_mode_rows_carry_it(self) -> None:
+        rows = build_compare_matrix(
+            [1, 2],
+            [
+                cell(1, test_case_id=10, expected_output="the PO"),
+                cell(2, test_case_id=10, expected_output="the PO"),
+            ],
+        )
+
+        assert rows[0].expected_output == "the PO"
+
+    def test_model_mode_rows_carry_the_frozen_rubric_not_the_live_one(self) -> None:
+        # Model mode anchors a row's *identity* to the live test case, but what
+        # a cell was graded against is what its own run recorded — the same
+        # reasoning that renders the frozen texts rather than the live ones.
+        matrix = build_model_matrix(
+            ["1|a"],
+            [live_case(10)],
+            [model_cell(1, "1|a", test_case_id=10, expected_output="the PO")],
+        )
+
+        assert matrix.rows[0].expected_output == "the PO"
+
+    def test_annotating_drift_keeps_it(self) -> None:
+        rows = build_compare_matrix(
+            [1], [cell(1, test_case_id=10, expected_output="the PO")]
+        )
+
+        assert annotate_drift(rows)[0].expected_output == "the PO"

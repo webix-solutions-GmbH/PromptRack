@@ -65,19 +65,23 @@ structured extraction from business correspondence, MCP tool calls against the c
 own RAG. The suites are the specification of the job, and the app's answer is a fitness
 verdict per model on *those* test cases, never a general ranking.
 
-The second question is sizing, and it is why every result names the **machine** that
-produced it (an endpoint plus free-text hardware notes): if a small model does the job, a
+The second question is sizing, and it is why every result names the **endpoint** that
+produced it (a base URL plus free-text hardware notes): if a small model does the job, a
 DGX Spark or even a Mac Mini is enough — but that has to be measured, and
-TTFT/duration/tok-s per machine is the evidence. Endpoints are anything
+TTFT/duration/tok-s per endpoint is the evidence. Endpoints are anything
 OpenAI-compatible, so this is **not local-only**: Ollama / LM Studio / vLLM on your own
 boxes *and* hosted frontier APIs, side by side in one matrix. The common outcome is a
 **mixed deployment** — most workloads self-hosted, the hard ones routed to a frontier
 model — and the app exists to find where that line falls. Workspaces are per **customer
-engagement**, which is the whole reason they exist: one engagement's machines, prompts
-and runs stay out of another's.
+engagement**, which is the whole reason they exist: one engagement's prompts and runs stay
+out of another's. Endpoints and toolsets are the deliberate exception — they are the two
+things that hold credentials rather than an engagement's own work product, so they can be
+registered once, in a master workspace named "Base", and shared read-only into every
+engagement instead of duplicated (and left stale) per customer; see "Customer workspaces"
+below.
 
 Mechanically, multi-user and multi-workspace: author test cases (grouped, optionally with
-expected output — the rubric), run them sequentially against a machine's endpoint,
+expected output — the rubric), run them sequentially against an endpoint,
 measure TTFT/duration/tokens/tok-s, rate results good/meh/bad manually, compare in a
 matrix by model or by run. A test case can also be a **tool test**: offer the model a set
 of functions and either record what it wanted to call, or really execute the calls
@@ -115,7 +119,7 @@ versioning design itself.
   Postgres. `backend/app/db.py` exports the async engine, the `async_session` factory and
   the `get_session` FastAPI dependency (`DbSession` in `app/auth/guards.py`).
   `backend/app/models/` is the single source of truth for the schema (one module per
-  domain area: `customers`, `machines`, `prompts`, `test_cases`, `toolsets`, `runs`,
+  domain area: `customers`, `endpoints`, `prompts`, `test_cases`, `toolsets`, `runs`,
   `auth`); `alembic revision --autogenerate` writes migrations from it.
   - Enum-ish columns are `Text` + a Python `Literal`, not a Postgres enum — same reasoning
     as the old app's `text('x', { enum: [...] })`: adding a rating or status value needs
@@ -130,8 +134,8 @@ versioning design itself.
   `/api` to `http://localhost:8077` in dev.
 - **Creation is a dialog or a page, and which one is deliberate.** A `Dialog` (the shared
   `.form-dialog` + `.dialog-form` markup) is right where the useful minimum is two or
-  three fields and the full editor is a page reached afterwards — a prompt, a toolset, a
-  machine, a test group. A full page is right where there is no meaningful minimal form:
+  three fields and the full editor is a page reached afterwards — a prompt, a toolset, an
+  endpoint, a test group. A full page is right where there is no meaningful minimal form:
   a test case needs a group, a title, content, both prompt slots, a tool mode, toolsets
   and a rubric, so a dialog would be a speed bump in front of the same page.
 - **Auth is session-cookie-based**, checked by FastAPI dependencies
@@ -145,14 +149,14 @@ versioning design itself.
 
 ### Snapshot model (the core invariant)
 
-Editing or deleting test cases, prompts, machines, or toolsets must never change how a
+Editing or deleting test cases, prompts, endpoints, or toolsets must never change how a
 past run displays. `create_run_record` (`backend/app/services/run_create.py`) freezes
 everything into `run_results` rows at creation time: title, group name, expected output,
 `tools_snapshot`, **three texts** — `system_prompt_text`, `task_prompt_text` and
 `test_case_text` (the case's own content) — and **two version ids**,
 `system_prompt_version_id` / `task_prompt_version_id`, one per slot, each the version that
 slot's draft happened to be byte-identical to, if any (see "Prompt versioning" below).
-`test_case_id`/`machine_id` FKs are kept (`SET NULL` on delete) only for cross-run
+`test_case_id`/`endpoint_id` FKs are kept (`SET NULL` on delete) only for cross-run
 comparison; rendering always uses the snapshots.
 
 The three texts are frozen **separately and unassembled** — the executor concatenates them
@@ -167,13 +171,13 @@ Validation (test-group ids, tool config, tool-name collisions) and the endpoint 
 happen *outside* `create_run_record`'s transaction, in that order: validation throws
 before anything is written, and the probe is a network call that must never hold a
 transaction open. Only the three writes — the run row, all of its `run_results` in one
-multi-row insert, the `machine_models` upsert — are one unit
+multi-row insert, the `endpoint_models` upsert — are one unit
 (`app.repos.scoped.transaction`, a `SAVEPOINT` if the caller is already inside one), so a
 crash between them can no longer leave a run with no test cases in it, which Resume would
 have reported as finished.
 
 The line between frozen and live is **content vs. credentials**: test-case text, tool
-definitions and a manual tool's canned response travel with the run; a machine's
+definitions and a manual tool's canned response travel with the run; an endpoint's
 `base_url`/`api_key` and a toolset's `mcp_url`/headers are read live at execution time so
 a moved endpoint doesn't break Resume.
 
@@ -295,6 +299,26 @@ the one place a transaction leaves this layer: it hands a nested-safe context ma
 which wraps each test) to callers like `create_run_record` that need several writes to be
 atomic without knowing where the request's own transaction boundary is.
 
+**`visible_where` is `scope_where`'s read-only twin**, added because endpoints and toolsets
+becoming shareable made "what may I see" and "what may I write to" stop being the same
+question. `scope_where` stays exactly the ownership predicate it always was — every
+`UPDATE`, `DELETE` and `scope_values` insert still asks it, unchanged — and `visible_where`
+ORs in `is_global` on top of it, but **only** for `Endpoint` and `Toolset`; for every other
+root table it is `scope_where` verbatim. `scope_through_parent` takes the same opt-in via
+a `visible: bool = False` keyword, so a global endpoint's `endpoint_models` and a global
+toolset's `tools` come along with a parent a workspace can see but does not own.
+`where_visible` is `where_scoped`'s counterpart, spelled as its own function rather than a
+flag so a call site states which of the two questions it is asking and the shared-row
+surface stays a grep away (`where_visible(` across `backend/app/repos/`).
+
+**The failure direction is deliberate and load-bearing: forgetting to opt into
+`visible_where` must only ever cost a feature, never leak a workspace.** A read path that
+stays on `scope_where` simply doesn't show a shared endpoint in a picker — reported as a
+missing feature. The alternative design, a permissive default that writes opt out of, would
+turn that identical omission into cross-workspace disclosure instead, which is why
+`visible_where` is opt-in everywhere and will never become the default — the same reasoning
+that keeps `system_scope` a grep-able, explicit call rather than an implicit state.
+
 `app.models` stays importable everywhere — API response models legitimately reference ORM
 types. Only the session/engine handle is restricted.
 
@@ -302,13 +326,13 @@ types. Only the session/engine handle is restricted.
 
 A workspace (`customers`) is a **label, not a tenant**: customers never log in, and every
 signed-in user can switch into any of them. It is what keeps one engagement's
-machines — i.e. base URLs with API keys — from mixing with another's.
+endpoints — i.e. base URLs with API keys — from mixing with another's.
 
-- The five root tables (`machines`, `prompts`, `toolsets`, `test_groups`, `runs`) carry
-  `customer_id NOT NULL`. The child tables (`machine_models`, `tools`, `test_cases`,
+- The five root tables (`endpoints`, `prompts`, `toolsets`, `test_groups`, `runs`) carry
+  `customer_id NOT NULL`. The child tables (`endpoint_models`, `tools`, `test_cases`,
   `test_case_toolsets`, `run_results`, and now `prompt_versions`) carry **nothing**: they
   inherit scope through their parent FK. Cross-root references can only be checked in app
-  code — a test case's group, a test case's toolsets, a run's machine, a prompt's
+  code — a test case's group, a test case's toolsets, a run's endpoint, a prompt's
   `deployed_version_id`, a version's `baseline_run_id` — via `assert_same_customer`
   (`backend/app/repos/customers.py`), called from inside the repository functions so no
   call site can forget it. A test case's prompt reference is now **two** of them, one per
@@ -329,12 +353,76 @@ machines — i.e. base URLs with API keys — from mixing with another's.
 - `system_scope(reason)` means "every workspace" — see the Scope section above.
 - **Not yet ported**: the old app rendered a deep link into another workspace (`/runs/42`
   from a different customer) as a switch notice rather than a 404, via two deliberately
-  unscoped reads (`findRunWorkspace`, `findMachineWorkspace`) exposing nothing but a
+  unscoped reads (`findRunWorkspace`, `findEndpointWorkspace`) exposing nothing but a
   workspace name the switcher already lists. Nothing in `frontend/src/views` does this yet
   — a deep link into the wrong workspace currently surfaces whatever the scoped 404 says.
 - **MCP scope precedence**: `customer` argument → `X-Customer` header → the token's
   default → refusal naming both and listing the workspaces. See "This app as an MCP
   server" below.
+
+### The Base workspace and global endpoints/toolsets
+
+`customers.is_base` marks exactly one workspace, named "Base", as the one that may own
+**global** rows — `endpoints.is_global` / `toolsets.is_global`, settable only there
+(`assert_base_workspace`, called from inside `create_endpoint`/`update_endpoint` and
+`create_toolset`/`update_toolset` so no route or MCP tool can forget it). **Only endpoints
+and toolsets are shareable**, and that is a hard line, not a starting point for more: they
+are exactly the two tables that hold credentials — a base URL plus an API key, an MCP URL
+plus headers — so a consultancy registers its one DGX Spark and its handful of mock
+toolsets once and reuses them across every engagement instead of re-registering the
+credential per customer and guaranteeing that half the copies go stale. Prompts, test
+groups, test cases and runs are never shareable: they are the engagement's own work
+product, and keeping one customer's suite out of another's is the whole reason a
+workspace exists.
+
+Sharing costs **no new permission layer** — it is a consequence of the read/write split
+`visible_where` draws (see "Data access" above). A global endpoint or toolset is visible to
+every workspace's read paths and selectable on a run or a test case from any of them, but
+`UPDATE`/`DELETE` still ask `scope_where`, which only Base satisfies — so the repository
+layer's refusal needs no role check, only the strict predicate already in place; the
+`app/api/endpoints.py` and `app/api/toolsets.py` routes add one explicit check on top of
+that (`_refuse_if_borrowed`, a 403) purely so a write against a borrowed row reads as a
+named refusal rather than the silent no-op `scope_where` alone would produce.
+`assert_same_customer` learns the same distinction through one keyword:
+**`allow_global: bool = False`**, widening
+its check from ownership to `visible_where` when passed. It is `True` at exactly two call
+sites — `create_run`'s endpoint reference (`backend/app/repos/runs.py`) and a test case's
+toolset links (`backend/app/repos/test_cases.py`) — because those are the only two
+references that may legitimately name a row another workspace owns; every other call site
+keeps the default and keeps refusing globals, which is what makes the exception list two
+greppable words long. None of this touches the snapshot invariant: a run's
+`endpoint_snapshot` and a result's `tools_snapshot` are copies, so a global row appearing in
+a past run is already immune to Base editing it later.
+
+Two hazards worth knowing about rather than being surprised by:
+
+- **Deleting a global toolset is guarded, not cascaded.** `test_case_toolsets.toolset_id`
+  is `ON DELETE CASCADE`, which is correct while a toolset and its test cases live in one
+  workspace and destructive the moment they don't — an ungated delete would silently strip a
+  shared toolset from every engagement's test cases. `delete_toolset`
+  (`backend/app/repos/toolsets.py`) refuses a referenced global toolset and names the
+  damage (which workspaces, how many test cases in each) — the same shape `delete_customer`'s
+  guard established.
+- **`endpoint_models` on a global endpoint accumulates rows from every engagement that ran
+  against it.** This is intended, not a leak: shared hardware has one shared history, and
+  "this box has already served qwen3:32b" is exactly what the next engagement needs to know.
+
+Base itself is not a privileged workspace in any other sense — it holds ordinary groups,
+prompts and test cases too (see the note below), and any user switches into it the normal
+way to author a global row, since there is no separate admin surface for them. It is,
+however, **refused for both deletion and archiving** (`app.api.customers`, a 409 regardless
+of role): archiving it would hide the only place the shared rows can be edited, and every
+scope has to resolve to a workspace, which Base is the one holding the shared
+infrastructure for.
+
+**Base was created by adopting existing data, not by an empty migration.** By the time this
+shipped, `backend/scripts/split_base_workspace.py` had already run against imported data
+and created a workspace literally named "Base" holding the reusable baseline suite (the
+`General Capabilities` and `Prompt Injection & Instruction Hierarchy` groups, their test
+cases, prompts and three mock toolsets) — see that script's docstring for the history. The
+migration that adds `is_base` therefore **adopts** a workspace already named "Base"
+(matched case-insensitively) rather than inserting a second one, and leaves that
+workspace's existing content untouched.
 
 ### Auth
 
@@ -346,8 +434,8 @@ unrecognised value to `viewer`, never to admin), and the FastAPI dependency guar
 
 - **Roles**: `admin` / `member` / `viewer`, all semantics in `policy.py`'s two pure
   predicates. Content vs. credentials is the line: toolset create/update/delete is admin
-  (it holds `mcp_url` + headers), the tools *inside* it are member; machines are admin,
-  `POST /api/machines/{id}/discover` is member (`/runs/new` posts it on page load for
+  (it holds `mcp_url` + headers), the tools *inside* it are member; endpoints are admin,
+  `POST /api/endpoints/{id}/discover` is member (`/runs/new` posts it on page load for
   everyone), `POST /{id}/test` stays admin (it exercises the stored API key).
 - **First account is the administrator, then sign-up closes forever** — `app/auth/router.py`
   refuses `POST /api/auth/sign-up` once the `users` table is non-empty.
@@ -464,7 +552,7 @@ the one shared function `assert_tool_config`
   verbatim — what keeps a multi-turn test deterministic) or `mcp` (tools discovered from a
   streamable-HTTP MCP server and really executed against it,
   `backend/app/services/mcp_client.py`, the official `mcp` SDK, connections opened
-  per-operation, never pooled). `tools` rows follow the `machine_models` precedent:
+  per-operation, never pooled). `tools` rows follow the `endpoint_models` precedent:
   discovery upserts and **never deletes** — a tool absent from `tools/list` only flips
   `enabled` false.
 - **A tool failure is never a failed row.** The error text is serialized back to the
@@ -489,10 +577,10 @@ stays in run mode, so old links keep their view. **One model is a valid selectio
 this model answered", the cheapest review of a model across all of its runs. Run mode
 still needs two, since a single run is already its own detail page.
 
-- **By model** (`model=<machineId>|<modelId>`, repeated, plus `?group=` to narrow the
+- **By model** (`model=<endpointId>|<modelId>`, repeated, plus `?group=` to narrow the
   rows) takes the **live test cases** as rows and fills each cell with that model's
-  **most recent `ok` result**, whichever run produced it. Columns are keyed on machine
-  *id* + model, so a machine rename doesn't split a column and one model on two boxes
+  **most recent `ok` result**, whichever run produced it. Columns are keyed on endpoint
+  *id* + model, so an endpoint rename doesn't split a column and one model on two boxes
   stays two columns. Archived runs are excluded outright.
 - **By run** (`runs=1,5`) is the only pivot that can put two runs of the *same* model
   side by side (quantization swap, temperature A/B, a Verify comparison against a
@@ -519,15 +607,20 @@ Named `meh` and not `ok` on purpose: `ok` already means "completed without error
 confusion this rating exists to remove. The column is `Text`, not an enum type, so adding
 a rating value needs no migration.
 
-### Machine/model history
+### Endpoint/model history
 
-`machine_models` records every model ever seen per machine and is never deleted from:
+`endpoint_models` records every model ever seen per endpoint and is never deleted from:
 discovery upserts (`currently_loaded` flips false for models absent from `/v1/models`),
-manual adds, and every run (`source: "run"`). A machine IS an endpoint (`base_url` +
-optional `api_key` + free-text hardware specs). Live probing is
-`backend/app/services/discovery.py` (`POST /{id}/discover`, member — upserts into
-`machine_models`; `POST /{id}/test`, admin — just reports reachability, since it
-exercises the stored API key).
+manual adds, and every run (`source: "run"`). An endpoint is a `base_url` + optional
+`api_key` + free-text hardware specs — anything that speaks the OpenAI protocol, whether
+it's a box you own or a hosted API. Live probing is `backend/app/services/discovery.py`
+(`POST /{id}/discover`, member — upserts into `endpoint_models`; `POST /{id}/test`, admin —
+just reports reachability, since it exercises the stored API key).
+
+On a **global** endpoint (see "Customer workspaces" above) `endpoint_models` accumulates
+across every engagement that has run against it — deliberately: shared hardware has one
+shared history, and that is exactly what makes "this box already served qwen3:32b" useful
+to the next customer.
 
 ### This app as an MCP server
 
@@ -553,7 +646,7 @@ measurements back — the interesting test cases already exist in other repos.
   single declaration of whether each tool writes: it becomes both the `readOnlyHint`
   annotation and the gate a viewer's token is refused by, so the two cannot drift apart.
 - **Everything relatable by name is** (`backend/app/mcp/refs.py`: `RowRef`,
-  `parse_row_ref`, `resolve_row_ref`) — group, prompt, toolset, machine take a name or an
+  `parse_row_ref`, `resolve_row_ref`) — group, prompt, toolset, endpoint take a name or an
   id, a numeric string is always an id, and an ambiguous name is refused with a
   "Known: …" list of that workspace's rows.
 - **Every call names a customer workspace** (`backend/app/mcp/customer.py`):
@@ -563,7 +656,7 @@ measurements back — the interesting test cases already exist in other repos.
   needs no scope, and it's `readOnly` so a viewer's token can orient itself before being
   refused a write elsewhere.
 - **The 20 tools** (registered in `backend/app/mcp/server.py`, renamed per the pivot):
-  `list_customers`, `list_machines`, `list_prompts`, `create_prompt`, `update_prompt`,
+  `list_customers`, `list_endpoints`, `list_prompts`, `create_prompt`, `update_prompt`,
   `commit_prompt`, `list_prompt_versions`, `get_prompt_version`, `set_baseline`,
   `list_test_groups`, `create_test_group` (name-idempotent — a second call returns the
   existing group, `created: false`), `list_test_cases`, `create_test_case`,
@@ -591,12 +684,15 @@ measurements back — the interesting test cases already exist in other repos.
   slots hold (`system_prompt_text` / `task_prompt_text`) — the same two key names
   `get_run_result` uses for the frozen copies, so a case and its result speak one
   vocabulary. `get_run` / `get_run_result` likewise carry both version ids.
-- **Not writable over MCP**: machines, toolsets and tools (a base URL with an API key and
+- **Not writable over MCP**: endpoints, toolsets and tools (a base URL with an API key and
   an MCP server URL are credentials — the app's line is content over the API, credentials
   in the UI), customer workspaces (creating an engagement is a human decision with
   billing behind it), and a prompt's `deployed_version_id` (see "Prompt versioning").
   Versions themselves *are* writable over MCP (`commit_prompt`, `set_baseline`) because
-  they are content, not credentials.
+  they are content, not credentials. `list_endpoints` and `create_run`'s `endpoint`
+  argument (renamed from `machine`) see and accept **global** endpoints for free, since
+  both are read paths that already ask `visible_where` — nothing MCP-specific was needed
+  to share them.
 - **A judge model reading these results is itself injectable.** `get_run_result` returns
   `system_prompt_text`, `task_prompt_text` and `test_case_text` — three fields now, and for
   the `Prompt Injection & Instruction Hierarchy` group any of them can carry a live
@@ -685,15 +781,16 @@ real database can show: FK cascade/`SET NULL` actions and `Date`/`bool`/float8
 round-tripping (`test_schema.py`), the snapshot invariant and `create_run_record`'s
 rollback (`test_run_create.py`), the advisory-lock claim (`test_run_lock.py`), the
 executor end-to-end against the mock LLM (`test_executor.py`), cross-workspace isolation
-including the versioning cases (`test_workspaces.py`, `test_versioning.py`), the
+including the versioning cases and the Base/global-sharing cases
+(`test_workspaces.py::TestGlobals`, `test_versioning.py`), the
 login/session/sign-up-closes flow (`test_auth_flow.py`), and every domain router's CRUD
-(`test_*_api.py`).
+(`test_*_api.py`, including `test_endpoints_api.py`).
 
 Everything else is verified against the dev server + the mocks (`backend/app/api/mocks.py`,
 gated by `mocks_enabled()` — dev, or `ENABLE_MOCKS=true` in production; the refusal is a
 **404, not a 403**, so these routes should not appear to exist in production):
 
-- **Mock LLM** — register a machine with base_url `http://localhost:8077/api/mock-llm`.
+- **Mock LLM** — register an endpoint with base_url `http://localhost:8077/api/mock-llm`.
   `TRIGGER_ERROR` in the user message → 500, `TRIGGER_SLOW` → 2s TTFT delay,
   `TRIGGER_TOOL_LOOP` → never stops calling tools (exercises `max_turns`). When the
   request carries `tools` and no tool result yet, it streams a tool call for the first

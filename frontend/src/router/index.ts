@@ -2,8 +2,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 import DashboardView from '../views/DashboardView.vue'
 import LoginView from '../views/LoginView.vue'
 import SetupView from '../views/SetupView.vue'
-import MachinesView from '../views/MachinesView.vue'
-import MachineEditView from '../views/MachineEditView.vue'
+import EndpointsView from '../views/EndpointsView.vue'
+import EndpointEditView from '../views/EndpointEditView.vue'
 import ToolsetsView from '../views/ToolsetsView.vue'
 import ToolsetEditView from '../views/ToolsetEditView.vue'
 import PromptsView from '../views/PromptsView.vue'
@@ -47,15 +47,25 @@ const router = createRouter({
       meta: { public: true },
     },
     {
+      path: '/endpoints',
+      name: 'endpoints',
+      component: EndpointsView,
+    },
+    {
+      path: '/endpoints/:id',
+      name: 'endpoint-edit',
+      component: EndpointEditView,
+      props: true,
+    },
+    // Old paths, kept resolvable: a bookmark or an external link to
+    // `/machines*` lands somewhere sensible rather than a 404.
+    {
       path: '/machines',
-      name: 'machines',
-      component: MachinesView,
+      redirect: '/endpoints',
     },
     {
       path: '/machines/:id',
-      name: 'machine-edit',
-      component: MachineEditView,
-      props: true,
+      redirect: (to) => ({ name: 'endpoint-edit', params: to.params }),
     },
     {
       path: '/prompts',

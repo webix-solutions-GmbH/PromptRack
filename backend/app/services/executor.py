@@ -11,14 +11,14 @@ rather than corrupt:
   `pending` rows and Resume finishes it.
 * **A row error is a row error.** The loop marks it `error` and continues; only
   a run whose every attempt died at connection level ends `failed`, which is
-  what keeps that status meaning "the machine was never reachable".
+  what keeps that status meaning "the endpoint was never reachable".
 * **An interrupted row goes back to `pending`**, giving up everything it had
   half-written — including rows left `running` by a process that crashed, which
   are reclaimed at the start of the next execution (safe precisely because the
   lock above is held by then, so no other execution of this run can be live).
 
 Two things are read **live** rather than from the run's snapshot, both
-credentials: the machine's `base_url`/`api_key` and an MCP toolset's URL and
+credentials: the endpoint's `base_url`/`api_key` and an MCP toolset's URL and
 headers. A moved endpoint must not break Resume. The frozen half — text, tool
 definitions, a manual tool's canned response — travels with the run.
 
@@ -52,7 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import async_session
 from app.models.runs import Run, RunStatus
-from app.repos.machines import get_machine
+from app.repos.endpoints import get_endpoint
 from app.repos.runs import (
     count_pending_results,
     get_run_result,
@@ -228,7 +228,7 @@ async def _build_mcp_executor(
     """Builds the executor for a result's MCP tools, or None when it has none.
 
     The endpoint and its auth are read live here rather than taken from the
-    frozen snapshot — the same tradeoff a machine's `base_url` already makes.
+    frozen snapshot — the same tradeoff an endpoint's `base_url` already makes.
     Every server is looked up once, up front, so the closure never touches the
     session while a completion is in flight.
     """
@@ -555,7 +555,7 @@ async def _execute(
 
     remaining = await count_pending_results(scope, session, run_id)
 
-    # `failed` is reserved for "the machine was never reachable": every result
+    # `failed` is reserved for "the endpoint was never reachable": every result
     # we tried died at connection level and nothing succeeded. A run where the
     # model merely errored on some rows is still a completed run.
     everything_unreachable = (
@@ -580,19 +580,19 @@ async def _execute(
 async def _resolve_endpoint(scope: Scope, session: AsyncSession, run: Run) -> _Endpoint:
     """Where to send this run's completions.
 
-    The machine row may have been edited or deleted since the run was created:
+    The endpoint row may have been edited or deleted since the run was created:
     prefer live credentials, fall back to the snapshot's URL (which carries no
     key, deliberately — a snapshot is display data).
     """
-    if run.machine_id is not None:
-        machine = await get_machine(scope, session, run.machine_id)
-        if machine is not None:
-            return _Endpoint(base_url=machine.base_url, api_key=machine.api_key)
+    if run.endpoint_id is not None:
+        endpoint = await get_endpoint(scope, session, run.endpoint_id)
+        if endpoint is not None:
+            return _Endpoint(base_url=endpoint.base_url, api_key=endpoint.api_key)
 
-    snapshot_url = _parse_snapshot_base_url(run.machine_snapshot)
+    snapshot_url = _parse_snapshot_base_url(run.endpoint_snapshot)
     if snapshot_url is None:
         raise RunNotExecutableError(
-            "The machine for this run no longer exists and its snapshot has no base URL."
+            "The endpoint for this run no longer exists and its snapshot has no base URL."
         )
     return _Endpoint(base_url=snapshot_url, api_key=None)
 

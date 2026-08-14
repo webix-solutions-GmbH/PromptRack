@@ -1,6 +1,6 @@
 """`app.services.llm_info` — extraction and probe merging only.
 
-No database, no real network: `httpx.MockTransport` stands in for the machine's
+No database, no real network: `httpx.MockTransport` stands in for the endpoint's
 endpoint, keeping this next to `test_discovery.py` in the fast suite. The
 extractors are the half worth pinning down — every server this app cares about
 puts its metadata somewhere else.

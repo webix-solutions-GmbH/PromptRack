@@ -7,7 +7,7 @@ while never opening a socket.
 
 What is worth testing here is not "did it call the model" but the four
 recovery invariants the module docstring names: every row persisted the moment
-it finishes, a row error never stopping the run, `failed` meaning "the machine
+it finishes, a row error never stopping the run, `failed` meaning "the endpoint
 was never reachable", and an interrupted row going back to `pending`.
 """
 
@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.repos.machines import create_machine
+from app.repos.endpoints import create_endpoint
 from app.repos.prompts import create_prompt
 from app.repos.runs import get_run, list_run_results
 from app.repos.test_cases import create_test_case, create_test_group
@@ -90,10 +90,10 @@ async def make_run(
     titles: Sequence[str] = ("First",),
     tool_mode: str = "none",
     toolset_id: int | None = None,
-    base_url: str = "http://machine.invalid/v1",
+    base_url: str = "http://endpoint.invalid/v1",
 ) -> int:
-    """A machine, a group, one test case per title, and a run over them."""
-    machine = await create_machine(scope, session, name="Box", base_url=base_url)
+    """An endpoint, a group, one test case per title, and a run over them."""
+    endpoint = await create_endpoint(scope, session, name="Box", base_url=base_url)
     group = await create_test_group(scope, session, name="Group")
     for index, title in enumerate(titles):
         case = await create_test_case(
@@ -114,7 +114,7 @@ async def make_run(
     created = await create_run_record(
         scope,
         session,
-        machine_id=machine.id,
+        endpoint_id=endpoint.id,
         model_id="test-model",
         group_ids=[group.id],
         probe=_no_probe,
@@ -203,7 +203,7 @@ class TestMessageAssembly:
         task_text: str | None,
         content: str | None,
     ) -> int:
-        machine = await create_machine(scope, session, name="Box", base_url="http://x/v1")
+        endpoint = await create_endpoint(scope, session, name="Box", base_url="http://x/v1")
         group = await create_test_group(scope, session, name="Group")
         system_prompt = (
             None
@@ -233,7 +233,7 @@ class TestMessageAssembly:
         created = await create_run_record(
             scope,
             session,
-            machine_id=machine.id,
+            endpoint_id=endpoint.id,
             model_id="test-model",
             group_ids=[group.id],
             probe=_no_probe,

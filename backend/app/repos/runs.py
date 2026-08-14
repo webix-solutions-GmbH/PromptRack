@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Machine, Run, RunResult
+from app.models import Endpoint, Run, RunResult
 from app.repos.customers import assert_same_customer
 from app.repos.scoped import apply_where, scope_through_parent
 from app.scope import Scope, combine, scope_from_row, scope_values, where_scoped
@@ -74,8 +74,8 @@ async def create_run(
     scope: Scope,
     session: AsyncSession,
     *,
-    machine_id: int | None,
-    machine_snapshot: str,
+    endpoint_id: int | None,
+    endpoint_snapshot: str,
     model_id: str,
     group_names: str,
     params: str | None = None,
@@ -85,16 +85,22 @@ async def create_run(
 ) -> Run:
     """Writes the run row.
 
-    The machine is the run's one cross-root reference — the only place a run can
+    The endpoint is the run's one cross-root reference — the only place a run can
     be pointed at another workspace — so it is checked here rather than at the
     call site.
+
+    ``allow_global=True`` because a **shared** endpoint is exactly a row another
+    workspace owns and this one may legitimately run against; the run itself
+    still lands in the caller's workspace (`scope_values`), and its
+    `endpoint_snapshot` is a copy, so a past run is unaffected by whatever Base
+    does to the endpoint afterwards.
     """
-    if machine_id is not None:
-        await assert_same_customer(session, scope, Machine, machine_id)
+    if endpoint_id is not None:
+        await assert_same_customer(session, scope, Endpoint, endpoint_id, allow_global=True)
 
     run = Run(
-        machine_id=machine_id,
-        machine_snapshot=machine_snapshot,
+        endpoint_id=endpoint_id,
+        endpoint_snapshot=endpoint_snapshot,
         model_id=model_id,
         group_names=group_names,
         params=params,

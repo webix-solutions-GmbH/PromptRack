@@ -1,10 +1,10 @@
-"""A live probe of a machine's OpenAI-compatible `/models` endpoint.
+"""A live probe of an endpoint's OpenAI-compatible `/models` route.
 
-Powers two endpoints in `app.api.machines` that differ only in what they do
+Powers two routes in `app.api.endpoints` that differ only in what they do
 with the result: `POST /{id}/discover` (member) upserts what it finds into
-`machine_models`, `POST /{id}/test` (admin — it exercises the stored API key)
+`endpoint_models`, `POST /{id}/test` (admin — it exercises the stored API key)
 just reports whether the endpoint answered. Both read credentials live, never
-frozen into anything, per the content-vs-credentials split machines sit on.
+frozen into anything, per the content-vs-credentials split endpoints sit on.
 
 Kept free of the database and of `app.repos` on purpose: this is a pure
 network call plus response parsing, testable with `httpx.MockTransport` and

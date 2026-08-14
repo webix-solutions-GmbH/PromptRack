@@ -25,7 +25,7 @@ from collections.abc import Awaitable, Callable
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.repos.machines import create_machine
+from app.repos.endpoints import create_endpoint
 from app.repos.prompt_versions import (
     NoChangesError,
     NotAttributedError,
@@ -57,7 +57,7 @@ SLOT_COLUMNS = ("system_prompt_version_id", "task_prompt_version_id")
 async def _run_with_attributed_result(
     session: AsyncSession,
     scope: Scope,
-    machine_id: int,
+    endpoint_id: int,
     *,
     prompt_version_id: int | None,
     slot: str = "system_prompt_version_id",
@@ -73,8 +73,8 @@ async def _run_with_attributed_result(
     run = await create_run_row(
         scope,
         session,
-        machine_id=machine_id,
-        machine_snapshot="{}",
+        endpoint_id=endpoint_id,
+        endpoint_snapshot="{}",
         model_id="qwen3-32b",
         group_names="[]",
     )
@@ -213,9 +213,9 @@ async def test_set_baseline_refuses_a_run_from_another_workspace(
     version_a = await commit_version(scope_a, session, prompt_a.id, message="v1")
     version_a_id = version_a.id
 
-    machine_b = await create_machine(scope_b, session, name="B box", base_url="http://x/v1")
+    endpoint_b = await create_endpoint(scope_b, session, name="B box", base_url="http://x/v1")
     run_b_id, _ = await _run_with_attributed_result(
-        session, scope_b, machine_b.id, prompt_version_id=None
+        session, scope_b, endpoint_b.id, prompt_version_id=None
     )
 
     with pytest.raises(CrossCustomerError):
@@ -229,10 +229,10 @@ async def test_set_baseline_refuses_a_run_that_never_tested_this_version(
     version = await commit_version(scope, session, prompt.id, message="v1")
     version_id = version.id
 
-    machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+    endpoint = await create_endpoint(scope, session, name="box", base_url="http://x/v1")
     # A run in the same workspace, but its result is not attributed to `version`.
     run_id, _ = await _run_with_attributed_result(
-        session, scope, machine.id, prompt_version_id=None
+        session, scope, endpoint.id, prompt_version_id=None
     )
 
     with pytest.raises(NotAttributedError):
@@ -257,9 +257,9 @@ async def test_set_baseline_accepts_a_run_attributed_through_either_column(
     version = await commit_version(scope, session, prompt.id, message="v1")
     version_id = version.id
 
-    machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+    endpoint = await create_endpoint(scope, session, name="box", base_url="http://x/v1")
     run_id, _ = await _run_with_attributed_result(
-        session, scope, machine.id, prompt_version_id=version_id, slot=slot
+        session, scope, endpoint.id, prompt_version_id=version_id, slot=slot
     )
 
     await set_baseline(scope, session, version_id, run_id)
@@ -287,12 +287,12 @@ async def test_one_run_can_be_the_baseline_of_a_version_in_each_slot(
     )
     task_version_id = (await commit_version(scope, session, task_prompt.id, message="t1")).id
 
-    machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+    endpoint = await create_endpoint(scope, session, name="box", base_url="http://x/v1")
     run = await create_run_row(
         scope,
         session,
-        machine_id=machine.id,
-        machine_snapshot="{}",
+        endpoint_id=endpoint.id,
+        endpoint_snapshot="{}",
         model_id="qwen3-32b",
         group_names="[]",
     )
@@ -336,11 +336,11 @@ async def test_set_baseline_still_refuses_a_run_attributed_to_a_different_versio
     other = await create_prompt(scope, session, name="other", content="B", kind="task")
     other_version_id = (await commit_version(scope, session, other.id, message="v1")).id
 
-    machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+    endpoint = await create_endpoint(scope, session, name="box", base_url="http://x/v1")
     run_id, _ = await _run_with_attributed_result(
         session,
         scope,
-        machine.id,
+        endpoint.id,
         prompt_version_id=other_version_id,
         slot="task_prompt_version_id",
     )
@@ -356,9 +356,9 @@ async def test_baseline_run_id_is_nulled_when_the_run_is_deleted(
     version = await commit_version(scope, session, prompt.id, message="v1")
     version_id = version.id
 
-    machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+    endpoint = await create_endpoint(scope, session, name="box", base_url="http://x/v1")
     run_id, _ = await _run_with_attributed_result(
-        session, scope, machine.id, prompt_version_id=version_id
+        session, scope, endpoint.id, prompt_version_id=version_id
     )
     await set_baseline(scope, session, version_id, run_id)
 
@@ -378,9 +378,9 @@ async def test_deleting_a_prompt_cascades_its_versions_and_nulls_result_attribut
     version = await commit_version(scope, session, prompt_id, message="v1")
     version_id = version.id
 
-    machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+    endpoint = await create_endpoint(scope, session, name="box", base_url="http://x/v1")
     _, result_id = await _run_with_attributed_result(
-        session, scope, machine.id, prompt_version_id=version_id
+        session, scope, endpoint.id, prompt_version_id=version_id
     )
 
     await delete_prompt(scope, session, prompt_id)

@@ -1,241 +1,132 @@
 <script setup lang="ts">
-// One matrix cell, expanded: full response, tool-call summary, drift notes
-// and the same rating widget the run detail page uses — a matrix cell is a
+// The body of one matrix cell: full response, tool-call summary, provenance and
+// the same rating widget the run detail page uses — a matrix cell is a
 // `run_results` row like any other, so rating it here writes through the
 // identical `PATCH /api/results/{id}` endpoint. Port of the old app's
-// `compare-row.tsx` `Cell`, moved from an inline expand/collapse into a
-// dialog per this task's contract ("cell dialog with full response +
-// transcript + drift notes") — the matrix itself only carries `tool_call_names`
+// `compare-row.tsx` `Cell` — the matrix itself only carries `tool_call_names`
 // (`app/services/compare.py` never freights the full transcript into a cell),
 // so "transcript" here is the same turn/tool-call summary the old compare
 // page showed, not a message-by-message replay.
-import { computed, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
-import Dialog from 'primevue/dialog'
+//
+// Rendered inline inside the `<td>` by `MatrixTable`, which mounts it only for
+// a cell that exists — hence a non-nullable `cell` and no `visible` prop.
+// Written for a dialog originally, it used to restate the column, the group,
+// the drift note and the metrics; inline in a matrix those are the row header's
+// and the column header's job, and across four columns the reader saw each of
+// them four times. What is left is only what differs *per cell*.
+import { computed } from 'vue'
 import Tag from 'primevue/tag'
 import RatingButtons from '../runs/RatingButtons.vue'
-import { formatDateTime, formatDuration, formatRate } from '../../lib/format'
+import { usePromptVersionLabels } from '../../lib/promptVersionLabels'
 import { splitThinking } from '../../lib/thinking'
 import type { Rating } from '../../lib/rating'
-import { promptsApi } from '../../api/prompts'
 import type { CompareCellView } from '../../api/results'
 
 const props = defineProps<{
-  visible: boolean
-  cell: CompareCellView | null
-  rowGroup: string
-  rowTitle: string
-  /** Conditions that differ across the row this cell belongs to. */
-  drift: string[]
-  /** "model_id @ machine" — the column this cell came from. */
-  columnLabel: string
+  cell: CompareCellView
+  /** True when this slot's frozen text is *not* the same across the row, so
+   * the row header cannot honestly show one copy of it and each cell carries
+   * its own instead. Set per slot: a row can agree on the system prompt and
+   * disagree on the task prompt. */
+  showSystemPrompt: boolean
+  showTaskPrompt: boolean
   canWrite: boolean
 }>()
 
 const emit = defineEmits<{
-  'update:visible': [value: boolean]
   ratingChange: [patch: { rating?: Rating | null; ratingNote?: string | null }]
 }>()
 
-const statusSeverity: Record<string, 'secondary' | 'info' | 'success' | 'danger'> = {
-  pending: 'secondary',
-  running: 'info',
-  ok: 'success',
-  error: 'danger',
-}
-
-const response = computed(() => splitThinking(props.cell?.response_text ?? ''))
-const isToolCell = computed(() => props.cell !== null && props.cell.tool_mode !== 'none')
-const tokenLabel = computed(() => {
-  const cell = props.cell
-  if (!cell || cell.completion_tokens === null) return null
-  return `${cell.tokens_estimated ? '~' : ''}${cell.completion_tokens} tok`
-})
+const response = computed(() => splitThinking(props.cell.response_text ?? ''))
+const isToolCell = computed(() => props.cell.tool_mode !== 'none')
 const readonly = computed(
-  () =>
-    !props.canWrite ||
-    props.cell === null ||
-    props.cell.status === 'pending' ||
-    props.cell.status === 'running',
+  () => !props.canWrite || props.cell.status === 'pending' || props.cell.status === 'running',
 )
 
-// --- version attribution per slot ---------------------------------------
-
-// The matrix ships version *ids*, not numbers — resolving every id in a whole
-// matrix up front would be one request per distinct version for cells nobody
-// opens, so the two ids of the cell actually on screen are fetched when the
-// dialog opens. A failed lookup degrades to `v#<id>`, never to a blank badge.
-const versionNumbers = ref<Map<number, number>>(new Map())
-
-watch(
-  () => [props.visible, props.cell?.id] as const,
-  async ([visible]) => {
-    const cell = props.cell
-    if (!visible || cell === null) return
-    const ids = [cell.system_prompt_version_id, cell.task_prompt_version_id].filter(
-      (id): id is number => id !== null && !versionNumbers.value.has(id),
-    )
-    if (ids.length === 0) return
-    const resolved = await Promise.all(
-      ids.map(async (id): Promise<[number, number] | null> => {
-        try {
-          return [id, (await promptsApi.getVersion(id)).version]
-        } catch {
-          return null
-        }
-      }),
-    )
-    const next = new Map(versionNumbers.value)
-    for (const entry of resolved) if (entry !== null) next.set(entry[0], entry[1])
-    versionNumbers.value = next
-  },
-  { immediate: true },
-)
-
-/** `"v4"` / `"dirty"` / `null` (empty slot) — the same three states run detail
- * shows, told apart by the frozen text since both of the latter two carry a
- * null version id. */
-function slotVersionLabel(text: string | null, versionId: number | null): string | null {
-  if (text === null || text.trim().length === 0) return null
-  if (versionId === null) return 'dirty'
-  const version = versionNumbers.value.get(versionId)
-  return version === undefined ? `v#${versionId}` : `v${version}`
-}
+// Only the ids of the slots actually rendered here — the shared ones are the
+// row header's to resolve, and both go through the same module-level cache.
+const { versionLabel } = usePromptVersionLabels(() => [
+  props.showSystemPrompt ? props.cell.system_prompt_version_id : null,
+  props.showTaskPrompt ? props.cell.task_prompt_version_id : null,
+])
 
 const systemVersionLabel = computed(() =>
-  props.cell === null
-    ? null
-    : slotVersionLabel(props.cell.system_prompt_text, props.cell.system_prompt_version_id),
+  versionLabel(props.cell.system_prompt_text, props.cell.system_prompt_version_id),
 )
 const taskVersionLabel = computed(() =>
-  props.cell === null
-    ? null
-    : slotVersionLabel(props.cell.task_prompt_text, props.cell.task_prompt_version_id),
+  versionLabel(props.cell.task_prompt_text, props.cell.task_prompt_version_id),
 )
-
-/** Drift entries split by voice: "<part> edited since" is about this row
- * against the live test case, everything else is about the cells against each
- * other, and merging them into one sentence made both harder to read. */
-const editedSince = computed(() => props.drift.filter((entry) => entry.endsWith('edited since')))
-const differsAcross = computed(() => props.drift.filter((entry) => !entry.endsWith('edited since')))
 </script>
 
 <template>
-  <Dialog
-    :visible="visible"
-    modal
-    :header="rowTitle"
-    class="cell-dialog"
-    @update:visible="(value) => emit('update:visible', value)"
-  >
-    <div v-if="cell" class="cell-body">
-      <div class="cell-meta">
-        <span class="mono">{{ columnLabel }}</span>
-        <Tag :severity="statusSeverity[cell.status] ?? 'secondary'" :value="cell.status" />
-        <span class="group-name">{{ rowGroup }}</span>
-      </div>
+  <div class="cell-body">
+    <RatingButtons
+      :result-id="cell.id"
+      :rating="cell.rating"
+      :rating-note="cell.rating_note"
+      :readonly="readonly"
+      @change="(patch) => emit('ratingChange', patch)"
+    />
 
-      <p v-if="drift.length > 0" class="drift-note">
-        <span v-if="differsAcross.length > 0">differs across cells: {{ differsAcross.join(', ') }}</span>
-        <span v-if="editedSince.length > 0">{{ editedSince.join(', ') }}</span>
-      </p>
+    <!--
+      The two prompt slots apart, never the assembled message: keeping them
+      separate is what lets a drift note say *the task prompt changed* rather
+      than *the user message changed*. A slot only appears down here when it
+      differs across the row — the row header carries it otherwise, and the
+      test case's own text is always the row's.
+    -->
+    <details v-if="showSystemPrompt" class="prompt-details">
+      <summary>
+        System prompt
+        <Tag v-if="systemVersionLabel" severity="secondary" :value="systemVersionLabel" />
+      </summary>
+      <pre class="pre">{{ cell.system_prompt_text ?? '(no system message)' }}</pre>
+    </details>
+    <details v-if="showTaskPrompt" class="prompt-details">
+      <summary>
+        Task prompt
+        <Tag v-if="taskVersionLabel" severity="secondary" :value="taskVersionLabel" />
+      </summary>
+      <pre class="pre">{{ cell.task_prompt_text ?? '(none)' }}</pre>
+    </details>
 
-      <RatingButtons
-        :result-id="cell.id"
-        :rating="cell.rating"
-        :rating-note="cell.rating_note"
-        :readonly="readonly"
-        @change="(patch) => emit('ratingChange', patch)"
-      />
-
-      <!--
-        The three frozen texts apart, never the assembled messages: keeping them
-        separate is what lets a drift note say *the task prompt changed* rather
-        than *the user message changed*.
-      -->
-      <details class="prompt-details">
-        <summary>Prompts &amp; test case</summary>
-        <div class="prompt-body">
-          <div class="field">
-            <span class="field-label">
-              System prompt
-              <Tag v-if="systemVersionLabel" severity="secondary" :value="systemVersionLabel" />
-            </span>
-            <pre class="pre">{{ cell.system_prompt_text ?? '(no system message)' }}</pre>
-          </div>
-          <div class="field">
-            <span class="field-label">
-              Task prompt
-              <Tag v-if="taskVersionLabel" severity="secondary" :value="taskVersionLabel" />
-            </span>
-            <pre class="pre">{{ cell.task_prompt_text ?? '(none)' }}</pre>
-          </div>
-          <div class="field">
-            <span class="field-label">Content</span>
-            <pre class="pre">{{ cell.test_case_text ?? '(none)' }}</pre>
-          </div>
-        </div>
+    <div v-if="cell.error" class="error-block">{{ cell.error }}</div>
+    <div v-else class="field">
+      <span class="field-label">Response</span>
+      <details v-if="response.thinking !== null">
+        <summary class="think-summary">Thinking{{ response.thinkingClosed ? '' : '…' }}</summary>
+        <pre class="pre italic">{{ response.thinking }}</pre>
       </details>
-
-      <div v-if="cell.error" class="error-block">{{ cell.error }}</div>
-      <div v-else class="field">
-        <span class="field-label">Response</span>
-        <details v-if="response.thinking !== null">
-          <summary class="think-summary">
-            Thinking{{ response.thinkingClosed ? '' : '…' }}
-          </summary>
-          <pre class="pre italic">{{ response.thinking }}</pre>
-        </details>
-        <p v-if="response.answer" class="answer-text">{{ response.answer }}</p>
-        <pre v-else class="pre">{{ response.thinking !== null ? '(empty answer)' : '—' }}</pre>
-      </div>
-
-      <div v-if="isToolCell && cell.turn_count !== null" class="tool-block">
-        <span class="tool-summary">
-          {{ cell.turn_count }} turn{{ cell.turn_count === 1 ? '' : 's' }} ·
-          {{ cell.tool_call_count ?? 0 }} tool call{{ cell.tool_call_count === 1 ? '' : 's' }}
-        </span>
-        <span v-if="cell.tool_call_names.length > 0" class="mono tool-calls">
-          {{ cell.tool_call_names.join(' → ') }}
-        </span>
-      </div>
-
-      <div class="chip-row">
-        <span class="chip">speed <b>{{ formatRate(cell.tokens_per_sec) }}</b></span>
-        <span class="chip">duration <b>{{ formatDuration(cell.duration_ms) }}</b></span>
-        <span class="chip">ttft <b>{{ formatDuration(cell.ttft_ms) }}</b></span>
-        <span v-if="tokenLabel" class="chip">tokens <b>{{ tokenLabel }}</b></span>
-      </div>
-
-      <div class="provenance">
-        <RouterLink :to="`/runs/${cell.run_id}`">run #{{ cell.run_id }}</RouterLink>
-        <span>·</span>
-        <span>{{ formatDateTime(cell.run_created_at) }}</span>
-        <span v-if="cell.superseded" class="superseded">
-          newer attempt ({{ cell.superseded.status }}) in run #{{ cell.superseded.run_id }} skipped
-        </span>
-      </div>
+      <p v-if="response.answer" class="answer-text">{{ response.answer }}</p>
+      <pre v-else class="pre">{{ response.thinking !== null ? '(empty answer)' : '—' }}</pre>
     </div>
-  </Dialog>
+
+    <div v-if="isToolCell && cell.turn_count !== null" class="tool-block">
+      <span class="tool-summary">
+        {{ cell.turn_count }} turn{{ cell.turn_count === 1 ? '' : 's' }} ·
+        {{ cell.tool_call_count ?? 0 }} tool call{{ cell.tool_call_count === 1 ? '' : 's' }}
+      </span>
+      <span v-if="cell.tool_call_names.length > 0" class="mono tool-calls">
+        {{ cell.tool_call_names.join(' → ') }}
+      </span>
+    </div>
+
+  </div>
 </template>
 
 <style scoped>
-.cell-dialog {
-  width: 40rem;
-  max-width: 92vw;
-}
-
+/* Middle links of the flex chain from `MatrixTable`'s `.cell-detail` down to
+   `.answer-text` (see the comment there): `.cell-body` fills the detail box and
+   `.field` absorbs what the rating row, prompt disclosures and tool summary
+   leave, so only the answer scrolls while everything around it stays put.
+   `min-height: 0` on each link — the content-sized default floor would break
+   the chain at whichever link omits it. */
 .cell-body {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 0.875rem;
-}
-
-.cell-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  flex-wrap: wrap;
 }
 
 .mono {
@@ -243,24 +134,9 @@ const differsAcross = computed(() => props.drift.filter((entry) => !entry.endsWi
   font-size: 0.8125rem;
 }
 
-.group-name {
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-}
-
-.drift-note {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  margin: 0;
-  padding: 0.5rem 0.625rem;
-  border: 1px solid var(--p-yellow-300, var(--p-yellow-500));
-  border-radius: var(--p-content-border-radius);
-  background: var(--p-yellow-50, transparent);
-  color: var(--p-yellow-700, var(--p-yellow-600));
-  font-size: 0.75rem;
-}
-
+/* No `display: flex` here, unlike the row header's summaries: that drops the
+   native disclosure triangle in WebKit/Blink, and this one has no chevron of
+   its own to put in its place. */
 .prompt-details summary {
   cursor: pointer;
   font-size: 0.75rem;
@@ -268,14 +144,13 @@ const differsAcross = computed(() => props.drift.filter((entry) => !entry.endsWi
   color: var(--p-text-muted-color);
 }
 
-.prompt-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
+.prompt-details .pre {
   margin-top: 0.5rem;
 }
 
 .field {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
@@ -316,8 +191,16 @@ const differsAcross = computed(() => props.drift.filter((entry) => !entry.endsWi
   color: var(--p-text-muted-color);
 }
 
+/* The one scrollport in the cell, and the end of the flex chain: it takes
+   whatever height the fixed-height cell has left rather than a fixed
+   `max-height` cap, which either wasted the room a short cell had or nested a
+   second scrollbar inside a scrolling `.cell-detail` — the reader had to
+   notice which of two boxes their wheel was over. The thinking block is a
+   sibling rather than a child so opening that disclosure never requires
+   scrolling back up inside the answer. */
 .answer-text {
-  max-height: 20rem;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -329,6 +212,10 @@ const differsAcross = computed(() => props.drift.filter((entry) => !entry.endsWi
 }
 
 .error-block {
+  /* Stands in for `.field` in the flex chain: with `.cell-detail` no longer a
+     scrollport, a long traceback would otherwise spill over the footer. */
+  min-height: 0;
+  overflow: auto;
   border: 1px solid var(--p-red-300, var(--p-red-500));
   border-radius: var(--p-content-border-radius);
   background: var(--p-red-50, transparent);
@@ -357,41 +244,4 @@ const differsAcross = computed(() => props.drift.filter((entry) => !entry.endsWi
   word-break: break-word;
 }
 
-.chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
-  padding: 0.1rem 0.45rem;
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-}
-
-.chip b {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-weight: 500;
-  color: var(--p-text-color);
-}
-
-.provenance {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.375rem;
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-  border-top: 1px solid var(--p-content-border-color);
-  padding-top: 0.625rem;
-}
-
-.superseded {
-  color: var(--p-orange-600, var(--p-orange-500));
-}
 </style>

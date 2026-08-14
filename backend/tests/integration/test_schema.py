@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import async_session
-from app.models import Machine, MachineModel, Run, RunResult, Tool
+from app.models import Endpoint, EndpointModel, Run, RunResult, Tool
 
 # Aliased away from the `Test`-prefixed names: pytest's default collector
 # treats any class visible at test-module level whose *name* starts with
@@ -28,7 +28,7 @@ from app.models import Machine, MachineModel, Run, RunResult, Tool
 from app.models import TestCase as CaseModel
 from app.models import TestCaseToolset as CaseToolsetModel
 from app.models.prompts import PromptVersion
-from app.repos.machines import create_machine, delete_machine, sync_discovered_models
+from app.repos.endpoints import create_endpoint, delete_endpoint, sync_discovered_models
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt, delete_prompt
 from app.repos.runs import create_run, delete_run, insert_run_results, list_run_results
@@ -45,8 +45,8 @@ NOW = datetime(2026, 7, 27, 9, 46, 0, tzinfo=UTC)
 
 
 async def _seed_everything(session: AsyncSession, scope: Scope) -> dict[str, int]:
-    machine = await create_machine(scope, session, name="test-box", base_url="http://x/v1")
-    await sync_discovered_models(scope, session, machine.id, ["qwen3-32b"])
+    endpoint = await create_endpoint(scope, session, name="test-box", base_url="http://x/v1")
+    await sync_discovered_models(scope, session, endpoint.id, ["qwen3-32b"])
 
     toolset = await create_toolset(scope, session, name="Support Desk", kind="manual")
     tool = await create_tool(
@@ -67,8 +67,8 @@ async def _seed_everything(session: AsyncSession, scope: Scope) -> dict[str, int
     run = await create_run(
         scope,
         session,
-        machine_id=machine.id,
-        machine_snapshot='{"name":"test-box"}',
+        endpoint_id=endpoint.id,
+        endpoint_snapshot='{"name":"test-box"}',
         model_id="qwen3-32b",
         group_names='["General"]',
         status="completed",
@@ -96,7 +96,7 @@ async def _seed_everything(session: AsyncSession, scope: Scope) -> dict[str, int
 
     await session.commit()
     return {
-        "machine_id": machine.id,
+        "endpoint_id": endpoint.id,
         "toolset_id": toolset.id,
         "tool_id": tool.id,
         "group_id": group.id,
@@ -118,13 +118,15 @@ async def test_round_trips_date_bool_and_double_precision(session: AsyncSession,
         # float8, not float4: the historical value must not be silently rounded.
         assert result.tokens_per_sec == 41.318472916393
 
-        machine = await fresh.get(Machine, ids["machine_id"])
-        assert machine is not None
-        assert isinstance(machine.created_at, datetime)
-        assert machine.created_at.tzinfo is not None
+        endpoint = await fresh.get(Endpoint, ids["endpoint_id"])
+        assert endpoint is not None
+        assert isinstance(endpoint.created_at, datetime)
+        assert endpoint.created_at.tzinfo is not None
 
         models = (
-            await fresh.scalars(select(MachineModel).where(MachineModel.machine_id == machine.id))
+            await fresh.scalars(
+                select(EndpointModel).where(EndpointModel.endpoint_id == endpoint.id)
+            )
         ).all()
         assert len(models) == 1
         assert models[0].currently_loaded is True
@@ -154,20 +156,20 @@ async def test_cascades_tools_and_links_when_toolset_deleted(session: AsyncSessi
         assert case is not None
 
 
-async def test_nulls_run_machine_id_when_machine_deleted_keeping_the_run(
+async def test_nulls_run_endpoint_id_when_endpoint_deleted_keeping_the_run(
     session: AsyncSession, scope: Scope
 ):
     ids = await _seed_everything(session, scope)
 
-    await delete_machine(scope, session, ids["machine_id"])
+    await delete_endpoint(scope, session, ids["endpoint_id"])
     await session.commit()
 
     async with async_session() as fresh:
         run = await fresh.get(Run, ids["run_id"])
         assert run is not None
-        assert run.machine_id is None
-        # machine_models is a cascade, unlike runs.
-        assert (await fresh.scalars(select(MachineModel))).all() == []
+        assert run.endpoint_id is None
+        # endpoint_models is a cascade, unlike runs.
+        assert (await fresh.scalars(select(EndpointModel))).all() == []
 
 
 async def test_nulls_result_test_case_id_when_test_case_deleted_keeping_the_snapshot(
@@ -218,12 +220,12 @@ async def _seed_both_slots(session: AsyncSession, scope: Scope) -> dict[str, int
         task_prompt_id=task_prompt.id,
     )
 
-    machine = await create_machine(scope, session, name="test-box", base_url="http://x/v1")
+    endpoint = await create_endpoint(scope, session, name="test-box", base_url="http://x/v1")
     run = await create_run(
         scope,
         session,
-        machine_id=machine.id,
-        machine_snapshot='{"name":"test-box"}',
+        endpoint_id=endpoint.id,
+        endpoint_snapshot='{"name":"test-box"}',
         model_id="qwen3-32b",
         group_names='["General"]',
         status="completed",

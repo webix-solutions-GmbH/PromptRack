@@ -11,7 +11,11 @@ from dataclasses import FrozenInstanceError
 import pytest
 from sqlalchemy import select
 
-from app.models import Run, Toolset
+from app.models import Endpoint, Prompt, Run, Toolset
+
+# Aliased away from its own name: pytest tries to *collect* any module-level
+# name starting with `Test`, and warns that the ORM class has an `__init__`.
+from app.models import TestGroup as GroupModel
 from app.repos.scoped import apply_where, scope_through_parent
 from app.scope import (
     CustomerOption,
@@ -25,7 +29,9 @@ from app.scope import (
     scope_values,
     scope_where,
     system_scope,
+    visible_where,
     where_scoped,
+    where_visible,
 )
 
 
@@ -102,6 +108,55 @@ class TestWhereScoped:
         assert where_scoped(system_scope("admin"), Run, A) is A
 
 
+class TestVisibleWhere:
+    """The read-side seam: ownership, OR the rows Base shares.
+
+    Only endpoints and toolsets are shareable, and the tests below pin *both*
+    halves of that — because the value of the design is entirely in the second
+    half: if `visible_where` ever widened to a table that is not shareable, one
+    customer's suite would start showing up inside another's.
+    """
+
+    def test_widens_the_two_shareable_tables_to_include_globals(self) -> None:
+        for model, table in ((Endpoint, "endpoints"), (Toolset, "toolsets")):
+            where = sql(visible_where(scope_from_row(7), model))
+            assert f"{table}.customer_id = :customer_id_1" in where
+            assert f"{table}.is_global IS true" in where
+            assert " OR " in where
+
+    def test_is_exactly_scope_where_for_every_other_table(self) -> None:
+        # Prompts, test groups and runs are the engagement's own material. A
+        # global prompt is not a feature that was left out — it is the thing a
+        # workspace exists to prevent.
+        for model in (Prompt, GroupModel, Run):
+            scope = scope_from_row(7)
+            assert sql(visible_where(scope, model)) == sql(scope_where(scope, model))
+            assert " OR " not in sql(visible_where(scope, model))
+
+    def test_leaves_scope_where_itself_untouched(self) -> None:
+        # The whole mechanism rests on the ownership predicate staying exact:
+        # it is what UPDATE, DELETE and `scope_values` keep using, and so what
+        # makes "read-only outside Base" cost no new guard.
+        assert sql(scope_where(scope_from_row(7), Endpoint)) == (
+            "endpoints.customer_id = :customer_id_1"
+        )
+        assert "is_global" not in sql(scope_where(scope_from_row(7), Toolset))
+
+    def test_is_a_no_op_under_the_system_scope(self) -> None:
+        # "Every workspace" already contains the global rows; narrowing here
+        # would make the escape hatch see less than an ordinary scope.
+        assert visible_where(system_scope("admin"), Endpoint) is None
+        assert where_visible(system_scope("admin"), Endpoint) is None
+        assert where_visible(system_scope("admin"), Endpoint, A) is A
+
+    def test_ands_the_caller_conditions_onto_the_visibility_predicate(self) -> None:
+        where = where_visible(scope_from_row(7), Endpoint, Endpoint.id == 3)
+        text = sql(where)
+        assert "endpoints.is_global IS true" in text
+        assert "endpoints.id = " in text
+        assert " AND " in text
+
+
 class TestScopeValues:
     def test_contributes_the_customer_column_to_an_insert(self) -> None:
         assert scope_values(scope_from_row(3)) == {"customer_id": 3}
@@ -139,6 +194,22 @@ class TestScopeThroughParent:
 
     def test_is_a_no_op_under_the_system_scope(self) -> None:
         assert scope_through_parent(system_scope("admin"), Run.id, Run, Run.id) is None
+
+    def test_inherits_visibility_only_when_asked(self) -> None:
+        # The opt-in, on the seam a child read uses: without it a global
+        # endpoint's `endpoint_models` and a global toolset's `tools` are
+        # invisible — a missing feature, never a leak, which is why this
+        # direction is the default.
+        strict = sql(scope_through_parent(scope_from_row(5), Toolset.id, Toolset, Toolset.id))
+        assert "is_global" not in strict
+
+        shared = sql(
+            scope_through_parent(
+                scope_from_row(5), Toolset.id, Toolset, Toolset.id, visible=True
+            )
+        )
+        assert "toolsets.is_global IS true" in shared
+        assert "toolsets.customer_id = :customer_id_1" in shared
 
 
 class TestResolveActiveCustomerId:

@@ -30,7 +30,7 @@ are kept. **The user approved exactly this list**, and the script re-derives the
 entangled set from the data and refuses if it disagrees with the approved one:
 the ids are checked, not trusted.
 
-**No machine moves.** Base is left with no endpoint on purpose — the user adds
+**No endpoint moves.** Base is left with no endpoint on purpose — the user adds
 one in the UI.
 
 **Direct writes.** Like the two scripts beside it, this is a one-off data
@@ -70,7 +70,7 @@ from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 from app.db import async_session, engine  # noqa: E402
 from app.models import (  # noqa: E402
     Customer,
-    Machine,
+    Endpoint,
     Prompt,
     PromptVersion,
     Run,
@@ -150,13 +150,13 @@ CHECKS: tuple[tuple[str, str], ...] = (
         """,
     ),
     (
-        "run -> machine in another workspace",
+        "run -> endpoint in another workspace",
         """
         select r.id as run_id, r.customer_id as run_customer,
-               m.id as machine_id, m.customer_id as machine_customer
+               e.id as endpoint_id, e.customer_id as endpoint_customer
         from runs r
-        join machines m on m.id = r.machine_id
-        where m.customer_id <> r.customer_id
+        join endpoints e on e.id = r.endpoint_id
+        where e.customer_id <> r.customer_id
         """,
     ),
     (
@@ -704,7 +704,7 @@ class WorkspaceCounts:
     prompt_versions: int
     toolsets: int
     tools: int
-    machines: int
+    endpoints: int
     runs: int
     run_results: int
 
@@ -714,7 +714,7 @@ class WorkspaceCounts:
             f"{self.test_groups} groups, {self.test_cases} cases, "
             f"{self.prompts} prompts, {self.prompt_versions} versions, "
             f"{self.toolsets} toolsets, {self.tools} tools, "
-            f"{self.machines} machines, {self.runs} runs, {self.run_results} results"
+            f"{self.endpoints} endpoints, {self.runs} runs, {self.run_results} results"
         )
 
 
@@ -738,7 +738,7 @@ async def count_workspaces(session: AsyncSession) -> list[WorkspaceCounts]:
                 prompt_versions=await child(PromptVersion, PromptVersion.prompt_id, Prompt),
                 toolsets=await root(Toolset),
                 tools=await child(Tool, Tool.toolset_id, Toolset),
-                machines=await root(Machine),
+                endpoints=await root(Endpoint),
                 runs=await root(Run),
                 run_results=await child(RunResult, RunResult.run_id, Run),
             )
@@ -793,7 +793,7 @@ class Report:
             f"({_ids(list(self.plan.prompt_ids))}) -> their versions follow",
             f"  toolsets                    {len(self.plan.toolset_ids)}  "
             f"({_ids(list(self.plan.toolset_ids))}) -> their tools follow",
-            "  machines                    0  (Base is left with no endpoint on purpose)",
+            "  endpoints                   0  (Base is left with no endpoint on purpose)",
             "",
             f"deployed_version_id set on    {self.facts.deployed_pointers} prompts",
             f"baseline_run_id set on        {self.facts.baseline_pointers} versions",

@@ -13,13 +13,15 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.main import app
-from app.repos.machines import create_machine
+from app.models import Customer
+from app.repos.endpoints import create_endpoint
 from app.scope import Scope
 
 CreateWorkspace = Callable[[str], Awaitable[tuple[int, Scope]]]
@@ -126,7 +128,7 @@ class TestCustomerCrud:
     ) -> None:
         first_id, scope = await create_workspace("Acme")
         second_id, _ = await create_workspace("Globex")
-        await create_machine(scope, session, name="box", base_url="http://x/v1")
+        await create_endpoint(scope, session, name="box", base_url="http://x/v1")
         await session.commit()
         await make_user(session, "member@example.com", "member", first_id)
         await login(client, "member@example.com")
@@ -144,7 +146,7 @@ class TestCustomerCrud:
         first_view = next(
             row for row in (await client.get("/api/customers")).json() if row["id"] == first_id
         )
-        assert first_view["content"]["machines"] == 1
+        assert first_view["content"]["endpoints"] == 1
 
     async def test_deleting_the_only_workspace_is_refused(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
@@ -163,7 +165,7 @@ class TestCustomerCrud:
     ) -> None:
         first_id, scope = await create_workspace("Acme")
         await create_workspace("Globex")
-        await create_machine(scope, session, name="box", base_url="http://x/v1")
+        await create_endpoint(scope, session, name="box", base_url="http://x/v1")
         await session.commit()
         await make_user(session, "admin@example.com", "admin", first_id)
         await login(client, "admin@example.com")
@@ -171,7 +173,7 @@ class TestCustomerCrud:
         response = await client.delete(f"/api/customers/{first_id}")
         assert response.status_code == 409
         message = response.json()["message"]
-        assert "1 machine" in message
+        assert "1 endpoint" in message
         assert "Acme" in message
 
     async def test_a_member_cannot_delete_even_an_empty_workspace(
@@ -200,6 +202,44 @@ class TestCustomerCrud:
 
         remaining = await client.get("/api/customers")
         assert [row["name"] for row in remaining.json()] == ["Acme"]
+
+    async def test_the_base_workspace_cannot_be_deleted_or_archived(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """Both refusals, and the flag the client reads them from.
+
+        Base owns the endpoints and toolsets every other workspace borrows:
+        archiving it would hide the one place they are editable, and deleting it
+        would take them with it. Neither is a privilege check — an admin is
+        refused too — so this sits with the other two delete guards rather than
+        with the role tests.
+        """
+        acme_id, _ = await create_workspace("Acme")
+        base_id, _ = await create_workspace("Base")
+        await session.execute(
+            update(Customer).where(Customer.id == base_id).values(is_base=True)
+        )
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", acme_id)
+        await login(client, "admin@example.com")
+
+        rows = {row["id"]: row for row in (await client.get("/api/customers")).json()}
+        assert rows[base_id]["is_base"] is True
+        assert rows[acme_id]["is_base"] is False
+
+        archived = await client.post(f"/api/customers/{base_id}/archive", json={"archived": True})
+        assert archived.status_code == 409
+        assert "cannot be archived" in archived.json()["message"]
+
+        deleted = await client.delete(f"/api/customers/{base_id}")
+        assert deleted.status_code == 409
+        assert "cannot be deleted" in deleted.json()["message"]
+
+        # Still there, still live, and un-archiving is not refused — only the
+        # transition *into* archived is.
+        assert (
+            await client.post(f"/api/customers/{base_id}/archive", json={"archived": False})
+        ).status_code == 200
 
     async def test_a_missing_workspace_is_a_404_everywhere(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Runs list — each run executed the test cases of one or more groups against
-// one machine and model. Port of `git show master:src/app/runs/page.tsx`,
+// one endpoint and model. Port of `git show master:src/app/runs/page.tsx`,
 // trimmed to what `GET /api/runs` actually returns: the backend's `RunView`
 // (`backend/app/api/runs.py`) carries no per-run result/rating aggregates
 // (the old `listRunSummaries` computed those with SQL joins that have no
@@ -60,8 +60,8 @@ const statusSeverity: Record<RunStatus, 'secondary' | 'info' | 'success' | 'dang
   failed: 'danger',
 }
 
-function machineName(row: RunView): string {
-  return row.machine_snapshot?.name ?? '(deleted machine)'
+function endpointName(row: RunView): string {
+  return row.endpoint_snapshot?.name ?? '(deleted endpoint)'
 }
 
 function excerpt(value: string | null, max = 60): string {
@@ -131,7 +131,7 @@ const hasRuns = computed(() => runs.value.length > 0)
       <div class="page-heading">
         <h1>Runs</h1>
         <p class="subtitle">
-          Each run executes the test cases of one or more groups against a single machine and
+          Each run executes the test cases of one or more groups against a single endpoint and
           model, snapshotting everything so later edits never change its history.
         </p>
       </div>
@@ -168,8 +168,8 @@ const hasRuns = computed(() => runs.value.length > 0)
       <Column header="Created">
         <template #body="{ data }: { data: RunView }">{{ formatDateTime(data.created_at) }}</template>
       </Column>
-      <Column header="Machine">
-        <template #body="{ data }: { data: RunView }">{{ machineName(data) }}</template>
+      <Column header="Endpoint">
+        <template #body="{ data }: { data: RunView }">{{ endpointName(data) }}</template>
       </Column>
       <Column header="Model">
         <template #body="{ data }: { data: RunView }">

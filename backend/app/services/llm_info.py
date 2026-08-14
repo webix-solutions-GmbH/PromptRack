@@ -4,7 +4,7 @@ server and the model a run is about to measure.
 Ported from `git show master:src/lib/llm-info.ts`, called from
 `app.services.run_create` **outside** the transaction (it is a network call,
 and a transaction must never wait on one) and frozen onto `runs.llm_info` —
-same invariant as the machine snapshot: a past run never changes.
+same invariant as the endpoint snapshot: a past run never changes.
 
 The OpenAI surface itself is thin, so besides the model's entry in `/models`
 this knocks on the provider-specific side doors of the servers this app cares

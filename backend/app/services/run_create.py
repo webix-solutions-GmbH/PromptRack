@@ -22,7 +22,7 @@ rather than a plausible guess.
 
 The line between frozen and live is **content vs. credentials**: text, tool
 definitions and a manual tool's canned response travel with the run; a
-machine's `base_url`/`api_key` and a toolset's `mcp_url`/headers are read live
+endpoint's `base_url`/`api_key` and a toolset's `mcp_url`/headers are read live
 at execution time, so a moved endpoint does not break Resume.
 
 Three things deliberately stay *outside* the transaction, in this order:
@@ -45,8 +45,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Machine, Prompt, TestCase, TestGroup
-from app.repos.machines import get_machine, touch_machine_model
+from app.models import Endpoint, Prompt, TestCase, TestGroup
+from app.repos.endpoints import get_endpoint, touch_endpoint_model
 from app.repos.prompt_versions import list_version_refs
 from app.repos.prompts import list_prompts_by_ids
 from app.repos.runs import create_run, insert_run_results
@@ -87,8 +87,8 @@ class CreatedRun:
     """What the caller needs to redirect to (or report about) the new run."""
 
     run_id: int
-    machine_id: int
-    machine_name: str
+    endpoint_id: int
+    endpoint_name: str
     model_id: str
     group_names: list[str]
     result_count: int
@@ -98,7 +98,7 @@ async def create_run_record(
     scope: Scope,
     session: AsyncSession,
     *,
-    machine_id: int,
+    endpoint_id: int,
     model_id: str,
     group_ids: Sequence[int],
     params: Mapping[str, Any] | None = None,
@@ -110,9 +110,9 @@ async def create_run_record(
     if not unique_group_ids:
         raise RunCreateError("Select at least one test group.")
 
-    machine = await get_machine(scope, session, machine_id)
-    if machine is None:
-        raise RunCreateError("Machine not found.")
+    endpoint = await get_endpoint(scope, session, endpoint_id)
+    if endpoint is None:
+        raise RunCreateError("Endpoint not found.")
 
     groups = await list_test_groups_by_ids(scope, session, unique_group_ids)
     if not groups:
@@ -130,7 +130,7 @@ async def create_run_record(
     # Ask the endpoint about itself (server software, model metadata) and
     # freeze the answer with the run. Best-effort: an unreachable or
     # tight-lipped server just leaves the snapshot empty.
-    info = await (probe or probe_llm_info)(machine.base_url, machine.api_key, model_id)
+    info = await (probe or probe_llm_info)(endpoint.base_url, endpoint.api_key, model_id)
 
     now = utc_now()
     cleaned_comment = comment.strip() if comment else None
@@ -139,8 +139,8 @@ async def create_run_record(
         run = await create_run(
             scope,
             session,
-            machine_id=machine.id,
-            machine_snapshot=_machine_snapshot(machine),
+            endpoint_id=endpoint.id,
+            endpoint_snapshot=_endpoint_snapshot(endpoint),
             model_id=model_id,
             params=json.dumps(dict(params)) if params else None,
             llm_info=serialize_llm_info(info),
@@ -158,18 +158,18 @@ async def create_run_record(
         )
         await insert_run_results(scope, session, run.id, rows)
 
-        # Remember the model against the machine so the next run can offer it
+        # Remember the model against the endpoint so the next run can offer it
         # even when it was typed by hand and never showed up in /models.
-        await touch_machine_model(
-            scope, session, machine_id=machine.id, model_id=model_id, source="run", at=now
+        await touch_endpoint_model(
+            scope, session, endpoint_id=endpoint.id, model_id=model_id, source="run", at=now
         )
 
         run_id = run.id
 
     return CreatedRun(
         run_id=run_id,
-        machine_id=machine.id,
-        machine_name=machine.name,
+        endpoint_id=endpoint.id,
+        endpoint_name=endpoint.name,
         model_id=model_id,
         group_names=[group.name for group in groups],
         result_count=len(rows),
@@ -333,21 +333,21 @@ async def _assert_tool_config(
 # ---------------------------------------------------------------------------
 
 
-def _machine_snapshot(machine: Machine) -> str:
-    """The machine as the run will forever display it: name, endpoint, hardware.
+def _endpoint_snapshot(endpoint: Endpoint) -> str:
+    """The endpoint as the run will forever display it: name, URL, hardware.
 
     `api_key` is deliberately absent — a run snapshot is display data and has no
     business holding a secret — while `base_url` is kept because "which endpoint
     produced these numbers" is part of the answer. Execution still reads the
-    live machine row, so a moved endpoint does not break Resume.
+    live endpoint row, so a moved endpoint does not break Resume.
     """
     return json.dumps(
         {
-            "name": machine.name,
-            "base_url": machine.base_url,
-            "cpu": machine.cpu,
-            "ram": machine.ram,
-            "gpu": machine.gpu,
+            "name": endpoint.name,
+            "base_url": endpoint.base_url,
+            "cpu": endpoint.cpu,
+            "ram": endpoint.ram,
+            "gpu": endpoint.gpu,
         }
     )
 

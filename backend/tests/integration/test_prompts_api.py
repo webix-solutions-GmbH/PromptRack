@@ -23,7 +23,7 @@ from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.main import app
 from app.models import User
-from app.repos.machines import create_machine
+from app.repos.endpoints import create_endpoint
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt
 from app.repos.runs import create_run as create_run_row
@@ -667,7 +667,7 @@ class TestBaseline:
         self,
         session: AsyncSession,
         scope: Scope,
-        machine_id: int,
+        endpoint_id: int,
         *,
         prompt_version_id: int | None,
         slot: str = "system_prompt_version_id",
@@ -681,8 +681,8 @@ class TestBaseline:
         run = await create_run_row(
             scope,
             session,
-            machine_id=machine_id,
-            machine_snapshot="{}",
+            endpoint_id=endpoint_id,
+            endpoint_snapshot="{}",
             model_id="qwen3-32b",
             group_names="[]",
         )
@@ -710,9 +710,9 @@ class TestBaseline:
         customer_id, scope = await create_workspace("Acme")
         prompt = await create_prompt(scope, session, name="Greeting", content="A")
         version = await commit_version(scope, session, prompt.id, message="v1")
-        machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+        endpoint = await create_endpoint(scope, session, name="box", base_url="http://x/v1")
         run_id = await self._run_with_attributed_result(
-            session, scope, machine.id, prompt_version_id=version.id
+            session, scope, endpoint.id, prompt_version_id=version.id
         )
         await session.commit()
         await make_user(session, "member@example.com", "member", customer_id)
@@ -730,9 +730,9 @@ class TestBaseline:
         customer_id, scope = await create_workspace("Acme")
         prompt = await create_prompt(scope, session, name="Greeting", content="A")
         version = await commit_version(scope, session, prompt.id, message="v1")
-        machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+        endpoint = await create_endpoint(scope, session, name="box", base_url="http://x/v1")
         run_id = await self._run_with_attributed_result(
-            session, scope, machine.id, prompt_version_id=None
+            session, scope, endpoint.id, prompt_version_id=None
         )
         await session.commit()
         await make_user(session, "member@example.com", "member", customer_id)
@@ -750,9 +750,9 @@ class TestBaseline:
         prompt_a = await create_prompt(scope_a, session, name="Greeting", content="A")
         version_a = await commit_version(scope_a, session, prompt_a.id, message="v1")
         customer_b, scope_b = await create_workspace("B")
-        machine_b = await create_machine(scope_b, session, name="box", base_url="http://x/v1")
+        endpoint_b = await create_endpoint(scope_b, session, name="box", base_url="http://x/v1")
         run_b_id = await self._run_with_attributed_result(
-            session, scope_b, machine_b.id, prompt_version_id=None
+            session, scope_b, endpoint_b.id, prompt_version_id=None
         )
         await session.commit()
         await make_user(session, "member@example.com", "member", customer_b)
@@ -769,9 +769,9 @@ class TestBaseline:
         customer_id, scope = await create_workspace("Acme")
         prompt = await create_prompt(scope, session, name="Greeting", content="A")
         version = await commit_version(scope, session, prompt.id, message="v1")
-        machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+        endpoint = await create_endpoint(scope, session, name="box", base_url="http://x/v1")
         run_id = await self._run_with_attributed_result(
-            session, scope, machine.id, prompt_version_id=version.id
+            session, scope, endpoint.id, prompt_version_id=version.id
         )
         await session.commit()
         await make_user(session, "viewer@example.com", "viewer", customer_id)

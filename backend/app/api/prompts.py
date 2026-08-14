@@ -1,7 +1,7 @@
 """`/api/prompts` — the versioned asset: draft CRUD, commits, the deployed
 pointer, baseline attribution, restore, and diffs against any two texts.
 
-Prompts hold no credentials (unlike machines/toolsets), so the whole surface
+Prompts hold no credentials (unlike endpoints/toolsets), so the whole surface
 sits at `Writer` for mutation and `CurrentUser` for reads — the content vs.
 credentials split the plan draws for the pivot. `mark_deployed`-equivalent
 (`POST /{id}/deploy`) stays reachable from the UI only in the sense that

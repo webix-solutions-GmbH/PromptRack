@@ -42,7 +42,7 @@ const router = useRouter()
 const confirm = useConfirm()
 const toast = useToast()
 
-const machineName = ref('(deleted machine)')
+const endpointName = ref('(deleted endpoint)')
 const baseUrl = ref<string | null>(null)
 const cpu = ref<string | null>(null)
 const ram = ref<string | null>(null)
@@ -110,11 +110,11 @@ async function load() {
   loadError.value = null
   try {
     const run = await runsApi.get(runId.value)
-    machineName.value = run.machine_snapshot?.name ?? '(deleted machine)'
-    baseUrl.value = run.machine_snapshot?.base_url ?? null
-    cpu.value = run.machine_snapshot?.cpu ?? null
-    ram.value = run.machine_snapshot?.ram ?? null
-    gpu.value = run.machine_snapshot?.gpu ?? null
+    endpointName.value = run.endpoint_snapshot?.name ?? '(deleted endpoint)'
+    baseUrl.value = run.endpoint_snapshot?.base_url ?? null
+    cpu.value = run.endpoint_snapshot?.cpu ?? null
+    ram.value = run.endpoint_snapshot?.ram ?? null
+    gpu.value = run.endpoint_snapshot?.gpu ?? null
     modelId.value = run.model_id
     params.value = run.params
     llmInfo.value = run.llm_info
@@ -418,7 +418,7 @@ const totalDuration = computed(() =>
               <Tag :severity="statusSeverity[runStatus]" :value="runStatus" />
               <Tag v-if="archivedAt !== null" severity="warn" value="archived" />
             </h1>
-            <p class="mono-line">{{ modelId }} @ {{ machineName }}</p>
+            <p class="mono-line">{{ modelId }} @ {{ endpointName }}</p>
           </div>
 
           <div v-if="auth.canWrite" class="header-actions">

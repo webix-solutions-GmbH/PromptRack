@@ -8,7 +8,9 @@ signed-in user may see and switch into every workspace, which is what "a
 workspace is a label, not a tenant" means.
 
 :func:`assert_same_customer` lives here too, because it is the one check the
-database cannot make.
+database cannot make — and so does :func:`assert_base_workspace`, the rule that
+only the Base workspace may own a global endpoint or toolset, for the same
+reason: "which workspace is Base" is a fact about this table.
 """
 
 from collections.abc import Iterable
@@ -18,13 +20,14 @@ from datetime import datetime
 from sqlalchemy import Select, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Customer, Machine, Prompt, Run, TestCase, TestGroup, Toolset
+from app.models import Customer, Endpoint, Prompt, Run, TestCase, TestGroup, Toolset
 from app.scope import (
     CrossCustomerError,
     CustomerOption,
     Scope,
     ScopedRoot,
     require_customer_id,
+    visible_where,
 )
 
 
@@ -109,7 +112,7 @@ class CustomerContentCounts:
     guards.
     """
 
-    machines: int
+    endpoints: int
     prompts: int
     toolsets: int
     test_groups: int
@@ -117,7 +120,7 @@ class CustomerContentCounts:
 
     @property
     def total(self) -> int:
-        return self.machines + self.prompts + self.toolsets + self.test_groups + self.runs
+        return self.endpoints + self.prompts + self.toolsets + self.test_groups + self.runs
 
 
 async def count_customer_content(
@@ -125,7 +128,7 @@ async def count_customer_content(
 ) -> CustomerContentCounts:
     counts: dict[str, int] = {}
     for key, model in (
-        ("machines", Machine),
+        ("endpoints", Endpoint),
         ("prompts", Prompt),
         ("toolsets", Toolset),
         ("test_groups", TestGroup),
@@ -179,14 +182,14 @@ async def find_run_workspace(session: AsyncSession, run_id: int) -> WorkspaceRef
     return await _find_workspace(session, statement)
 
 
-async def find_machine_workspace(
-    session: AsyncSession, machine_id: int
+async def find_endpoint_workspace(
+    session: AsyncSession, endpoint_id: int
 ) -> WorkspaceRef | None:
-    """The same, for a machine detail page."""
+    """The same, for an endpoint detail page."""
     statement = (
         select(Customer.id, Customer.name)
-        .join(Machine, Machine.customer_id == Customer.id)
-        .where(Machine.id == machine_id)
+        .join(Endpoint, Endpoint.customer_id == Customer.id)
+        .where(Endpoint.id == endpoint_id)
     )
     return await _find_workspace(session, statement)
 
@@ -198,11 +201,66 @@ async def _find_workspace(
     return None if row is None else WorkspaceRef(id=row.id, name=row.name)
 
 
+# ---------------------------------------------------------------------------
+# The Base workspace — the one that may own global endpoints and toolsets
+# ---------------------------------------------------------------------------
+
+
+class NotBaseWorkspaceError(Exception):
+    """A row was asked to become global outside the Base workspace.
+
+    Its own class rather than a `CrossCustomerError` because it is the opposite
+    complaint: the row is right here in this workspace, and what is refused is
+    the *sharing*, not the reference. Callers map it to 400 — the request is
+    well-formed and simply asks for something only Base may ask for.
+    """
+
+
+async def base_customer_id(session: AsyncSession) -> int | None:
+    """The id of the Base workspace, or ``None`` on an install that has none.
+
+    Ordered and limited rather than trusting uniqueness: nothing in the schema
+    stops a second flagged row (`is_base` is a plain boolean, and a partial
+    unique index would still have to be repaired by hand if one ever appeared),
+    so the oldest flagged workspace wins and the answer stays a single id.
+
+    ``None`` — no workspace carries the flag — makes :func:`assert_base_workspace`
+    refuse everything, which is the right way round: an install with no Base has
+    nowhere for a global row to live.
+    """
+    return await session.scalar(
+        select(Customer.id).where(Customer.is_base.is_(True)).order_by(Customer.id.asc()).limit(1)
+    )
+
+
+async def assert_base_workspace(session: AsyncSession, scope: Scope, *, subject: str) -> None:
+    """Refuses marking a row global anywhere but Base.
+
+    Called from inside the endpoint and toolset repositories on create *and* on
+    update, the same way `assert_prompt_slot` and `assert_user_message` are
+    called from inside their repositories: the rule cannot be forgotten by a
+    route, an MCP tool or a script.
+
+    The check is on the *scope*, not on the row, and that is exact rather than a
+    shortcut: a create lands in `scope_values(scope)`'s workspace and an update
+    is filtered by `scope_where`, so the row a write touches is always the
+    scope's own.
+    """
+    customer_id = require_customer_id(scope)
+    base_id = await base_customer_id(session)
+    if base_id is not None and customer_id == base_id:
+        return
+    raise NotBaseWorkspaceError(
+        f"{subject} can only be shared from the Base workspace. "
+        "Switch to Base and create it there, or leave it local to this workspace."
+    )
+
+
 #: How each root table is named in a refusal. `assert_same_customer` only ever
 #: sees these five, since they are the only tables a cross-root reference can
 #: point at.
 _ROOT_LABELS: dict[ScopedRoot, str] = {
-    Machine: "machine",
+    Endpoint: "endpoint",
     Toolset: "toolset",
     TestGroup: "test group",
     Prompt: "prompt",
@@ -215,6 +273,8 @@ async def assert_same_customer(
     scope: Scope,
     table: ScopedRoot,
     row_id: int | Iterable[int],
+    *,
+    allow_global: bool = False,
 ) -> None:
     """Refuses a write that would point a row at another workspace's row.
 
@@ -223,10 +283,40 @@ async def assert_same_customer(
     would denormalise the column onto every child table and need composite
     ``(id, customer_id)`` foreign keys everywhere. The places it can happen are
     exactly the places two roots meet — a test case's group, a test case's
-    prompt, a test case's toolsets, a run's machine, a version's baseline run.
+    prompt, a test case's toolsets, a run's endpoint, a version's baseline run.
 
     Called from *inside* the repository functions rather than from each caller,
     so no call site can forget it.
+
+    ``allow_global`` widens the check from ownership to
+    :func:`~app.scope.visible_where`, for the references that may legitimately
+    name a shared row. Keyword-only and defaulting to ``False``, so a positional
+    slip cannot enable it and every other call site keeps refusing globals
+    untouched. The exception list is **five** call sites, not the two the
+    original design named, and every one of them is load-bearing — written out
+    here because a reader who only sees the design's two will read the other
+    three as a leak:
+
+    * ``app/repos/runs.py`` — a run's endpoint. A run against a shared box is
+      the whole point of sharing one.
+    * ``app/repos/test_cases.py`` — a test case's toolsets, on the link write.
+    * ``app/services/tool_config.py`` — the *same* toolset rule, checked again
+      at run creation. It is one shared function called from both authoring and
+      run creation precisely so a case that saves cannot be one a run then
+      refuses; a stricter check here would refuse exactly what the link write
+      above allows.
+    * ``app/repos/endpoints.py``, :func:`~app.repos.endpoints.touch_endpoint_model`
+      — the model sighting a run records against the endpoint it just ran on.
+      That write is inside `create_run_record`'s transaction, so refusing it
+      would refuse the run.
+    * ``app/repos/endpoints.py``, :func:`~app.repos.endpoints.sync_discovered_models`
+      — discovery. The new-run page probes the selected endpoint on page load
+      for every role, so a shared box that refused it would be unselectable.
+
+    Both endpoint entries write ``endpoint_models``, a table with no
+    ``customer_id`` of its own and nothing customer-specific in a row — see
+    :class:`~app.models.endpoints.EndpointModel` on why one shared box having
+    one shared history is intended rather than a leak.
 
     A missing id and a foreign id are reported identically: to this caller the
     row does not exist, and it has no business learning that it exists
@@ -237,14 +327,17 @@ async def assert_same_customer(
     if not wanted:
         return
 
+    reachable = table.customer_id == customer_id
+    if allow_global:
+        # Routed through the one definition of "shareable" rather than spelled
+        # out again here. `require_customer_id` already refused a system scope,
+        # so this is never the "every workspace" `None`.
+        shared = visible_where(scope, table)
+        if shared is not None:
+            reachable = shared
+
     found = set(
-        (
-            await session.scalars(
-                select(table.id).where(
-                    table.customer_id == customer_id, table.id.in_(wanted)
-                )
-            )
-        ).all()
+        (await session.scalars(select(table.id).where(reachable, table.id.in_(wanted)))).all()
     )
     missing = [row for row in wanted if row not in found]
     if not missing:

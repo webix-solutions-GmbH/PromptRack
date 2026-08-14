@@ -30,7 +30,7 @@ from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.auth.tokens import create_token
 from app.main import app
-from app.repos.machines import create_machine
+from app.repos.endpoints import create_endpoint
 from app.repos.test_cases import create_test_group
 from app.scope import Scope
 
@@ -114,7 +114,7 @@ async def test_mcp_endpoint(
     # A byte-identical group name in both workspaces: what name resolution
     # must never cross.
     await create_test_group(globex, session, name="Invoices")
-    await create_machine(acme, session, name="Spark", base_url=DEAD_ENDPOINT, api_key=None)
+    await create_endpoint(acme, session, name="Spark", base_url=DEAD_ENDPOINT, api_key=None)
     await session.commit()
 
     async with app.router.lifespan_context(app):
@@ -473,7 +473,7 @@ async def test_mcp_endpoint(
                 "create_run",
                 {
                     "customer": "Acme",
-                    "machine": "Spark",
+                    "endpoint": "Spark",
                     "model": "qwen3:8b",
                     "groups": ["Invoices"],
                     "comment": "over mcp",

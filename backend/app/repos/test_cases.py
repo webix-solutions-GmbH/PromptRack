@@ -34,6 +34,7 @@ from app.scope import (
     combine,
     scope_values,
     where_scoped,
+    where_visible,
 )
 from app.services.message_assembly import assert_user_message
 
@@ -392,13 +393,17 @@ async def replace_toolset_links(
     of rows per case. The link order is the caller's order.
 
     A link row has no ``customer_id`` of its own, so this is the only place the
-    pairing can be checked: both ends have to be in the caller's workspace.
+    pairing can be checked: the test case has to be the caller's own, and each
+    toolset has to be one the caller can *see* — ``allow_global=True``, because
+    a shared toolset is precisely a row another workspace owns and this one may
+    select. The asymmetry is the point: the case is owned, the toolset is
+    borrowed.
     """
     if await get_test_case(scope, session, test_case_id) is None:
         raise CrossCustomerError(
             f"The selected test case (id {test_case_id}) no longer exists in this workspace."
         )
-    await assert_same_customer(session, scope, Toolset, toolset_ids)
+    await assert_same_customer(session, scope, Toolset, toolset_ids, allow_global=True)
 
     await session.execute(
         delete(TestCaseToolset).where(TestCaseToolset.test_case_id == test_case_id)
@@ -458,9 +463,10 @@ async def list_test_case_toolset_views(
             Toolset.kind,
             TestCaseToolset.sort_order,
         ).join(Toolset, TestCaseToolset.toolset_id == Toolset.id),
-        where_scoped(
-            scope, Toolset, TestCaseToolset.test_case_id.in_(list(test_case_ids))
-        ),
+        # Visible, not owned: a case may legitimately select a toolset the Base
+        # workspace shares, and naming it "(missing)" in the editor because the
+        # join was strict would be a lie about a row sitting right there.
+        where_visible(scope, Toolset, TestCaseToolset.test_case_id.in_(list(test_case_ids))),
     ).order_by(TestCaseToolset.test_case_id.asc(), TestCaseToolset.sort_order.asc())
     rows = await session.execute(statement)
     return [
@@ -498,7 +504,10 @@ async def list_snapshot_tool_rows(
     Scoped on ``toolsets``, the tools' own parent, which is what closes the
     cross-workspace path: a case linked to a foreign toolset contributes no
     tools at all, and the "no enabled tools" refusal then fires instead of a
-    foreign definition reaching the model.
+    foreign definition reaching the model. "Foreign" now means *not visible* —
+    a toolset the Base workspace shares is offered like any local one, which is
+    the whole point of sharing it, and the definitions are frozen into the run
+    from here either way.
 
     Ordered so a run's frozen tool list is reproducible: by test case, then by
     the order the case lists its toolsets in, then by tool name.
@@ -519,9 +528,7 @@ async def list_snapshot_tool_rows(
         )
         .join(Toolset, TestCaseToolset.toolset_id == Toolset.id)
         .join(Tool, Tool.toolset_id == Toolset.id),
-        where_scoped(
-            scope, Toolset, TestCaseToolset.test_case_id.in_(list(test_case_ids))
-        ),
+        where_visible(scope, Toolset, TestCaseToolset.test_case_id.in_(list(test_case_ids))),
     ).order_by(
         TestCaseToolset.test_case_id.asc(),
         TestCaseToolset.sort_order.asc(),

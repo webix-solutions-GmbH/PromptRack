@@ -160,7 +160,20 @@ async function submitForm() {
       </Column>
       <Column header="Used by">
         <template #body="{ data }: { data: Prompt }">
-          <span :class="{ unused: data.used_by_test_case_count === 0 }">
+          <!-- Flat and forced: a prompt's cases span groups, so landing on
+               the grouped view would scatter the answer across panels the
+               reader then has to expand. Zero stays unlinked — an empty
+               filtered table is a worse answer than a number that does not
+               invite a click. -->
+          <RouterLink
+            v-if="data.used_by_test_case_count > 0"
+            :to="`/test-cases?view=flat&prompt=${data.id}`"
+          >
+            {{ data.used_by_test_case_count }} test case{{
+              data.used_by_test_case_count === 1 ? '' : 's'
+            }}
+          </RouterLink>
+          <span v-else class="unused">
             {{ data.used_by_test_case_count }} test case{{
               data.used_by_test_case_count === 1 ? '' : 's'
             }}

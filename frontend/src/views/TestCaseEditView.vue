@@ -21,6 +21,7 @@ import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import RadioButton from 'primevue/radiobutton'
 import Select from 'primevue/select'
+import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
@@ -548,6 +549,7 @@ async function removeTestCase() {
                     <Checkbox v-model="form.toolsetIds" :value="toolset.id" :input-id="`toolset-${toolset.id}`" />
                     <span>
                       {{ toolset.name }}
+                      <Tag v-if="toolset.is_global" value="Global" severity="info" />
                       <span class="hint">({{ toolset.kind }}, {{ toolset.enabled_tool_count }} enabled)</span>
                     </span>
                   </label>

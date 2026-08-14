@@ -5,6 +5,7 @@
 import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
@@ -53,10 +54,18 @@ interface ToolsetFormState {
   kind: ToolsetKind
   mcp_url: string
   mcp_headers: string
+  is_global: boolean
 }
 
 function emptyForm(): ToolsetFormState {
-  return { name: '', description: '', kind: 'manual', mcp_url: '', mcp_headers: '' }
+  return {
+    name: '',
+    description: '',
+    kind: 'manual',
+    mcp_url: '',
+    mcp_headers: '',
+    is_global: false,
+  }
 }
 
 const dialogOpen = ref(false)
@@ -80,6 +89,7 @@ async function submitForm() {
       kind: form.value.kind,
       mcp_url: form.value.kind === 'mcp' ? form.value.mcp_url || null : null,
       mcp_headers: form.value.kind === 'mcp' ? form.value.mcp_headers || null : null,
+      is_global: form.value.is_global,
     })
     toast.add({ severity: 'success', summary: 'Toolset created', life: 3000 })
     dialogOpen.value = false
@@ -115,6 +125,7 @@ async function submitForm() {
           <div class="name-cell">
             <RouterLink :to="`/toolsets/${data.id}`" class="name-link">{{ data.name }}</RouterLink>
             <Tag :value="data.kind === 'mcp' ? 'MCP' : 'manual'" :severity="data.kind === 'mcp' ? 'info' : 'secondary'" />
+            <Tag v-if="data.is_global" value="Global" severity="info" />
           </div>
           <span v-if="data.description" class="description">{{ data.description }}</span>
         </template>
@@ -163,6 +174,10 @@ async function submitForm() {
             />
           </div>
         </template>
+        <label v-if="auth.isBaseWorkspace" class="checkbox-option" for="toolset-is-global">
+          <Checkbox v-model="form.is_global" binary input-id="toolset-is-global" />
+          Global — share this toolset with every workspace
+        </label>
         <Message v-if="formError" severity="error" :closable="false">{{ formError }}</Message>
         <div class="dialog-actions">
           <Button type="button" label="Cancel" text @click="dialogOpen = false" />
@@ -239,6 +254,14 @@ async function submitForm() {
   font-size: 0.8125rem;
   font-weight: 500;
   color: var(--p-text-muted-color);
+}
+
+.checkbox-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 400;
 }
 
 .dialog-actions {

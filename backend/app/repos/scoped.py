@@ -9,7 +9,7 @@ from sqlalchemy import ColumnElement, Delete, Select, Update, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
-from app.scope import Scope, ScopedRoot, scope_where
+from app.scope import Scope, ScopedRoot, scope_where, visible_where
 
 
 def utc_now() -> datetime:
@@ -41,14 +41,24 @@ def scope_through_parent(
     child_fk: InstrumentedAttribute[Any],
     parent: ScopedRoot,
     parent_id: InstrumentedAttribute[Any],
+    *,
+    visible: bool = False,
 ) -> ColumnElement[bool] | None:
     """Restricts a child row to parents that are in scope.
 
     Child tables never carry ``customer_id`` themselves — they inherit it
     through their foreign key. A read can express that as a join; an UPDATE or
     DELETE cannot, which is what this subquery is for.
+
+    ``visible=True`` inherits through :func:`~app.scope.visible_where` instead
+    of ownership, so a global endpoint's ``endpoint_models`` and a global
+    toolset's ``tools`` come along with the parent a workspace can see. It is
+    opt-in for the same reason the seam itself is: a child read that forgets it
+    shows nothing shared, which is a missing feature and never a leak. A write
+    must not pass it — a shared parent's children are still only editable where
+    the parent lives.
     """
-    parent_scope = scope_where(scope, parent)
+    parent_scope = visible_where(scope, parent) if visible else scope_where(scope, parent)
     if parent_scope is None:
         return None
     return child_fk.in_(select(parent_id).where(parent_scope))

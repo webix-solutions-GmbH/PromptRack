@@ -18,6 +18,12 @@ contract and the mapping from `run_results` rows to matrix cells:
   is **repeated** rather than comma-joined because a model id is free-form text
   that must never need escaping, and `?group=` narrows model mode's rows.
 
+A shared `/results` link is a contract, so the machines→endpoints rename stopped
+at the wire: `?models=` keeps its name and its positional `<id>|<model_id>`
+format (`app.services.compare.model_column_key`), and only the identifiers
+around it read `endpoint` now. Same reasoning that kept `?runs=` meaningful
+without an explicit `?mode=`.
+
 Reading results is `CurrentUser`, not `Writer`: a viewer's whole job is to look
 at them.
 """
@@ -64,7 +70,7 @@ from app.services.compare import (
     parse_id_list,
     parse_model_column_keys,
     parse_run_ids,
-    snapshot_machine_name,
+    snapshot_endpoint_name,
     split_model_column_key,
 )
 from app.services.tool_loop import parse_transcript
@@ -100,6 +106,11 @@ class ColumnTally(BaseModel):
     bad: int
     unrated: int
     avg_rate: float | None
+    #: Sum of `duration_ms` over the cells on screen — model generation time
+    #: only, same reasoning as `avg_rate` above: a column's cells can come
+    #: from several runs in model mode, so this is tallied here rather than
+    #: read off any one run.
+    total_duration_ms: int | None
 
 
 class MatrixResponse(BaseModel):
@@ -151,9 +162,9 @@ def _to_cell(scope: Scope, row: CompareCellRow, column_key: str = "") -> Compare
     """One `run_results` row as a matrix cell.
 
     Always the row's own snapshots — the three frozen texts (system prompt,
-    task prompt, the case's own content) and the tools; the run is consulted
-    only for what is not frozen per result — when it was created, and the
-    request params it was sent with.
+    task prompt, the case's own content), the rubric they were graded against
+    and the tools; the run is consulted only for what is not frozen per result
+    — when it was created, and the request params it was sent with.
     """
     result = row.result
     return CompareCellView(
@@ -172,6 +183,7 @@ def _to_cell(scope: Scope, row: CompareCellRow, column_key: str = "") -> Compare
         test_case_text=result.test_case_text,
         system_prompt_text=result.system_prompt_text,
         task_prompt_text=result.task_prompt_text,
+        expected_output=result.expected_output,
         tools_snapshot=result.tools_snapshot,
         tool_mode=result.tool_mode,
         tool_choice=result.tool_choice,
@@ -199,7 +211,7 @@ def _run_view(row: ComparableRunRow, group_names: list[str]) -> CompareRunView:
     return CompareRunView(
         id=run.id,
         model_id=run.model_id,
-        machine_name=snapshot_machine_name(run.machine_snapshot),
+        endpoint_name=snapshot_endpoint_name(run.endpoint_snapshot),
         status=run.status,
         archived=run.archived_at is not None,
         created_at=run.created_at,
@@ -210,12 +222,16 @@ def _run_view(row: ComparableRunRow, group_names: list[str]) -> CompareRunView:
         ok=row.ok,
         error=row.error,
         avg_rate=row.avg_rate,
+        total_duration_ms=row.total_duration_ms,
     )
 
 
 def _tallies(rows: list[CompareRowView], column: int) -> ColumnTally:
     cells = [row.cells[column] for row in rows if row.cells[column] is not None]
     rates = [cell.tokens_per_sec for cell in cells if cell.tokens_per_sec is not None]
+    # Never coerced to 0, mirroring `avg_rate`: a column with no measured
+    # duration reports "nothing measured", not "took no time at all".
+    durations = [cell.duration_ms for cell in cells if cell.duration_ms is not None]
     good = sum(1 for cell in cells if cell.rating == "good")
     meh = sum(1 for cell in cells if cell.rating == "meh")
     bad = sum(1 for cell in cells if cell.rating == "bad")
@@ -226,6 +242,7 @@ def _tallies(rows: list[CompareRowView], column: int) -> ColumnTally:
         bad=bad,
         unrated=len(cells) - good - meh - bad,
         avg_rate=sum(rates) / len(rates) if rates else None,
+        total_duration_ms=sum(durations) if durations else None,
     )
 
 
@@ -311,8 +328,8 @@ async def _model_mode(
         [
             ModelColumnRun(
                 id=run.id,
-                machine_id=run.machine_id,
-                machine_name=snapshot_machine_name(run.machine_snapshot),
+                endpoint_id=run.endpoint_id,
+                endpoint_name=snapshot_endpoint_name(run.endpoint_snapshot),
                 model_id=run.model_id,
                 created_at=run.created_at,
                 # The read already excluded archived runs; the pure function
@@ -328,6 +345,7 @@ async def _model_mode(
                 status=result.status,
                 rating=result.rating,
                 tokens_per_sec=result.tokens_per_sec,
+                duration_ms=result.duration_ms,
             )
             for result in inputs.results
         ],
@@ -375,11 +393,11 @@ async def _model_mode(
         # test case is in scope and the extra predicate would be noise.
         scoped_ids = [row.id for row in scoped_cases] if selected_group_ids else None
         cells = [
-            _to_cell(scope, row, model_column_key(row.machine_id, row.model_id))
+            _to_cell(scope, row, model_column_key(row.endpoint_id, row.model_id))
             for row in await compare_cells_for_models(
                 scope,
                 session,
-                [(ref.machine_id, ref.model_id) for ref in refs if ref is not None],
+                [(ref.endpoint_id, ref.model_id) for ref in refs if ref is not None],
                 scoped_ids,
             )
         ]

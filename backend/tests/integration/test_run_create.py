@@ -33,7 +33,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.repos.machines import create_machine, list_machine_models
+from app.repos.endpoints import create_endpoint, list_endpoint_models
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt, delete_prompt, update_prompt
 from app.repos.runs import list_run_results, list_runs
@@ -67,7 +67,7 @@ async def _vllm_probe(base_url: str, api_key: str | None, model_id: str) -> LlmI
 @dataclass
 class Fixture:
     scope: Scope
-    machine_id: int
+    endpoint_id: int
     system_prompt_id: int
     system_version_id: int
     task_prompt_id: int
@@ -84,14 +84,14 @@ CASE_TEXT = "ORIGINAL TEST CASE TEXT"
 
 
 async def _seed(session: AsyncSession, scope: Scope) -> Fixture:
-    """One machine, **two** committed prompts — one per kind — a manual tool,
+    """One endpoint, **two** committed prompts — one per kind — a manual tool,
     and one tool test case whose two slots are both filled.
 
     Both slots on the same case is what makes this fixture worth its size: it
     is the only shape that can show the two texts and the two version ids
     staying independent of each other.
     """
-    machine = await create_machine(
+    endpoint = await create_endpoint(
         scope,
         session,
         name="test-box",
@@ -139,7 +139,7 @@ async def _seed(session: AsyncSession, scope: Scope) -> Fixture:
 
     return Fixture(
         scope=scope,
-        machine_id=machine.id,
+        endpoint_id=endpoint.id,
         system_prompt_id=system_prompt.id,
         system_version_id=system_version.id,
         task_prompt_id=task_prompt.id,
@@ -159,7 +159,7 @@ async def test_freezes_text_prompt_and_tools_against_later_edits(
     created = await create_run_record(
         scope,
         session,
-        machine_id=fixture.machine_id,
+        endpoint_id=fixture.endpoint_id,
         model_id="qwen3-32b",
         group_ids=[fixture.group_id],
         params={"temperature": 0.2},
@@ -167,7 +167,7 @@ async def test_freezes_text_prompt_and_tools_against_later_edits(
         probe=_no_probe,
     )
     assert created.result_count == 1
-    assert created.machine_name == "test-box"
+    assert created.endpoint_name == "test-box"
     assert created.group_names == ["General"]
 
     [before] = await list_run_results(scope, session, created.run_id)
@@ -224,7 +224,7 @@ async def test_records_the_run_row_and_the_model_sighting(
     created = await create_run_record(
         scope,
         session,
-        machine_id=fixture.machine_id,
+        endpoint_id=fixture.endpoint_id,
         model_id="qwen3-32b",
         group_ids=[fixture.group_id],
         params={"temperature": 0.2},
@@ -239,7 +239,7 @@ async def test_records_the_run_row_and_the_model_sighting(
     assert json.loads(run.params) == {"temperature": 0.2}
     assert json.loads(run.group_names) == ["General"]
     assert run.comment == "first pass"
-    assert json.loads(run.machine_snapshot) == {
+    assert json.loads(run.endpoint_snapshot) == {
         "name": "test-box",
         "base_url": "http://127.0.0.1:9/v1",
         "cpu": "EPYC 7443P",
@@ -252,9 +252,9 @@ async def test_records_the_run_row_and_the_model_sighting(
         "details": {"max_model_len": "32768"},
     }
 
-    # The model is remembered against the machine even though it never showed
+    # The model is remembered against the endpoint even though it never showed
     # up in /models — the next run can offer it.
-    sightings = await list_machine_models(scope, session, machine_id=fixture.machine_id)
+    sightings = await list_endpoint_models(scope, session, endpoint_id=fixture.endpoint_id)
     assert [(row.model_id, row.source, row.currently_loaded) for row in sightings] == [
         ("qwen3-32b", "run", False)
     ]
@@ -266,7 +266,7 @@ async def test_no_params_and_no_comment_stay_null(session: AsyncSession, scope: 
     created = await create_run_record(
         scope,
         session,
-        machine_id=fixture.machine_id,
+        endpoint_id=fixture.endpoint_id,
         model_id="qwen3-32b",
         group_ids=[fixture.group_id],
         params={},
@@ -286,7 +286,7 @@ async def _run_once(session: AsyncSession, scope: Scope, fixture: Fixture):
     created = await create_run_record(
         scope,
         session,
-        machine_id=fixture.machine_id,
+        endpoint_id=fixture.endpoint_id,
         model_id="qwen3-32b",
         group_ids=[fixture.group_id],
         probe=_no_probe,
@@ -479,13 +479,13 @@ async def test_rolls_the_run_back_when_a_result_row_cannot_be_written(
 
     # The model sighting is the last write inside the transaction, so failing
     # it proves the run row and its result rows go back with it.
-    monkeypatch.setattr("app.services.run_create.touch_machine_model", explode)
+    monkeypatch.setattr("app.services.run_create.touch_endpoint_model", explode)
 
     with pytest.raises(RuntimeError, match="simulated failure mid-transaction"):
         await create_run_record(
             scope,
             session,
-            machine_id=fixture.machine_id,
+            endpoint_id=fixture.endpoint_id,
             model_id="qwen3-32b",
             group_ids=[fixture.group_id],
             probe=_no_probe,
@@ -505,7 +505,7 @@ async def test_refuses_a_selection_that_would_measure_nothing(
         await create_run_record(
             scope,
             session,
-            machine_id=fixture.machine_id,
+            endpoint_id=fixture.endpoint_id,
             model_id="qwen3-32b",
             group_ids=[],
             probe=_no_probe,
@@ -515,7 +515,7 @@ async def test_refuses_a_selection_that_would_measure_nothing(
         await create_run_record(
             scope,
             session,
-            machine_id=fixture.machine_id,
+            endpoint_id=fixture.endpoint_id,
             model_id="qwen3-32b",
             group_ids=[fixture.group_id + 999],
             probe=_no_probe,
@@ -526,7 +526,7 @@ async def test_refuses_a_selection_that_would_measure_nothing(
         await create_run_record(
             scope,
             session,
-            machine_id=fixture.machine_id,
+            endpoint_id=fixture.endpoint_id,
             model_id="qwen3-32b",
             group_ids=[empty.id],
             probe=_no_probe,
@@ -535,7 +535,7 @@ async def test_refuses_a_selection_that_would_measure_nothing(
     assert await list_runs(scope, session) == []
 
 
-async def test_refuses_a_machine_this_workspace_cannot_see(
+async def test_refuses_an_endpoint_this_workspace_cannot_see(
     session: AsyncSession, create_workspace: CreateWorkspace
 ):
     _, scope_a = await create_workspace("A")
@@ -543,11 +543,11 @@ async def test_refuses_a_machine_this_workspace_cannot_see(
     fixture = await _seed(session, scope_a)
     other = await _seed(session, scope_b)
 
-    with pytest.raises(RunCreateError, match="Machine not found"):
+    with pytest.raises(RunCreateError, match="Endpoint not found"):
         await create_run_record(
             scope_a,
             session,
-            machine_id=other.machine_id,
+            endpoint_id=other.endpoint_id,
             model_id="qwen3-32b",
             group_ids=[fixture.group_id],
             probe=_no_probe,
@@ -565,7 +565,7 @@ async def test_refuses_a_tool_test_with_no_enabled_tools(
         await create_run_record(
             scope,
             session,
-            machine_id=fixture.machine_id,
+            endpoint_id=fixture.endpoint_id,
             model_id="qwen3-32b",
             group_ids=[fixture.group_id],
             probe=_no_probe,
@@ -588,7 +588,7 @@ async def test_refuses_two_toolsets_that_define_the_same_tool_name(
         await create_run_record(
             scope,
             session,
-            machine_id=fixture.machine_id,
+            endpoint_id=fixture.endpoint_id,
             model_id="qwen3-32b",
             group_ids=[fixture.group_id],
             probe=_no_probe,
@@ -618,7 +618,7 @@ async def test_refuses_a_test_case_linked_to_a_foreign_toolset(
         await create_run_record(
             scope_a,
             session,
-            machine_id=fixture.machine_id,
+            endpoint_id=fixture.endpoint_id,
             model_id="qwen3-32b",
             group_ids=[fixture.group_id],
             probe=_no_probe,

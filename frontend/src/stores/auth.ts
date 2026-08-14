@@ -39,6 +39,9 @@ export interface CustomerOption {
   id: number
   name: string
   archived: boolean
+  /** The workspace that owns the global endpoints and toolsets. Only one
+   * `CustomerOption` in the list ever carries this true. */
+  is_base: boolean
 }
 
 interface MeResponse {
@@ -77,6 +80,22 @@ export const useAuthStore = defineStore('auth', {
      * `/auth/status` reports sign-up open. */
     setupRequired: false,
   }),
+  getters: {
+    /** Whether the active workspace is Base — the one workspace whose
+     * endpoints and toolsets are shared globally, and the only place a
+     * global row's "Global" checkbox is offered at all.
+     *
+     * Derived from `customers` (`GET /customers`, `app.api.customers`'s
+     * `CustomerView`, which carries `is_base`) rather than from
+     * `activeCustomer` (`GET /auth/me`'s `active_customer`): that response
+     * is built from a *different*, narrower `CustomerView` defined locally
+     * in `app.auth.router` — `{id, name, archived}` only — that does not
+     * carry `is_base` at all. Same name, different shape; see this task's
+     * report for the drift this papers over. */
+    isBaseWorkspace(state): boolean {
+      return state.customers.find((c) => c.id === state.activeCustomer?.id)?.is_base ?? false
+    },
+  },
   actions: {
     applyMe(me: MeResponse) {
       this.user = me.user

@@ -1,7 +1,7 @@
 """This app *as* an MCP server.
 
 An agent (Claude Code, say) can push another project's real prompts and test
-cases in here, commit a version, start a run against a registered machine and
+cases in here, commit a version, start a run against a registered endpoint and
 read the measurements back — instead of retyping someone else's prompts into
 the web UI by hand. The point is that the interesting test cases already exist
 in other repositories: a customer's own agent repo is where the job is defined.
@@ -33,7 +33,7 @@ What stayed ours, because it is policy rather than protocol:
 * **Epoch millis on the wire**, matching the old server: `get_run`/`list_runs`
   already emitted numbers and external agents parse them.
 
-Deliberately absent, both carried over from the old surface: machines,
+Deliberately absent, both carried over from the old surface: endpoints,
 toolsets and tools are not writable here (a base URL with an API key and an MCP
 server URL are credentials, and this app's line is content vs. credentials),
 and neither are customer workspaces (creating an engagement is a human decision
@@ -99,7 +99,7 @@ from app.repos.customers import (
     count_test_cases_by_customer,
     list_customers,
 )
-from app.repos.machines import list_loaded_models, list_machine_models, list_machines
+from app.repos.endpoints import list_endpoint_models, list_endpoints, list_loaded_models
 from app.repos.prompt_versions import (
     NoChangesError,
     NotAttributedError,
@@ -170,11 +170,11 @@ INSTRUCTIONS = (
     "test cases are the regression suite that proves a version still works — including on new "
     "models and new hardware. "
     "Author it from here: test groups and test cases, prompts and their commits, then runs "
-    "against a registered machine (an OpenAI-compatible endpoint, self-hosted or hosted) and "
+    "against a registered endpoint (an OpenAI-compatible base URL, self-hosted or hosted) and "
     "the measurements they produce. "
     "Every call is scoped to one customer engagement's workspace: pass `customer` (name or id) "
     "on each call, or send an `X-Customer` header on the connection. `list_customers` lists "
-    "them. Machines, toolsets and workspaces are deliberately read-only here — they hold "
+    "them. Endpoints, toolsets and workspaces are deliberately read-only here — they hold "
     "credentials, or are a human decision — and marking a version deployed stays a human claim "
     "made in the UI. "
     "Every call acts as the owner of the API token it carries, with that account's role: a "
@@ -359,11 +359,15 @@ async def list_customers_tool(ctx: Context) -> dict[str, Any]:
                     "name": row.name,
                     "description": row.description,
                     "archived": row.archived_at is not None,
+                    # The workspace that owns the shared endpoints and toolsets
+                    # — where a global row is authored, and the one workspace
+                    # that can be neither deleted nor archived.
+                    "is_base": row.is_base,
                     "counts": {
                         "prompts": count.prompts,
                         "test_groups": count.test_groups,
                         "test_cases": test_case_counts.get(row.id, 0),
-                        "machines": count.machines,
+                        "endpoints": count.endpoints,
                         "runs": count.runs,
                     },
                     "created_at": _millis(row.created_at),
@@ -374,32 +378,37 @@ async def list_customers_tool(ctx: Context) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Machines
+# Endpoints
 # ---------------------------------------------------------------------------
 
 
 @_tool(
-    "list_machines",
-    "List the registered endpoints (a machine is an OpenAI-compatible base URL plus hardware "
-    "notes) and every model ever seen on each, flagging which are currently loaded. API keys "
-    "are never returned.",
+    "list_endpoints",
+    "List the endpoints this workspace can run against (an endpoint is an OpenAI-compatible "
+    "base URL plus hardware notes) and every model ever seen on each, flagging which are "
+    "currently loaded. Includes endpoints shared from the Base workspace, marked `is_global` — "
+    "usable here, editable only in Base. API keys are never returned.",
     write=False,
 )
-async def list_machines_tool(ctx: Context, customer: CustomerArg = None) -> dict[str, Any]:
-    async with _scoped_call(ctx, customer, "list_machines") as (session, scope, _):
-        machines = await list_machines(scope, session, "name")
-        models = await list_machine_models(scope, session)
+async def list_endpoints_tool(ctx: Context, customer: CustomerArg = None) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "list_endpoints") as (session, scope, _):
+        endpoints = await list_endpoints(scope, session, "name")
+        models = await list_endpoint_models(scope, session)
 
         return {
-            "machines": [
+            "endpoints": [
                 {
-                    "id": machine.id,
-                    "name": machine.name,
-                    "base_url": machine.base_url,
-                    "cpu": machine.cpu,
-                    "ram": machine.ram,
-                    "gpu": machine.gpu,
-                    "notes": machine.notes,
+                    "id": endpoint.id,
+                    "name": endpoint.name,
+                    "base_url": endpoint.base_url,
+                    "cpu": endpoint.cpu,
+                    "ram": endpoint.ram,
+                    "gpu": endpoint.gpu,
+                    "notes": endpoint.notes,
+                    # Shared from Base, so an agent can tell "this box is the
+                    # consultancy's" from "this box is this engagement's"
+                    # without a second call.
+                    "is_global": endpoint.is_global,
                     "models": [
                         {
                             "model_id": model.model_id,
@@ -408,10 +417,10 @@ async def list_machines_tool(ctx: Context, customer: CustomerArg = None) -> dict
                             "last_seen_at": _millis(model.last_seen_at),
                         }
                         for model in models
-                        if model.machine_id == machine.id
+                        if model.endpoint_id == endpoint.id
                     ],
                 }
-                for machine in machines
+                for endpoint in endpoints
             ]
         }
 
@@ -1193,15 +1202,15 @@ def _status_summary(statuses: Sequence[str], ratings: Mapping[str, int]) -> dict
 
 
 def _run_header(run: Run) -> dict[str, Any]:
-    machine = _json_value(run.machine_snapshot) or {}
+    endpoint = _json_value(run.endpoint_snapshot) or {}
     return {
         "id": run.id,
         "created_at": _millis(run.created_at),
         "started_at": _millis(run.started_at),
         "finished_at": _millis(run.finished_at),
-        "machine": machine.get("name"),
-        "machine_id": run.machine_id,
-        "base_url": machine.get("base_url"),
+        "endpoint": endpoint.get("name"),
+        "endpoint_id": run.endpoint_id,
+        "base_url": endpoint.get("base_url"),
         "model": run.model_id,
         "params": _json_value(run.params),
         "comment": run.comment,
@@ -1281,7 +1290,7 @@ def _snapshot_tool_details(snapshot: Any) -> list[dict[str, Any]]:
 
 @_tool(
     "create_run",
-    "Create a run of one or more test groups against a model on a machine. Three texts — the "
+    "Create a run of one or more test groups against a model on an endpoint. Three texts — the "
     "system prompt, the task prompt and the case's own content — plus the tool definitions are "
     "frozen into the run separately, so later edits never rewrite it, and each result records "
     "which committed version each of the two prompts was at. Set execute: true to "
@@ -1291,8 +1300,8 @@ def _snapshot_tool_details(snapshot: Any) -> list[dict[str, Any]]:
 )
 async def create_run_tool(
     ctx: Context,
-    machine: Annotated[
-        str | int, Field(description="Name or id of the machine to run against (list_machines).")
+    endpoint: Annotated[
+        str | int, Field(description="Name or id of the endpoint to run against (list_endpoints).")
     ],
     groups: Annotated[
         list[str | int],
@@ -1301,7 +1310,7 @@ async def create_run_tool(
     model: Annotated[
         str | None,
         Field(
-            description="Model id as the endpoint names it. May be omitted when the machine "
+            description="Model id as the endpoint names it. May be omitted when the endpoint "
             "reports exactly one currently loaded model."
         ),
     ] = None,
@@ -1316,10 +1325,10 @@ async def create_run_tool(
     customer: CustomerArg = None,
 ) -> dict[str, Any]:
     async with _scoped_call(ctx, customer, "create_run") as (session, scope, _):
-        machine_row = resolve_row_ref(
-            parse_row_ref(machine, '"machine"'),
-            await list_machines(scope, session, "name"),
-            "machine",
+        endpoint_row = resolve_row_ref(
+            parse_row_ref(endpoint, '"endpoint"'),
+            await list_endpoints(scope, session, "name"),
+            "endpoint",
         )
 
         group_refs = parse_row_refs(groups, "groups")
@@ -1329,18 +1338,18 @@ async def create_run_tool(
 
         model_id = (model or "").strip()
         if not model_id:
-            loaded = await list_loaded_models(scope, session, machine_row.id)
+            loaded = await list_loaded_models(scope, session, endpoint_row.id)
             if len(loaded) == 1:
                 model_id = loaded[0].model_id
             elif not loaded:
                 raise McpToolError(
-                    f'"model" is required: machine "{machine_row.name}" has no model marked as '
-                    "currently loaded. Run Discover on the machine page, or pass the model id."
+                    f'"model" is required: endpoint "{endpoint_row.name}" has no model marked as '
+                    "currently loaded. Run Discover on the endpoint page, or pass the model id."
                 )
             else:
                 names = ", ".join(row.model_id for row in loaded)
                 raise McpToolError(
-                    f'"model" is required: machine "{machine_row.name}" has several loaded '
+                    f'"model" is required: endpoint "{endpoint_row.name}" has several loaded '
                     f"models ({names})."
                 )
 
@@ -1358,7 +1367,7 @@ async def create_run_tool(
             created = await create_run_record(
                 scope,
                 session,
-                machine_id=machine_row.id,
+                endpoint_id=endpoint_row.id,
                 model_id=model_id,
                 group_ids=group_ids,
                 params=params or None,
@@ -1382,7 +1391,7 @@ async def create_run_tool(
         return {
             "run": {
                 "id": created.run_id,
-                "machine": created.machine_name,
+                "endpoint": created.endpoint_name,
                 "model": created.model_id,
                 "groups": created.group_names,
                 "test_case_count": created.result_count,

@@ -1,7 +1,7 @@
 """`runs` and `run_results` — one execution of a suite against one model.
 
 `run_results` is where the **snapshot invariant** lives: editing or deleting a
-prompt, test case, machine or toolset must never change how a past run
+prompt, test case, endpoint or toolset must never change how a past run
 displays, so run creation freezes the **three texts** (`system_prompt_text`,
 `task_prompt_text`, `test_case_text`), the **two version ids** attributing them
 (`system_prompt_version_id`, `task_prompt_version_id`) and the tool
@@ -41,7 +41,7 @@ Rating = Literal["good", "meh", "bad"]
 
 
 class Run(Base):
-    """One suite executed against one model on one machine."""
+    """One suite executed against one model on one endpoint."""
 
     __tablename__ = "runs"
 
@@ -49,10 +49,11 @@ class Run(Base):
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.id", ondelete="RESTRICT"), index=True
     )
-    #: Kept for cross-run comparison; `machine_snapshot` is what renders.
-    machine_id: Mapped[int | None] = mapped_column(ForeignKey("machines.id", ondelete="SET NULL"))
-    #: JSON snapshot of the machine (name, hardware notes) at creation time.
-    machine_snapshot: Mapped[str]
+    #: Kept for cross-run comparison; `endpoint_snapshot` is what renders.
+    endpoint_id: Mapped[int | None] = mapped_column(ForeignKey("endpoints.id", ondelete="SET NULL"))
+    #: JSON snapshot of the endpoint at creation time: name, base URL, and the
+    #: hardware notes if it is a box you own rather than a hosted API.
+    endpoint_snapshot: Mapped[str]
     model_id: Mapped[str]
     #: JSON of the request parameters (temperature, …).
     params: Mapped[str | None]

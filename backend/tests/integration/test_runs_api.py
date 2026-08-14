@@ -1,6 +1,6 @@
 """`/api/runs` and `/api/results` end to end: real app, real Postgres.
 
-The execute endpoint is exercised over a machine whose endpoint refuses
+The execute endpoint is exercised over an endpoint whose endpoint refuses
 connections, which is the one way to drive the whole NDJSON path — route
 guard, detached executor, event queue, persistence — without a model on the
 other end. What it produces is itself an invariant worth pinning: every
@@ -20,7 +20,7 @@ from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.main import app
-from app.repos.machines import create_machine
+from app.repos.endpoints import create_endpoint
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt, delete_prompt
 from app.repos.runs import list_run_results
@@ -78,8 +78,8 @@ async def make_fixture(
     titles: tuple[str, ...] = ("First",),
     base_url: str = DEAD_ENDPOINT,
 ) -> tuple[int, int]:
-    """`(machine_id, group_id)` with one test case per title."""
-    machine = await create_machine(scope, session, name="Box", base_url=base_url)
+    """`(endpoint_id, group_id)` with one test case per title."""
+    endpoint = await create_endpoint(scope, session, name="Box", base_url=base_url)
     group = await create_test_group(scope, session, name="Group")
     for index, title in enumerate(titles):
         await create_test_case(
@@ -91,15 +91,15 @@ async def make_fixture(
             sort_order=index,
         )
     await session.commit()
-    return machine.id, group.id
+    return endpoint.id, group.id
 
 
 async def make_run(scope: Scope, session: AsyncSession, **kwargs: object) -> int:
-    machine_id, group_id = await make_fixture(scope, session, **kwargs)  # type: ignore[arg-type]
+    endpoint_id, group_id = await make_fixture(scope, session, **kwargs)  # type: ignore[arg-type]
     created = await create_run_record(
         scope,
         session,
-        machine_id=machine_id,
+        endpoint_id=endpoint_id,
         model_id="test-model",
         group_ids=[group_id],
         probe=_no_probe,
@@ -113,14 +113,14 @@ class TestRunCrud:
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id = await make_fixture(scope, session, titles=("First", "Second"))
+        endpoint_id, group_id = await make_fixture(scope, session, titles=("First", "Second"))
         await make_user(session, "member@example.com", "member", customer_id)
         await login(client, "member@example.com")
 
         created = await client.post(
             "/api/runs",
             json={
-                "machine_id": machine_id,
+                "endpoint_id": endpoint_id,
                 "model_id": "  qwen3:8b  ",
                 "group_ids": [group_id],
                 "temperature": 0.2,
@@ -133,9 +133,9 @@ class TestRunCrud:
         assert body["status"] == "pending"
         assert body["params"] == {"temperature": 0.2}
         assert body["group_names"] == ["Group"]
-        assert body["machine_snapshot"]["name"] == "Box"
+        assert body["endpoint_snapshot"]["name"] == "Box"
         # A snapshot is display data and must never carry the key.
-        assert "api_key" not in body["machine_snapshot"]
+        assert "api_key" not in body["endpoint_snapshot"]
 
         detail = await client.get(f"/api/runs/{body['id']}")
         assert detail.status_code == 200
@@ -161,7 +161,7 @@ class TestRunCrud:
         from a rendered string.
         """
         customer_id, scope = await create_workspace("Acme")
-        machine = await create_machine(scope, session, name="Box", base_url=DEAD_ENDPOINT)
+        endpoint = await create_endpoint(scope, session, name="Box", base_url=DEAD_ENDPOINT)
         group = await create_test_group(scope, session, name="Group")
         system_prompt = await create_prompt(
             scope, session, name="framing", content="You are terse.", kind="system"
@@ -183,7 +183,7 @@ class TestRunCrud:
         created = await create_run_record(
             scope,
             session,
-            machine_id=machine.id,
+            endpoint_id=endpoint.id,
             model_id="test-model",
             group_ids=[group.id],
             probe=_no_probe,
@@ -206,13 +206,13 @@ class TestRunCrud:
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, _ = await make_fixture(scope, session)
+        endpoint_id, _ = await make_fixture(scope, session)
         await make_user(session, "member@example.com", "member", customer_id)
         await login(client, "member@example.com")
 
         refused = await client.post(
             "/api/runs",
-            json={"machine_id": machine_id, "model_id": "m", "group_ids": []},
+            json={"endpoint_id": endpoint_id, "model_id": "m", "group_ids": []},
         )
         assert refused.status_code == 422, refused.text
 
@@ -227,7 +227,7 @@ class TestRunCrud:
         envelope rather than as an unhandled 500.
         """
         customer_id, scope = await create_workspace("Acme")
-        machine = await create_machine(scope, session, name="Box", base_url=DEAD_ENDPOINT)
+        endpoint = await create_endpoint(scope, session, name="Box", base_url=DEAD_ENDPOINT)
         group = await create_test_group(scope, session, name="Group")
         task_prompt = await create_prompt(
             scope, session, name="instruction", content="Extract the PO.", kind="task"
@@ -247,7 +247,7 @@ class TestRunCrud:
 
         refused = await client.post(
             "/api/runs",
-            json={"machine_id": machine.id, "model_id": "m", "group_ids": [group.id]},
+            json={"endpoint_id": endpoint.id, "model_id": "m", "group_ids": [group.id]},
         )
         assert refused.status_code == 400, refused.text
         assert 'Test case "Task only"' in refused.json()["message"]
@@ -256,13 +256,13 @@ class TestRunCrud:
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id = await make_fixture(scope, session)
+        endpoint_id, group_id = await make_fixture(scope, session)
         await make_user(session, "viewer@example.com", "viewer", customer_id)
         await login(client, "viewer@example.com")
 
         refused = await client.post(
             "/api/runs",
-            json={"machine_id": machine_id, "model_id": "m", "group_ids": [group_id]},
+            json={"endpoint_id": endpoint_id, "model_id": "m", "group_ids": [group_id]},
         )
         assert refused.status_code == 403
 
@@ -405,7 +405,7 @@ class TestExecute:
         assert types.count("resultStart") == 2
         assert types.count("resultError") == 2
         assert events[-1]["type"] == "runDone"
-        # Every attempt died at connection level: the machine was never there.
+        # Every attempt died at connection level: the endpoint was never there.
         assert events[-1]["status"] == "failed"
 
         session.expire_all()

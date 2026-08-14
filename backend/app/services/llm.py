@@ -24,7 +24,7 @@ The measurement contract is what the rest of the app depends on:
 * `duration_ms` is the whole stream, and
   :func:`compute_tokens_per_sec` divides completion tokens by the *generation*
   window (`duration - ttft`), never by the total, so a slow prefill does not
-  read as a slow machine.
+  read as a slow endpoint.
 
 The parsing half (:func:`parse_sse_chunk`,
 :func:`consume_chat_completion_stream`, :func:`compute_tokens_per_sec`) is kept
@@ -88,7 +88,7 @@ class LlmError(Exception):
     """A completion that did not produce a result, with *why* attached.
 
     The `kind` is what the executor grades a run on: only a connection-level
-    failure means "the machine was never reachable" and can mark a whole run
+    failure means "the endpoint was never reachable" and can mark a whole run
     `failed`. An HTTP 400 or a mid-stream error is a failure of that one row.
     """
 
@@ -543,7 +543,7 @@ def compute_tokens_per_sec(
     """Generation throughput: completion tokens over the *generation* window.
 
     The window is the total duration minus the time-to-first-token prefill —
-    a machine that thinks for two seconds and then generates fast is fast, and
+    an endpoint that thinks for two seconds and then generates fast is fast, and
     dividing by the total would report it as slow. Returns None whenever the
     numbers cannot produce a meaningful rate (no tokens, no duration, or a
     prefill at least as long as the whole request).
@@ -610,11 +610,11 @@ async def stream_chat(
 ) -> LlmResult:
     """Streams one completion from an OpenAI-compatible endpoint.
 
-    `base_url` is a machine's stored endpoint including its `/v1` (the same
+    `base_url` is the endpoint's stored base URL including its `/v1` (the same
     value `app.services.discovery` appends `/models` to); `/chat/completions`
     is appended here.
 
-    Credentials are passed in rather than looked up: a machine's `base_url` and
+    Credentials are passed in rather than looked up: an endpoint's `base_url` and
     `api_key` are read live at execution time, never frozen into a run, so this
     function never touches the database.
 
@@ -626,7 +626,7 @@ async def stream_chat(
     `transport` is a test seam only (`httpx.MockTransport`).
 
     Raises :class:`LlmError` for everything that produced no result; only
-    `is_connection_level` ones mean the machine was never reachable.
+    `is_connection_level` ones mean the endpoint was never reachable.
     """
     url = f"{base_url.strip().rstrip('/')}/chat/completions"
 

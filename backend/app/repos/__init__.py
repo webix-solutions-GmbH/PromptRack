@@ -15,7 +15,7 @@ Two conventions hold throughout:
   :func:`app.repos.scoped.transaction` block) decides where the unit of work
   ends. That is what lets several writes land atomically without any caller
   having to know how.
-* **Children inherit scope through their parent.** ``machine_models``,
+* **Children inherit scope through their parent.** ``endpoint_models``,
   ``tools``, ``test_cases``, ``test_case_toolsets``, ``prompt_versions`` and
   ``run_results`` carry no ``customer_id``: reads join their parent, and writes
   express the same thing as the :func:`app.repos.scoped.scope_through_parent`
@@ -23,5 +23,5 @@ Two conventions hold throughout:
 
 Import the modules, not their contents::
 
-    from app.repos import machines as machines_repo
+    from app.repos import endpoints as endpoints_repo
 """

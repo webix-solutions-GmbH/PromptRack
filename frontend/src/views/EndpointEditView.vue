@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// Machine detail/edit. Test probes the endpoint with its stored credentials,
+// Endpoint detail/edit. Test probes the endpoint with its stored credentials,
 // so it is admin-only; discovery only reads model ids and every writer needs
-// it (it is what the new-run page also triggers on machine select).
+// it (it is what the new-run page also triggers on endpoint select).
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
@@ -15,25 +15,25 @@ import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
-import { machinesApi, type Machine, type MachineInput, type MachineModel } from '../api/machines'
+import { endpointsApi, type Endpoint, type EndpointInput, type EndpointModel } from '../api/endpoints'
 import { ApiError } from '../api/client'
 import { formatDateTime } from '../lib/format'
 import { useAuthStore } from '../stores/auth'
 
 const props = defineProps<{ id: string }>()
-const machineId = computed(() => Number(props.id))
+const endpointId = computed(() => Number(props.id))
 
 const auth = useAuthStore()
 const router = useRouter()
 const confirm = useConfirm()
 const toast = useToast()
 
-const machine = ref<Machine | null>(null)
-const models = ref<MachineModel[]>([])
+const endpoint = ref<Endpoint | null>(null)
+const models = ref<EndpointModel[]>([])
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 
-interface MachineFormState {
+interface EndpointFormState {
   name: string
   base_url: string
   /** Always starts blank: the stored key is never sent to the client, and a
@@ -43,9 +43,10 @@ interface MachineFormState {
   ram: string
   gpu: string
   notes: string
+  is_global: boolean
 }
 
-const form = ref<MachineFormState>({
+const form = ref<EndpointFormState>({
   name: '',
   base_url: '',
   api_key: '',
@@ -53,13 +54,14 @@ const form = ref<MachineFormState>({
   ram: '',
   gpu: '',
   notes: '',
+  is_global: false,
 })
 
 /** Clearing a stored key has to be deliberate — see `buildInput`. */
 const clearApiKey = ref(false)
 
-function applyMachine(row: Machine) {
-  machine.value = row
+function applyEndpoint(row: Endpoint) {
+  endpoint.value = row
   form.value = {
     name: row.name,
     base_url: row.base_url,
@@ -68,6 +70,7 @@ function applyMachine(row: Machine) {
     ram: row.ram ?? '',
     gpu: row.gpu ?? '',
     notes: row.notes ?? '',
+    is_global: row.is_global,
   }
   clearApiKey.value = false
 }
@@ -76,21 +79,21 @@ async function load() {
   loading.value = true
   loadError.value = null
   try {
-    const [machineRow, modelRows] = await Promise.all([
-      machinesApi.get(machineId.value),
-      machinesApi.listModels(machineId.value),
+    const [endpointRow, modelRows] = await Promise.all([
+      endpointsApi.get(endpointId.value),
+      endpointsApi.listModels(endpointId.value),
     ])
-    applyMachine(machineRow)
+    applyEndpoint(endpointRow)
     models.value = modelRows
   } catch (err) {
-    loadError.value = err instanceof ApiError ? err.message : 'Failed to load the machine.'
+    loadError.value = err instanceof ApiError ? err.message : 'Failed to load the endpoint.'
   } finally {
     loading.value = false
   }
 }
 
 onMounted(load)
-watch(machineId, load)
+watch(endpointId, load)
 
 // --- save --------------------------------------------------------------
 
@@ -102,8 +105,8 @@ const saveError = ref<string | null>(null)
  * a new key or explicitly asked for the stored one to be removed. Anything
  * else — including a save that never touched the field — leaves it intact.
  */
-function buildInput(): MachineInput {
-  const input: MachineInput = {
+function buildInput(): EndpointInput {
+  const input: EndpointInput = {
     name: form.value.name,
     base_url: form.value.base_url,
     cpu: form.value.cpu || null,
@@ -116,6 +119,12 @@ function buildInput(): MachineInput {
   } else if (form.value.api_key.length > 0) {
     input.api_key = form.value.api_key
   }
+  // Only the Base workspace can see or change this flag (the checkbox is not
+  // rendered elsewhere) — omitting it outside Base leaves the stored value
+  // untouched, matching the route's patch-like handling of the field.
+  if (auth.isBaseWorkspace) {
+    input.is_global = form.value.is_global
+  }
   return input
 }
 
@@ -123,11 +132,11 @@ async function save() {
   saveError.value = null
   saving.value = true
   try {
-    const updated = await machinesApi.update(machineId.value, buildInput())
-    applyMachine(updated)
-    toast.add({ severity: 'success', summary: 'Machine saved', life: 3000 })
+    const updated = await endpointsApi.update(endpointId.value, buildInput())
+    applyEndpoint(updated)
+    toast.add({ severity: 'success', summary: 'Endpoint saved', life: 3000 })
   } catch (err) {
-    saveError.value = err instanceof ApiError ? err.message : 'Failed to save the machine.'
+    saveError.value = err instanceof ApiError ? err.message : 'Failed to save the endpoint.'
   } finally {
     saving.value = false
   }
@@ -140,7 +149,7 @@ const testing = ref(false)
 async function testConnection() {
   testing.value = true
   try {
-    const result = await machinesApi.test(machineId.value)
+    const result = await endpointsApi.test(endpointId.value)
     if (result.ok) {
       toast.add({
         severity: 'success',
@@ -169,7 +178,7 @@ const discovering = ref(false)
 async function discoverModels() {
   discovering.value = true
   try {
-    const result = await machinesApi.discover(machineId.value)
+    const result = await endpointsApi.discover(endpointId.value)
     if (result.ok) {
       toast.add({
         severity: 'success',
@@ -177,7 +186,7 @@ async function discoverModels() {
         detail: result.retired > 0 ? `${result.retired} no longer loaded` : undefined,
         life: 4000,
       })
-      models.value = await machinesApi.listModels(machineId.value)
+      models.value = await endpointsApi.listModels(endpointId.value)
     } else {
       toast.add({ severity: 'error', summary: 'Discovery failed', detail: result.error, life: 6000 })
     }
@@ -202,9 +211,9 @@ async function addModel() {
   if (!newModelId.value.trim()) return
   addingModel.value = true
   try {
-    await machinesApi.addModel(machineId.value, newModelId.value.trim())
+    await endpointsApi.addModel(endpointId.value, newModelId.value.trim())
     newModelId.value = ''
-    models.value = await machinesApi.listModels(machineId.value)
+    models.value = await endpointsApi.listModels(endpointId.value)
   } catch (err) {
     toast.add({
       severity: 'error',
@@ -222,25 +231,25 @@ async function addModel() {
 const deleting = ref(false)
 
 function confirmDelete() {
-  if (!machine.value) return
+  if (!endpoint.value) return
   confirm.require({
-    header: 'Delete machine',
-    message: `Delete machine "${machine.value.name}"? This cannot be undone.`,
+    header: 'Delete endpoint',
+    message: `Delete endpoint "${endpoint.value.name}"? This cannot be undone.`,
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', text: true },
-    accept: () => void removeMachine(),
+    accept: () => void removeEndpoint(),
   })
 }
 
-async function removeMachine() {
+async function removeEndpoint() {
   deleting.value = true
   try {
-    await machinesApi.remove(machineId.value)
-    await router.push('/machines')
+    await endpointsApi.remove(endpointId.value)
+    await router.push('/endpoints')
   } catch (err) {
     toast.add({
       severity: 'error',
-      summary: 'Failed to delete machine',
+      summary: 'Failed to delete endpoint',
       detail: err instanceof ApiError ? err.message : undefined,
       life: 5000,
     })
@@ -254,10 +263,16 @@ async function removeMachine() {
   <div class="page">
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
-    <template v-if="!loading && machine">
+    <template v-if="!loading && endpoint">
       <div class="page-heading">
-        <h1>{{ machine.name }}</h1>
-        <p class="mono">{{ machine.base_url }}</p>
+        <h1>
+          {{ endpoint.name }}
+          <Tag v-if="endpoint.is_global" value="Global" severity="info" />
+        </h1>
+        <p class="mono">{{ endpoint.base_url }}</p>
+        <Message v-if="!endpoint.editable" severity="info" :closable="false">
+          Shared from the Base workspace. Switch to Base to change it.
+        </Message>
       </div>
 
       <div class="probe-actions">
@@ -279,60 +294,64 @@ async function removeMachine() {
         />
       </div>
 
-      <section v-if="auth.canAdminister" class="panel">
+      <section v-if="auth.canAdminister && endpoint.editable" class="panel">
         <h2>Details</h2>
         <form class="dialog-form" @submit.prevent="save">
           <div class="field-row">
             <div class="field">
-              <label for="machine-name">Name *</label>
-              <InputText id="machine-name" v-model="form.name" required />
+              <label for="endpoint-name">Name *</label>
+              <InputText id="endpoint-name" v-model="form.name" required />
             </div>
             <div class="field">
-              <label for="machine-base-url">Base URL *</label>
-              <InputText id="machine-base-url" v-model="form.base_url" required />
+              <label for="endpoint-base-url">Base URL *</label>
+              <InputText id="endpoint-base-url" v-model="form.base_url" required />
             </div>
           </div>
           <div class="field">
-            <label for="machine-api-key">API key</label>
+            <label for="endpoint-api-key">API key</label>
             <Password
-              id="machine-api-key"
+              id="endpoint-api-key"
               v-model="form.api_key"
               :feedback="false"
               toggle-mask
               :disabled="clearApiKey"
-              :placeholder="machine.has_api_key ? 'leave blank to keep the stored key' : 'optional'"
+              :placeholder="endpoint.has_api_key ? 'leave blank to keep the stored key' : 'optional'"
               input-class="w-full"
             />
-            <p v-if="machine.has_api_key" class="hint">
+            <p v-if="endpoint.has_api_key" class="hint">
               An API key is stored — leave this blank to keep it, or type a new one to replace it.
             </p>
-            <label v-if="machine.has_api_key" class="checkbox-option" for="machine-clear-api-key">
-              <Checkbox v-model="clearApiKey" binary input-id="machine-clear-api-key" />
+            <label v-if="endpoint.has_api_key" class="checkbox-option" for="endpoint-clear-api-key">
+              <Checkbox v-model="clearApiKey" binary input-id="endpoint-clear-api-key" />
               Remove the stored key on save
             </label>
           </div>
           <div class="field-row three">
             <div class="field">
-              <label for="machine-cpu">CPU</label>
-              <InputText id="machine-cpu" v-model="form.cpu" />
+              <label for="endpoint-cpu">CPU</label>
+              <InputText id="endpoint-cpu" v-model="form.cpu" />
             </div>
             <div class="field">
-              <label for="machine-ram">RAM</label>
-              <InputText id="machine-ram" v-model="form.ram" />
+              <label for="endpoint-ram">RAM</label>
+              <InputText id="endpoint-ram" v-model="form.ram" />
             </div>
             <div class="field">
-              <label for="machine-gpu">GPU</label>
-              <InputText id="machine-gpu" v-model="form.gpu" />
+              <label for="endpoint-gpu">GPU</label>
+              <InputText id="endpoint-gpu" v-model="form.gpu" />
             </div>
           </div>
           <div class="field">
-            <label for="machine-notes">Notes</label>
-            <Textarea id="machine-notes" v-model="form.notes" rows="3" auto-resize />
+            <label for="endpoint-notes">Notes</label>
+            <Textarea id="endpoint-notes" v-model="form.notes" rows="3" auto-resize />
           </div>
+          <label v-if="auth.isBaseWorkspace" class="checkbox-option" for="endpoint-is-global">
+            <Checkbox v-model="form.is_global" binary input-id="endpoint-is-global" />
+            Global — share this endpoint with every workspace
+          </label>
 
           <p class="meta">
-            Created {{ formatDateTime(machine.created_at) }} · Updated
-            {{ formatDateTime(machine.updated_at) }}
+            Created {{ formatDateTime(endpoint.created_at) }} · Updated
+            {{ formatDateTime(endpoint.updated_at) }}
           </p>
 
           <Message v-if="saveError" severity="error" :closable="false">{{ saveError }}</Message>
@@ -343,7 +362,7 @@ async function removeMachine() {
 
         <div class="danger-zone">
           <Button
-            label="Delete machine"
+            label="Delete endpoint"
             severity="danger"
             outlined
             :loading="deleting"
@@ -357,12 +376,12 @@ async function removeMachine() {
         <DataTable :value="models" data-key="id" class="table">
           <template #empty>No models yet — discover or add one manually below.</template>
           <Column field="model_id" header="Model ID">
-            <template #body="{ data }: { data: MachineModel }">
+            <template #body="{ data }: { data: EndpointModel }">
               <span class="mono">{{ data.model_id }}</span>
             </template>
           </Column>
           <Column header="Status">
-            <template #body="{ data }: { data: MachineModel }">
+            <template #body="{ data }: { data: EndpointModel }">
               <Tag
                 :value="data.currently_loaded ? 'loaded' : 'not loaded'"
                 :severity="data.currently_loaded ? 'success' : 'secondary'"
@@ -371,12 +390,12 @@ async function removeMachine() {
           </Column>
           <Column field="source" header="Source" />
           <Column header="First seen">
-            <template #body="{ data }: { data: MachineModel }">{{
+            <template #body="{ data }: { data: EndpointModel }">{{
               formatDateTime(data.first_seen_at)
             }}</template>
           </Column>
           <Column header="Last seen">
-            <template #body="{ data }: { data: MachineModel }">{{
+            <template #body="{ data }: { data: EndpointModel }">{{
               formatDateTime(data.last_seen_at)
             }}</template>
           </Column>
@@ -403,6 +422,9 @@ async function removeMachine() {
 }
 
 .page-heading h1 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   font-size: 1.5rem;
   font-weight: 600;
   margin: 0 0 0.25rem;

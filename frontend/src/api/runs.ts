@@ -16,7 +16,7 @@ export type RunStatus = 'pending' | 'running' | 'completed' | 'failed'
 export type ResultStatus = 'pending' | 'running' | 'ok' | 'error'
 export type StoppedReason = 'stop' | 'max_turns' | 'definitions_only'
 
-export interface MachineSnapshot {
+export interface EndpointSnapshot {
   name?: string | null
   base_url?: string | null
   cpu?: string | null
@@ -32,8 +32,8 @@ export interface LlmInfo {
 
 export interface RunView {
   id: number
-  machine_id: number | null
-  machine_snapshot: MachineSnapshot | null
+  endpoint_id: number | null
+  endpoint_snapshot: EndpointSnapshot | null
   model_id: string
   params: Record<string, unknown> | null
   comment: string | null
@@ -148,7 +148,7 @@ export interface RunDetail extends RunView {
 }
 
 export interface RunCreateInput {
-  machine_id: number
+  endpoint_id: number
   model_id: string
   group_ids: number[]
   temperature?: number | null

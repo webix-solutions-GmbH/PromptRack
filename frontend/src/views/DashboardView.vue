@@ -42,8 +42,8 @@ function isDrifted(prompt: Prompt): boolean {
   )
 }
 
-function machineName(run: RunView): string {
-  return run.machine_snapshot?.name ?? '(deleted machine)'
+function endpointName(run: RunView): string {
+  return run.endpoint_snapshot?.name ?? '(deleted endpoint)'
 }
 
 async function load() {
@@ -81,7 +81,7 @@ const countTiles = computed(() => {
     { label: 'Prompts', value: c.prompts, to: '/prompts' },
     { label: 'Test groups', value: c.test_groups, to: '/test-cases' },
     { label: 'Toolsets', value: c.toolsets, to: '/toolsets' },
-    { label: 'Machines', value: c.machines, to: '/machines' },
+    { label: 'Endpoints', value: c.endpoints, to: '/endpoints' },
     { label: 'Runs', value: c.runs, to: '/runs' },
   ]
 })
@@ -123,7 +123,7 @@ const countTiles = computed(() => {
           <li v-for="run in recentRuns" :key="run.id" class="entry run-entry">
             <RouterLink :to="`/runs/${run.id}`" class="entry-name">#{{ run.id }}</RouterLink>
             <span class="mono">{{ run.model_id }}</span>
-            <span class="entry-detail">@ {{ machineName(run) }}</span>
+            <span class="entry-detail">@ {{ endpointName(run) }}</span>
             <Tag :severity="statusSeverity[run.status]" :value="run.status" />
             <span class="entry-detail">{{ formatDateTime(run.created_at) }}</span>
           </li>

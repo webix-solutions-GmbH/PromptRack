@@ -21,13 +21,13 @@
 // because the editor's route replaces the whole tool and `ToolInput` carries no
 // `enabled` field at all.
 //
-// `mcp_headers` is write-only, exactly like a machine's `api_key`: the response
+// `mcp_headers` is write-only, exactly like an endpoint's `api_key`: the response
 // carries only `has_mcp_headers`, and on `PUT` an omitted field leaves the
 // stored headers alone while `null`/`""` clears them.
 //
 // Discover answers 200 with a discriminated `ok` union rather than an HTTP
 // error status — an unreachable MCP server is an expected probe outcome, not
-// a failure of the request to this API. Same reasoning as `machines.ts`.
+// a failure of the request to this API. Same reasoning as `endpoints.ts`.
 import { api } from './client'
 
 export type ToolsetKind = 'manual' | 'mcp'
@@ -40,6 +40,12 @@ export interface Toolset {
   mcp_url: string | null
   /** Whether headers are stored — the headers themselves never leave the server. */
   has_mcp_headers: boolean
+  /** Shared with every workspace by the Base workspace that owns it. */
+  is_global: boolean
+  /** Whether *this* workspace owns the row — false only for a global toolset
+   * seen from elsewhere, which is exactly when edit/delete/discover controls
+   * are hidden rather than rendered disabled. */
+  editable: boolean
   created_at: string
   updated_at: string
   tool_count: number
@@ -56,6 +62,10 @@ export interface ToolsetInput {
   /** Omit to keep the stored headers, `null` to clear them, a JSON object
    * string to replace them. */
   mcp_headers?: string | null
+  /** Refused by the API outside the Base workspace. Patch-like on `PUT`: omit
+   * to leave the stored flag alone, since it defaults to `false` and a caller
+   * that does not know about sharing must not un-share the row on every save. */
+  is_global?: boolean
 }
 
 export type ToolSource = 'manual' | 'mcp'

@@ -111,6 +111,11 @@ async def assert_tool_config(
     Toolset ids outside this workspace raise `CrossCustomerError` (from
     `assert_same_customer`) rather than `ToolConfigError`, so a caller can
     still tell "misconfigured" from "doesn't exist here" apart.
+
+    `allow_global=True` for the same reason `replace_toolset_links` passes it:
+    this is the *other* half of the one reference "a test case's toolsets", the
+    validating half, and a stricter check here would refuse at authoring time
+    exactly the selection the link write allows.
     """
     if tool_mode == "none":
         return
@@ -122,7 +127,7 @@ async def assert_tool_config(
     if not toolset_ids:
         raise ToolConfigError(no_tools_message)
 
-    await assert_same_customer(session, scope, Toolset, toolset_ids)
+    await assert_same_customer(session, scope, Toolset, toolset_ids, allow_global=True)
     tools = await list_tools(scope, session, toolset_ids=list(toolset_ids))
     offered = [OfferedTool(name=tool.name, enabled=tool.enabled) for tool in tools]
 

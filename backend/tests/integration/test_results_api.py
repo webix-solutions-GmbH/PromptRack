@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.main import app
-from app.repos.machines import create_machine
+from app.repos.endpoints import create_endpoint
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt, update_prompt
 from app.repos.runs import list_run_results, update_run_result
@@ -62,8 +62,8 @@ async def _no_probe(base_url: str, api_key: str | None, model_id: str) -> None:
 
 
 async def make_suite(scope: Scope, session: AsyncSession) -> tuple[int, int]:
-    """`(machine_id, group_id)` with two test cases in run order."""
-    machine = await create_machine(scope, session, name="Box", base_url="http://box/v1")
+    """`(endpoint_id, group_id)` with two test cases in run order."""
+    endpoint = await create_endpoint(scope, session, name="Box", base_url="http://box/v1")
     group = await create_test_group(scope, session, name="Group")
     for index, title in enumerate(("First", "Second")):
         await create_test_case(
@@ -75,23 +75,24 @@ async def make_suite(scope: Scope, session: AsyncSession) -> tuple[int, int]:
             sort_order=index,
         )
     await session.commit()
-    return machine.id, group.id
+    return endpoint.id, group.id
 
 
 async def make_run(
     scope: Scope,
     session: AsyncSession,
-    machine_id: int,
+    endpoint_id: int,
     group_id: int,
     *,
     model_id: str = "test-model",
     outcomes: tuple[str, ...] = ("ok", "ok"),
+    durations: tuple[int | None, ...] | None = None,
 ) -> int:
     """A run whose rows are finished — what a comparable run looks like."""
     created = await create_run_record(
         scope,
         session,
-        machine_id=machine_id,
+        endpoint_id=endpoint_id,
         model_id=model_id,
         group_ids=[group_id],
         probe=_no_probe,
@@ -99,7 +100,8 @@ async def make_run(
     await session.commit()
 
     rows = await list_run_results(scope, session, created.run_id)
-    for row, outcome in zip(rows, outcomes, strict=False):
+    for index, (row, outcome) in enumerate(zip(rows, outcomes, strict=False)):
+        duration = durations[index] if durations is not None else 1000
         await update_run_result(
             scope,
             session,
@@ -111,6 +113,7 @@ async def make_run(
                 "error": "connection refused" if outcome == "error" else None,
                 "rating": "good" if outcome == "ok" else None,
                 "tokens_per_sec": 20.0 if outcome == "ok" else None,
+                "duration_ms": None if outcome == "error" else duration,
             },
         )
     await session.commit()
@@ -128,9 +131,9 @@ class TestRunMode:
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id = await make_suite(scope, session)
-        first = await make_run(scope, session, machine_id, group_id)
-        second = await make_run(scope, session, machine_id, group_id)
+        endpoint_id, group_id = await make_suite(scope, session)
+        first = await make_run(scope, session, endpoint_id, group_id)
+        second = await make_run(scope, session, endpoint_id, group_id)
         await sign_in(client, session, "member@example.com", customer_id)
 
         body = await matrix(client, mode="runs", runs=f"{first},{second}")
@@ -139,7 +142,7 @@ class TestRunMode:
         assert body["selected_run_ids"] == [first, second]
         assert [row["test_case_title"] for row in body["rows"]] == ["First", "Second"]
         assert all(cell is not None for row in body["rows"] for cell in row["cells"])
-        # Same suite, same machine, same params: nothing drifted.
+        # Same suite, same endpoint, same params: nothing drifted.
         assert [row["drift"] for row in body["rows"]] == [[], []]
         # The picker carries the tallies its column headers show.
         assert {run["id"] for run in body["available_runs"]} == {first, second}
@@ -150,9 +153,9 @@ class TestRunMode:
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id = await make_suite(scope, session)
-        first = await make_run(scope, session, machine_id, group_id)
-        second = await make_run(scope, session, machine_id, group_id)
+        endpoint_id, group_id = await make_suite(scope, session)
+        first = await make_run(scope, session, endpoint_id, group_id)
+        second = await make_run(scope, session, endpoint_id, group_id)
         await sign_in(client, session, "member@example.com", customer_id)
 
         assert (await matrix(client, runs=f"{first},{second}"))["mode"] == "runs"
@@ -163,8 +166,8 @@ class TestRunMode:
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id = await make_suite(scope, session)
-        only = await make_run(scope, session, machine_id, group_id)
+        endpoint_id, group_id = await make_suite(scope, session)
+        only = await make_run(scope, session, endpoint_id, group_id)
         await sign_in(client, session, "member@example.com", customer_id)
 
         body = await matrix(client, mode="runs", runs=str(only))
@@ -175,9 +178,9 @@ class TestRunMode:
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id = await make_suite(scope, session)
-        first = await make_run(scope, session, machine_id, group_id)
-        second = await make_run(scope, session, machine_id, group_id)
+        endpoint_id, group_id = await make_suite(scope, session)
+        first = await make_run(scope, session, endpoint_id, group_id)
+        second = await make_run(scope, session, endpoint_id, group_id)
         await sign_in(client, session, "member@example.com", customer_id)
         assert (await client.post(f"/api/runs/{second}/archive")).status_code == 200
 
@@ -194,12 +197,12 @@ class TestRunMode:
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         _, other_scope = await create_workspace("Other")
-        other_machine, other_group = await make_suite(other_scope, session)
-        foreign = await make_run(other_scope, session, other_machine, other_group)
+        other_endpoint, other_group = await make_suite(other_scope, session)
+        foreign = await make_run(other_scope, session, other_endpoint, other_group)
 
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id = await make_suite(scope, session)
-        mine = await make_run(scope, session, machine_id, group_id)
+        endpoint_id, group_id = await make_suite(scope, session)
+        mine = await make_run(scope, session, endpoint_id, group_id)
         await sign_in(client, session, "member@example.com", customer_id)
 
         body = await matrix(client, mode="runs", runs=f"{mine},{foreign}")
@@ -207,21 +210,52 @@ class TestRunMode:
         assert body["rows"] == []
         assert [run["id"] for run in body["available_runs"]] == [mine]
 
+    async def test_the_column_header_sums_duration_over_the_runs_own_results(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await make_suite(scope, session)
+        first = await make_run(scope, session, endpoint_id, group_id, durations=(1200, 800))
+        second = await make_run(scope, session, endpoint_id, group_id)
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, mode="runs", runs=f"{first},{second}")
+
+        by_id = {run["id"]: run for run in body["run_columns"]}
+        assert by_id[first]["total_duration_ms"] == 2000
+        assert by_id[first]["avg_rate"] == 20.0
+
+    async def test_a_run_whose_results_never_measured_duration_reports_none(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # SQL `sum()` over an all-NULL column is NULL, not 0 — "never measured"
+        # must not render as "took no time at all".
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await make_suite(scope, session)
+        first = await make_run(scope, session, endpoint_id, group_id, durations=(None, None))
+        second = await make_run(scope, session, endpoint_id, group_id)
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, mode="runs", runs=f"{first},{second}")
+
+        by_id = {run["id"]: run for run in body["run_columns"]}
+        assert by_id[first]["total_duration_ms"] is None
+
 
 class TestModelMode:
     async def test_a_column_shows_the_newest_usable_result(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id = await make_suite(scope, session)
-        old = await make_run(scope, session, machine_id, group_id)
+        endpoint_id, group_id = await make_suite(scope, session)
+        old = await make_run(scope, session, endpoint_id, group_id)
         # The newer run answered the first case and died on the second.
         new = await make_run(
-            scope, session, machine_id, group_id, outcomes=("ok", "error")
+            scope, session, endpoint_id, group_id, outcomes=("ok", "error")
         )
         await sign_in(client, session, "member@example.com", customer_id)
 
-        key = f"{machine_id}|test-model"
+        key = f"{endpoint_id}|test-model"
         available = await matrix(client)
         assert [column["key"] for column in available["available_models"]] == [key]
         assert available["available_models"][0]["run_count"] == 2
@@ -244,18 +278,44 @@ class TestModelMode:
             "bad": 0,
             "unrated": 0,
             "avg_rate": 20.0,
+            # `make_run`'s default duration is 1000ms/result, and both cells
+            # shown here are `ok` ones (the failed newer attempt's duration
+            # never counts — see the superseded assertions above).
+            "total_duration_ms": 2000,
         }
+
+    async def test_the_column_tally_sums_duration_over_the_cells_on_screen(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await make_suite(scope, session)
+        await make_run(scope, session, endpoint_id, group_id, durations=(1500, 2500))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, models=[f"{endpoint_id}|test-model"])
+        assert body["column_tallies"][0]["total_duration_ms"] == 4000
+
+    async def test_a_column_with_no_measured_duration_reports_none(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await make_suite(scope, session)
+        await make_run(scope, session, endpoint_id, group_id, durations=(None, None))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, models=[f"{endpoint_id}|test-model"])
+        assert body["column_tallies"][0]["total_duration_ms"] is None
 
     async def test_an_archived_run_cannot_be_asked_back(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id = await make_suite(scope, session)
-        only = await make_run(scope, session, machine_id, group_id)
+        endpoint_id, group_id = await make_suite(scope, session)
+        only = await make_run(scope, session, endpoint_id, group_id)
         await sign_in(client, session, "member@example.com", customer_id)
         assert (await client.post(f"/api/runs/{only}/archive")).status_code == 200
 
-        body = await matrix(client, models=[f"{machine_id}|test-model"])
+        body = await matrix(client, models=[f"{endpoint_id}|test-model"])
         assert body["available_models"] == []
         assert body["selected_model_keys"] == []
 
@@ -263,16 +323,16 @@ class TestModelMode:
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id = await make_suite(scope, session)
+        endpoint_id, group_id = await make_suite(scope, session)
         other = await create_test_group(scope, session, name="Other")
         await create_test_case(
             scope, session, group_id=other.id, title="Third", content="Say Third."
         )
         await session.commit()
-        await make_run(scope, session, machine_id, group_id)
+        await make_run(scope, session, endpoint_id, group_id)
         await sign_in(client, session, "member@example.com", customer_id)
 
-        key = f"{machine_id}|test-model"
+        key = f"{endpoint_id}|test-model"
         unfiltered = await matrix(client, models=[key])
         assert {group["name"] for group in unfiltered["groups"]} == {"Group", "Other"}
         # "Third" was never run, so it is counted rather than drawn empty.
@@ -296,8 +356,8 @@ class TestThreeTextsOnTheWire:
     async def _suite_with_prompts(
         self, scope: Scope, session: AsyncSession
     ) -> tuple[int, int, int, int]:
-        """`(machine_id, group_id, system_prompt_id, task_prompt_id)`."""
-        machine = await create_machine(scope, session, name="Box", base_url="http://box/v1")
+        """`(endpoint_id, group_id, system_prompt_id, task_prompt_id)`."""
+        endpoint = await create_endpoint(scope, session, name="Box", base_url="http://box/v1")
         group = await create_test_group(scope, session, name="Group")
         system_prompt = await create_prompt(
             scope, session, name="framing", content="You are terse.", kind="system"
@@ -315,19 +375,19 @@ class TestThreeTextsOnTheWire:
             task_prompt_id=task_prompt.id,
         )
         await session.commit()
-        return machine.id, group.id, system_prompt.id, task_prompt.id
+        return endpoint.id, group.id, system_prompt.id, task_prompt.id
 
     async def test_a_cell_carries_both_prompt_texts_and_both_version_ids(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id, system_id, task_id = await self._suite_with_prompts(
+        endpoint_id, group_id, system_id, task_id = await self._suite_with_prompts(
             scope, session
         )
         system_version = await commit_version(scope, session, system_id, message="s1")
         await session.commit()
-        first = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
-        second = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+        first = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        second = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
         await sign_in(client, session, "member@example.com", customer_id)
 
         body = await matrix(client, mode="runs", runs=f"{first},{second}")
@@ -348,13 +408,13 @@ class TestThreeTextsOnTheWire:
         them: the data never moved, so nothing may say it did.
         """
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id, _, task_id = await self._suite_with_prompts(scope, session)
-        first = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+        endpoint_id, group_id, _, task_id = await self._suite_with_prompts(scope, session)
+        first = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
 
         await update_prompt(scope, session, task_id, {"content": "Extract the PO number."})
         await session.commit()
         session.expire_all()
-        second = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+        second = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
         await sign_in(client, session, "member@example.com", customer_id)
 
         body = await matrix(client, mode="runs", runs=f"{first},{second}")
@@ -364,13 +424,13 @@ class TestThreeTextsOnTheWire:
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id, system_id, _ = await self._suite_with_prompts(scope, session)
-        first = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+        endpoint_id, group_id, system_id, _ = await self._suite_with_prompts(scope, session)
+        first = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
 
         await update_prompt(scope, session, system_id, {"content": "You are verbose."})
         await session.commit()
         session.expire_all()
-        second = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+        second = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
         await sign_in(client, session, "member@example.com", customer_id)
 
         body = await matrix(client, mode="runs", runs=f"{first},{second}")
@@ -386,14 +446,14 @@ class TestThreeTextsOnTheWire:
         the silent failure this test exists to catch.
         """
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id, _, task_id = await self._suite_with_prompts(scope, session)
-        await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+        endpoint_id, group_id, _, task_id = await self._suite_with_prompts(scope, session)
+        await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
 
         await update_prompt(scope, session, task_id, {"content": "Extract the PO number."})
         await session.commit()
         await sign_in(client, session, "member@example.com", customer_id)
 
-        body = await matrix(client, models=[f"{machine_id}|test-model"])
+        body = await matrix(client, models=[f"{endpoint_id}|test-model"])
         assert body["rows"][0]["drift"] == ["task prompt edited since"]
 
     async def test_the_test_case_text_still_drifts_under_its_own_name(
@@ -402,16 +462,108 @@ class TestThreeTextsOnTheWire:
         # The part that existed before the split has to keep its own sentence
         # rather than being absorbed into a prompt one.
         customer_id, scope = await create_workspace("Acme")
-        machine_id, group_id, _, _ = await self._suite_with_prompts(scope, session)
-        await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+        endpoint_id, group_id, _, _ = await self._suite_with_prompts(scope, session)
+        await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
 
         [case] = await list_test_cases(scope, session, group_id=group_id)
         await update_test_case(scope, session, case.id, {"content": "Invoice 4712"})
         await session.commit()
         await sign_in(client, session, "member@example.com", customer_id)
 
-        body = await matrix(client, models=[f"{machine_id}|test-model"])
+        body = await matrix(client, models=[f"{endpoint_id}|test-model"])
         assert body["rows"][0]["drift"] == ["test case text edited since"]
+
+
+class TestExpectedOutputOnTheWire:
+    """The rubric the row header shows, in both pivots.
+
+    `tests/test_compare.py` pins when a row may claim one; what only the route
+    can show is that the read feeds it at all — a matrix that stopped selecting
+    the frozen `expected_output` would report `null` on every row and look no
+    different from a suite that simply has no rubrics.
+    """
+
+    async def _suite_with_rubric(
+        self, scope: Scope, session: AsyncSession, rubric: str | None
+    ) -> tuple[int, int]:
+        endpoint = await create_endpoint(scope, session, name="Box", base_url="http://box/v1")
+        group = await create_test_group(scope, session, name="Group")
+        await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="First",
+            content="Invoice 4711",
+            expected_output=rubric,
+        )
+        await session.commit()
+        return endpoint.id, group.id
+
+    async def test_run_mode_carries_the_rubric_both_cells_froze(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await self._suite_with_rubric(scope, session, "the PO number")
+        first = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        second = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, mode="runs", runs=f"{first},{second}")
+
+        row = body["rows"][0]
+        assert row["expected_output"] == "the PO number"
+        assert row["cells"][0]["expected_output"] == "the PO number"
+        assert row["drift"] == []
+
+    async def test_model_mode_carries_it_too(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await self._suite_with_rubric(scope, session, "the PO number")
+        await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, models=[f"{endpoint_id}|test-model"])
+        assert body["rows"][0]["expected_output"] == "the PO number"
+
+    async def test_a_test_case_without_a_rubric_reports_null(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # Many test cases have no rubric, and the row header renders nothing at
+        # all for them rather than a disclosure onto "(none)".
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await self._suite_with_rubric(scope, session, None)
+        await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, models=[f"{endpoint_id}|test-model"])
+        assert body["rows"][0]["expected_output"] is None
+        assert body["rows"][0]["drift"] == []
+
+    async def test_a_rubric_rewritten_between_runs_becomes_drift_not_a_row_claim(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # The rubric is frozen per result, so editing the case between two runs
+        # leaves the row graded two ways. Showing either copy as the row's would
+        # be a claim about how the other cell was judged.
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await self._suite_with_rubric(scope, session, "the PO number")
+        first = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+
+        [case] = await list_test_cases(scope, session, group_id=group_id)
+        await update_test_case(
+            scope, session, case.id, {"expected_output": "the PO number and the total"}
+        )
+        await session.commit()
+        session.expire_all()
+        second = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, mode="runs", runs=f"{first},{second}")
+
+        row = body["rows"][0]
+        assert row["expected_output"] is None
+        assert row["drift"] == ["expected output"]
 
 
 class TestRouting:

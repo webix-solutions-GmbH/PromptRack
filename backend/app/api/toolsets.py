@@ -3,17 +3,26 @@
 Toolset CRUD (it holds `mcp_url` + `mcp_headers`, i.e. credentials) is
 `Admin`; the tools *inside* one are `Writer`, and `POST /{id}/discover` sits
 at `Writer` too — it only ever reveals tool names/descriptions, never the
-headers it authenticates with — the same split `app.api.machines` makes
-between machine CRUD and `POST /discover`. Reading is `CurrentUser`: every
+headers it authenticates with — the same split `app.api.endpoints` makes
+between endpoint CRUD and `POST /discover`. Reading is `CurrentUser`: every
 role needs the list to build a test case.
 
-`mcp_headers` is treated exactly like a machine's `api_key`: never
+`mcp_headers` is treated exactly like an endpoint's `api_key`: never
 round-tripped back to the client (a `ToolsetView` carries `has_mcp_headers`
 instead), and write-only/patch-like on `PUT` — omit to leave the stored value
 untouched, send `""`/`null` to clear it, send a value to replace it. `mcp_url`
 is not a credential and is returned and replaced like any other field.
 Switching `kind` to `manual` always clears both, mirroring
 `git show master:src/actions/toolsets.ts`'s `toolsetFields`.
+
+A **global** toolset (`is_global`, settable only in the Base workspace) reads
+from every workspace and writes from none but its own, explicitly refused by
+`_refuse_if_borrowed` rather than left as `scope_where`'s silent no-op — the
+same split `app.api.endpoints` makes. Its tools follow it: readable wherever
+the toolset is, editable only in Base. Deleting one that other workspaces'
+test cases still select is a 409 naming them (`ToolsetInUseError`) — and so is
+clearing `is_global` on one, since un-sharing strands exactly the same links
+behind a row those workspaces can no longer see.
 """
 
 import json
@@ -27,8 +36,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.guards import Admin, CurrentScope, CurrentUser, DbSession, Writer
 from app.models import Tool, Toolset, ToolsetKind, ToolSource
+from app.repos.customers import NotBaseWorkspaceError
 from app.repos.toolsets import McpToolDescriptor as SyncedToolDescriptor
 from app.repos.toolsets import (
+    ToolsetInUseError,
     create_tool,
     create_toolset,
     delete_tool,
@@ -76,6 +87,12 @@ class ToolsetView(BaseModel):
     kind: ToolsetKind
     mcp_url: str | None
     has_mcp_headers: bool
+    #: Shared with every workspace by the Base workspace that owns it.
+    is_global: bool
+    #: Whether *this* workspace owns the row — false only for a global toolset
+    #: seen from elsewhere, which is exactly when every write here refuses. See
+    #: `app.api.endpoints.EndpointView.editable`.
+    editable: bool
     #: Both counts, because discovery disables a vanished tool rather than
     #: deleting it: "3/5 enabled" is the only honest summary of an MCP toolset
     #: whose server has moved on.
@@ -96,6 +113,9 @@ class ToolsetWriteRequest(BaseModel):
     mcp_url: str | None = None
     #: Write-only credential — see the module docstring.
     mcp_headers: str | None = None
+    #: Refused outside Base by `assert_base_workspace`, from inside the
+    #: repository — see `app.repos.toolsets`.
+    is_global: bool = False
 
     @field_validator("name")
     @classmethod
@@ -221,7 +241,25 @@ def _tool_view(tool: Tool) -> ToolView:
     )
 
 
-def _toolset_view(toolset: Toolset, tool_count: int, enabled_tool_count: int) -> ToolsetView:
+def _owns(scope: Scope, toolset: Toolset) -> bool:
+    """Whether this scope owns the row rather than merely seeing it — see
+    `app.api.endpoints._owns`, which this mirrors.
+    """
+    return toolset.customer_id == scope.customer_id
+
+
+def _refuse_if_borrowed(scope: Scope, toolset: Toolset) -> None:
+    if _owns(scope, toolset):
+        return
+    raise HTTPException(
+        status.HTTP_403_FORBIDDEN,
+        f'"{toolset.name}" is shared from the Base workspace. Switch to Base to change it.',
+    )
+
+
+def _toolset_view(
+    toolset: Toolset, tool_count: int, enabled_tool_count: int, *, editable: bool
+) -> ToolsetView:
     return ToolsetView(
         id=toolset.id,
         name=toolset.name,
@@ -229,6 +267,8 @@ def _toolset_view(toolset: Toolset, tool_count: int, enabled_tool_count: int) ->
         kind=toolset.kind,
         mcp_url=toolset.mcp_url,
         has_mcp_headers=bool(toolset.mcp_headers),
+        is_global=toolset.is_global,
+        editable=editable,
         tool_count=tool_count,
         enabled_tool_count=enabled_tool_count,
         created_at=toolset.created_at,
@@ -243,11 +283,23 @@ async def _get_or_404(scope: Scope, session: AsyncSession, toolset_id: int) -> T
     return toolset
 
 
+async def _get_owned_or_404(scope: Scope, session: AsyncSession, toolset_id: int) -> Toolset:
+    """The toolset, refusing a shared one this workspace only borrows."""
+    toolset = await _get_or_404(scope, session, toolset_id)
+    _refuse_if_borrowed(scope, toolset)
+    return toolset
+
+
 async def _detail_view(
     scope: Scope, session: AsyncSession, toolset: Toolset
 ) -> ToolsetDetailView:
     tools = await list_tools(scope, session, toolset_ids=[toolset.id])
-    base = _toolset_view(toolset, len(tools), sum(1 for tool in tools if tool.enabled))
+    base = _toolset_view(
+        toolset,
+        len(tools),
+        sum(1 for tool in tools if tool.enabled),
+        editable=_owns(scope, toolset),
+    )
     return ToolsetDetailView(**base.model_dump(), tools=[_tool_view(tool) for tool in tools])
 
 
@@ -257,7 +309,13 @@ async def _get_tool_or_404(
     """Scoped through the toolset, like `list_tools` itself: a tool id that
     belongs to a foreign workspace or a different toolset is a 404, not a
     500 from a mismatched write later.
+
+    Only the write routes use this, so it asks for the toolset to be *owned*:
+    `list_tools` reads through visibility, and without this a shared toolset's
+    tools would resolve here and then be silently not-written by `_tool_where`'s
+    strict predicate.
     """
+    await _get_owned_or_404(scope, session, toolset_id)
     tools = await list_tools(scope, session, toolset_ids=[toolset_id])
     for tool in tools:
         if tool.id == tool_id:
@@ -280,26 +338,22 @@ async def _refuse_duplicate_name(
         )
 
 
-def _toolset_values(body: ToolsetWriteRequest, *, include_headers: bool) -> dict[str, object]:
-    if body.kind == "manual":
-        values: dict[str, object] = {
-            "name": body.name,
-            "description": body.description,
-            "kind": "manual",
-            "mcp_url": None,
-        }
-        if include_headers:
-            values["mcp_headers"] = None
-        return values
-
-    values = {
+def _toolset_values(
+    body: ToolsetWriteRequest, *, include_headers: bool, include_global: bool
+) -> dict[str, object]:
+    manual = body.kind == "manual"
+    values: dict[str, object] = {
         "name": body.name,
         "description": body.description,
-        "kind": "mcp",
-        "mcp_url": body.mcp_url,
+        "kind": body.kind,
+        # A manual toolset has no server, so switching to it always clears the
+        # URL rather than leaving a stale one behind.
+        "mcp_url": None if manual else body.mcp_url,
     }
     if include_headers:
-        values["mcp_headers"] = body.mcp_headers
+        values["mcp_headers"] = None if manual else body.mcp_headers
+    if include_global:
+        values["is_global"] = body.is_global
     return values
 
 
@@ -318,7 +372,12 @@ async def list_toolsets_endpoint(
     counts = Counter(tool.toolset_id for tool in tools)
     enabled_counts = Counter(tool.toolset_id for tool in tools if tool.enabled)
     return [
-        _toolset_view(toolset, counts.get(toolset.id, 0), enabled_counts.get(toolset.id, 0))
+        _toolset_view(
+            toolset,
+            counts.get(toolset.id, 0),
+            enabled_counts.get(toolset.id, 0),
+            editable=_owns(scope, toolset),
+        )
         for toolset in toolsets
     ]
 
@@ -337,8 +396,11 @@ async def create_toolset_endpoint(
     body: ToolsetWriteRequest, actor: Admin, scope: CurrentScope, session: DbSession
 ) -> ToolsetDetailView:
     del actor
-    values = _toolset_values(body, include_headers=True)
-    toolset = await create_toolset(scope, session, **values)
+    values = _toolset_values(body, include_headers=True, include_global=True)
+    try:
+        toolset = await create_toolset(scope, session, **values)
+    except NotBaseWorkspaceError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     await session.commit()
     return await _detail_view(scope, session, toolset)
 
@@ -352,15 +414,29 @@ async def update_toolset_endpoint(
     session: DbSession,
 ) -> ToolsetDetailView:
     del actor
-    await _get_or_404(scope, session, toolset_id)
+    await _get_owned_or_404(scope, session, toolset_id)
 
     # A credential, not content: only touched when the request actually named
     # it (see the module docstring) — but switching to `manual` always clears
     # it, matching the create path.
     include_headers = body.kind == "manual" or "mcp_headers" in body.model_fields_set
-    values = _toolset_values(body, include_headers=include_headers)
+    # `is_global` is patch-like for a different reason than the credential: it
+    # defaults to `false`, so a client that knows nothing about sharing would
+    # un-share the toolset on every save. See `app.api.endpoints`.
+    values = _toolset_values(
+        body,
+        include_headers=include_headers,
+        include_global="is_global" in body.model_fields_set,
+    )
 
-    await update_toolset(scope, session, toolset_id, values)
+    try:
+        await update_toolset(scope, session, toolset_id, values)
+    except NotBaseWorkspaceError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except ToolsetInUseError as exc:
+        # Un-sharing a toolset other workspaces still select — the same 409 the
+        # delete gives, because it is the same loss one step earlier.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     await session.commit()
     refreshed = await _get_or_404(scope, session, toolset_id)
     return await _detail_view(scope, session, refreshed)
@@ -372,10 +448,18 @@ async def delete_toolset_endpoint(
 ) -> None:
     """Cascades to its tools at the database level; never touches
     `run_results` — a past run renders from its own frozen snapshot.
+
+    A toolset that *other workspaces'* test cases still select is refused with a
+    409 naming them, because `test_case_toolsets` cascades and the loss would
+    otherwise be silent and invisible from here — see
+    `app.repos.toolsets.ToolsetInUseError`.
     """
     del actor
-    await _get_or_404(scope, session, toolset_id)
-    await delete_toolset(scope, session, toolset_id)
+    await _get_owned_or_404(scope, session, toolset_id)
+    try:
+        await delete_toolset(scope, session, toolset_id)
+    except ToolsetInUseError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     await session.commit()
 
 
@@ -393,7 +477,7 @@ async def create_tool_endpoint(
     session: DbSession,
 ) -> ToolView:
     del actor
-    await _get_or_404(scope, session, toolset_id)
+    await _get_owned_or_404(scope, session, toolset_id)
     await _refuse_duplicate_name(scope, session, toolset_id, body.name)
 
     tool = await create_tool(
@@ -482,10 +566,10 @@ async def discover_toolset_endpoint(
 
     `Writer`, not `Admin`: this only ever reveals tool names/descriptions,
     never the `mcp_headers` it authenticates with, mirroring
-    `app.api.machines`'s `POST /discover`.
+    `app.api.endpoints`'s `POST /discover`.
     """
     del actor
-    toolset = await _get_or_404(scope, session, toolset_id)
+    toolset = await _get_owned_or_404(scope, session, toolset_id)
     if toolset.kind != "mcp" or not toolset.mcp_url:
         return DiscoverResponse(ok=False, error="Not an MCP toolset — nothing to discover.")
 

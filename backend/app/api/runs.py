@@ -100,9 +100,9 @@ class RunView(BaseModel):
     """A run as its list row and header show it — snapshots already parsed."""
 
     id: int
-    machine_id: int | None
+    endpoint_id: int | None
     #: Name, endpoint and hardware notes as they were at creation time.
-    machine_snapshot: dict[str, Any] | None
+    endpoint_snapshot: dict[str, Any] | None
     model_id: str
     params: dict[str, Any] | None
     comment: str | None
@@ -181,7 +181,7 @@ class RunCreateRequest(BaseModel):
     `null` instead.
     """
 
-    machine_id: int
+    endpoint_id: int
     model_id: str = Field(min_length=1)
     group_ids: list[int] = Field(min_length=1)
     temperature: float | None = None
@@ -250,8 +250,8 @@ def _run_view(run: Run) -> RunView:
     group_names = _json_value(run.group_names)
     return RunView(
         id=run.id,
-        machine_id=run.machine_id,
-        machine_snapshot=_json_value(run.machine_snapshot),
+        endpoint_id=run.endpoint_id,
+        endpoint_snapshot=_json_value(run.endpoint_snapshot),
         model_id=run.model_id,
         params=_json_value(run.params),
         comment=run.comment,
@@ -350,7 +350,7 @@ async def create_run_endpoint(
         created = await create_run_record(
             scope,
             session,
-            machine_id=body.machine_id,
+            endpoint_id=body.endpoint_id,
             model_id=body.model_id,
             group_ids=body.group_ids,
             params=body.params(),

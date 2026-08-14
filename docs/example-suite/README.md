@@ -41,7 +41,7 @@ claude mcp add --transport http promptrack https://your-host/api/mcp \
 
 **Every call names a workspace.** The precedence is `customer` argument → `X-Customer` header → the token's default → refusal. Setting the header once, as above, is the least error-prone; otherwise pass `customer` on every call.
 
-**Everything relatable by name takes a name or an id** — `group`, `prompt` (on `update_prompt` / `commit_prompt`), `system_prompt` and `task_prompt` (on `create_test_case` / `update_test_case`), `toolset`, `machine`. A numeric string is always read as an id, and an ambiguous name is refused rather than guessed. Names resolve only inside the active workspace.
+**Everything relatable by name takes a name or an id** — `group`, `prompt` (on `update_prompt` / `commit_prompt`), `system_prompt` and `task_prompt` (on `create_test_case` / `update_test_case`), `toolset`, `endpoint`. A numeric string is always read as an id, and an ambiguous name is refused rather than guessed. Names resolve only inside the active workspace.
 
 Sanity check before writing anything:
 

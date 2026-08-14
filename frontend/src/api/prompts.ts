@@ -20,7 +20,7 @@
 // `Prompt.dirty`, `head_version` and `deployed_version` are computed by the
 // backend (plan: "Response for a prompt includes head_version, deployed_version,
 // dirty (draft ≠ head)") — this module never re-derives dirtiness client-side,
-// the same way `machines.ts` never re-derives `loaded_count`.
+// the same way `endpoints.ts` never re-derives `loaded_count`.
 //
 // `PromptVersion.created_by_name` and `Prompt.deployed_by_name` are resolved
 // server-side (`backend/app/api/prompts.py`, `app.auth.users.list_display_names`)
@@ -29,7 +29,7 @@
 // `setBaseline` is part of the Task 3.3 contract but has no caller in this
 // task's UI — Task 3.6's own action list for a version is view/diff/deploy/
 // restore only; baseline-setting is a run-side workflow (Task 4.5's "Verify"
-// flow). Included here for the same reason `machinesApi.test` ships alongside
+// flow). Included here for the same reason `endpointsApi.test` ships alongside
 // `discover` even where only one is wired into a given view: the module is the
 // full client for its backend contract.
 import { api } from './client'

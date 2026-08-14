@@ -23,7 +23,7 @@ ROLE_LABELS: dict[Role, str] = {
 }
 
 ROLE_DESCRIPTIONS: dict[Role, str] = {
-    "admin": "Everything a member can do, plus user management, machines and toolset credentials.",
+    "admin": "Everything a member can do, plus user management, endpoints and toolset credentials.",
     "member": "Prompts, versions, test cases, runs and ratings.",
     "viewer": "Read-only.",
 }
@@ -46,9 +46,9 @@ def can_write(role: Role) -> bool:
 
 
 def can_administer(role: Role) -> bool:
-    """May change infrastructure and users: machines, toolsets, roles, tokens.
+    """May change infrastructure and users: endpoints, toolsets, roles, tokens.
 
-    The line is content vs. credentials — a machine is a base URL with an API
+    The line is content vs. credentials — an endpoint is a base URL with an API
     key, a toolset is an MCP URL with headers.
     """
     return role == "admin"

@@ -37,7 +37,7 @@ router = APIRouter(prefix="/customers", tags=["customers"])
 
 
 class ContentCountsView(BaseModel):
-    machines: int
+    endpoints: int
     prompts: int
     toolsets: int
     test_groups: int
@@ -50,6 +50,11 @@ class CustomerView(BaseModel):
     name: str
     description: str | None
     archived: bool
+    #: The workspace that owns the global endpoints and toolsets. Read-only on
+    #: the wire: it is created by a migration and there is no request that can
+    #: set, move or clear it — the client uses it to label Base in the switcher
+    #: and to hide the delete/archive controls the API would refuse anyway.
+    is_base: bool
     created_at: datetime
     updated_at: datetime
     content: ContentCountsView
@@ -82,7 +87,7 @@ class ArchiveRequest(BaseModel):
 
 def _content_view(counts: CustomerContentCounts) -> ContentCountsView:
     return ContentCountsView(
-        machines=counts.machines,
+        endpoints=counts.endpoints,
         prompts=counts.prompts,
         toolsets=counts.toolsets,
         test_groups=counts.test_groups,
@@ -108,7 +113,7 @@ async def _view(session: AsyncSession, customer_id: int) -> CustomerView:
     expires that attribute instead, so touching it on the pre-commit instance
     afterwards would try to lazy-load outside of an ``await`` and raise
     ``MissingGreenlet``. Re-fetching after `session.commit()` sidesteps that
-    entirely — the same pattern `app.api.machines` uses.
+    entirely — the same pattern `app.api.endpoints` uses.
     """
     customer = await _get_or_404(session, customer_id)
     counts = await count_customer_content(session, customer.id)
@@ -117,9 +122,34 @@ async def _view(session: AsyncSession, customer_id: int) -> CustomerView:
         name=customer.name,
         description=customer.description,
         archived=customer.archived_at is not None,
+        is_base=customer.is_base,
         created_at=customer.created_at,
         updated_at=customer.updated_at,
         content=_content_view(counts),
+    )
+
+
+async def _refuse_if_base(session: AsyncSession, customer_id: int, action: str) -> None:
+    """Refuses archiving or deleting the Base workspace.
+
+    Base owns the endpoints and toolsets every other workspace borrows.
+    Archiving it hides the only place they can be edited; deleting it takes
+    them with it. Neither is a role check — an admin is refused too — so it is
+    a 409 like the other two workspace guards, not a 403.
+
+    Written as its own function so the row it reads **falls out of scope
+    before the caller's UPDATE**. The identity map is weakly referenced, so an
+    instance the route kept alive across `set_customer_archived` would survive
+    there with `updated_at` expired (see `_view`'s docstring) and `_view`'s
+    re-read would hand that same unrefreshed instance straight back.
+    """
+    customer = await _get_or_404(session, customer_id)
+    if not customer.is_base:
+        return
+    raise HTTPException(
+        status.HTTP_409_CONFLICT,
+        f'"{customer.name}" is the Base workspace and cannot be {action} — it owns the '
+        "endpoints and toolsets shared with every other workspace.",
     )
 
 
@@ -128,7 +158,7 @@ def _held_contents(counts: CustomerContentCounts) -> list[str]:
     root table — exactly what `ON DELETE RESTRICT` is standing in front of.
     """
     labels = (
-        (counts.machines, "machine"),
+        (counts.endpoints, "endpoint"),
         (counts.prompts, "prompt"),
         (counts.toolsets, "toolset"),
         (counts.test_groups, "test group"),
@@ -192,9 +222,18 @@ async def set_customer_archived_endpoint(
     `current_scope()` falls back to the oldest live workspace and heals the
     stored pointer — that fallback is exactly why this can be this
     unceremonious.
+
+    Base is the exception, and not because it is privileged: it owns the global
+    endpoints and toolsets, and hiding it from the switcher would leave the
+    shared rows visible everywhere and editable nowhere. Un-archiving it is of
+    course still allowed.
     """
     del actor
     await _get_or_404(session, customer_id)
+    if body.archived:
+        # Only the transition *into* archived: un-archiving Base is fine, and
+        # is the way out if a database was edited by hand.
+        await _refuse_if_base(session, customer_id, "archived")
     await set_customer_archived(session, customer_id, utc_now() if body.archived else None)
     await session.commit()
     return await _view(session, customer_id)
@@ -204,13 +243,15 @@ async def set_customer_archived_endpoint(
 async def delete_customer_endpoint(customer_id: int, actor: Admin, session: DbSession) -> None:
     """Deletes an empty workspace.
 
-    Admin-only, unlike the rest: a workspace holds machines, i.e. base URLs
+    Admin-only, unlike the rest: a workspace holds endpoints, i.e. base URLs
     and API keys, and the deletion is irreversible. The FK `RESTRICT` on all
-    five root tables is the backstop; the two checks below exist purely so the
-    caller gets a sentence instead of a constraint violation.
+    five root tables is the backstop; the checks below exist purely so the
+    caller gets a sentence instead of a constraint violation — except the Base
+    one, which no constraint stands behind at all.
     """
     del actor
     customer = await _get_or_404(session, customer_id)
+    await _refuse_if_base(session, customer_id, "deleted")
 
     all_customers = await list_customers(session)
     if len(all_customers) <= 1:

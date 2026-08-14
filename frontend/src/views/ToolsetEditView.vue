@@ -53,6 +53,7 @@ interface ToolsetFormState {
   /** Always starts blank: the stored headers are never sent to the client, and
    * a blank field means "leave them alone", not "clear them". */
   mcp_headers: string
+  is_global: boolean
 }
 
 const form = ref<ToolsetFormState>({
@@ -61,6 +62,7 @@ const form = ref<ToolsetFormState>({
   kind: 'manual',
   mcp_url: '',
   mcp_headers: '',
+  is_global: false,
 })
 
 /** Clearing stored headers has to be deliberate — see `buildInput`. */
@@ -75,6 +77,7 @@ function applyToolset(row: ToolsetDetail) {
     kind: row.kind,
     mcp_url: row.mcp_url ?? '',
     mcp_headers: '',
+    is_global: row.is_global,
   }
   clearMcpHeaders.value = false
 }
@@ -128,6 +131,12 @@ function buildInput(): ToolsetInput {
     input.mcp_headers = null
   } else if (form.value.mcp_headers.length > 0) {
     input.mcp_headers = form.value.mcp_headers
+  }
+  // Only the Base workspace can see or change this flag (the checkbox is not
+  // rendered elsewhere) — omitting it outside Base leaves the stored value
+  // untouched, matching the route's patch-like handling of the field.
+  if (auth.isBaseWorkspace) {
+    input.is_global = form.value.is_global
   }
   return input
 }
@@ -334,11 +343,15 @@ async function removeTool(tool: Tool) {
           <h1>
             {{ toolset.name }}
             <Tag :value="toolset.kind === 'mcp' ? 'MCP' : 'manual'" :severity="toolset.kind === 'mcp' ? 'info' : 'secondary'" />
+            <Tag v-if="toolset.is_global" value="Global" severity="info" />
           </h1>
           <p v-if="toolset.description" class="subtitle">{{ toolset.description }}</p>
+          <Message v-if="!toolset.editable" severity="info" :closable="false">
+            Shared from the Base workspace. Switch to Base to change it.
+          </Message>
         </div>
         <Button
-          v-if="auth.canAdminister && toolset.kind === 'mcp'"
+          v-if="auth.canAdminister && toolset.kind === 'mcp' && toolset.editable"
           label="Discover tools"
           severity="secondary"
           outlined
@@ -347,7 +360,7 @@ async function removeTool(tool: Tool) {
         />
       </div>
 
-      <section v-if="auth.canAdminister" class="panel">
+      <section v-if="auth.canAdminister && toolset.editable" class="panel">
         <h2>Details</h2>
         <form class="dialog-form" @submit.prevent="save">
           <div class="field">
@@ -399,6 +412,10 @@ async function removeTool(tool: Tool) {
               </label>
             </div>
           </template>
+          <label v-if="auth.isBaseWorkspace" class="checkbox-option" for="toolset-is-global">
+            <Checkbox v-model="form.is_global" binary input-id="toolset-is-global" />
+            Global — share this toolset with every workspace
+          </label>
 
           <p class="meta">Updated {{ formatDateTime(toolset.updated_at) }}</p>
 

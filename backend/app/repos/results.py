@@ -1,7 +1,7 @@
 """Cross-entity reads for `/results` — ported from `master:src/db/repo/results.ts`.
 
 Each pivot gets exactly the rows it uses: run mode fetches the results of the
-selected runs, model mode fetches the results of the selected (machine, model)
+selected runs, model mode fetches the results of the selected (endpoint, model)
 *pairs*. Neither loads the whole `run_results` table, which is what the old page
 did in both modes on every request.
 
@@ -37,6 +37,9 @@ _TALLIES = (
     _count_where(RunResult.rating == "bad").label("bad"),
     # Never coerced to 0: "nothing measured" is not "0 tok/s".
     func.avg(RunResult.tokens_per_sec).label("avg_rate"),
+    # `sum()` over an all-NULL column is already NULL in SQL, so "nothing
+    # measured" and "0ms" stay distinguishable for free, same as avg_rate above.
+    func.sum(RunResult.duration_ms).label("total_duration_ms"),
 )
 
 
@@ -51,6 +54,11 @@ class ComparableRunRow:
     meh: int
     bad: int
     avg_rate: float | None
+    #: Sum of `duration_ms` over the run's own results — model generation time
+    #: only, tool wait excluded, matching what `duration_ms` means everywhere
+    #: else. A high tok/s still costs real time if the model over-reasons, so
+    #: this sits beside the rate rather than replacing it.
+    total_duration_ms: int | None
 
 
 async def list_comparable_runs(scope: Scope, session: AsyncSession) -> list[ComparableRunRow]:
@@ -77,6 +85,7 @@ async def list_comparable_runs(scope: Scope, session: AsyncSession) -> list[Comp
             meh=row[4],
             bad=row[5],
             avg_rate=None if row[6] is None else float(row[6]),
+            total_duration_ms=row[7],
         )
         for row in rows.all()
     ]
@@ -117,8 +126,8 @@ class ModelColumnRunRow:
     """A non-archived run, as model-column building reads it."""
 
     id: int
-    machine_id: int | None
-    machine_snapshot: str
+    endpoint_id: int | None
+    endpoint_snapshot: str
     model_id: str
     created_at: datetime
 
@@ -132,6 +141,7 @@ class ModelColumnResultRow:
     status: str
     rating: str | None
     tokens_per_sec: float | None
+    duration_ms: int | None
 
 
 @dataclass(frozen=True)
@@ -149,7 +159,7 @@ async def model_column_inputs(scope: Scope, session: AsyncSession) -> ModelColum
     """
     run_statement = apply_where(
         select(
-            Run.id, Run.machine_id, Run.machine_snapshot, Run.model_id, Run.created_at
+            Run.id, Run.endpoint_id, Run.endpoint_snapshot, Run.model_id, Run.created_at
         ),
         where_scoped(scope, Run, Run.archived_at.is_(None)),
     ).order_by(Run.created_at.desc(), Run.id.desc())
@@ -161,6 +171,7 @@ async def model_column_inputs(scope: Scope, session: AsyncSession) -> ModelColum
             RunResult.status,
             RunResult.rating,
             RunResult.tokens_per_sec,
+            RunResult.duration_ms,
         ).join(Run, RunResult.run_id == Run.id),
         where_scoped(scope, Run, Run.archived_at.is_(None), RunResult.status == "ok"),
     ).order_by(RunResult.id.asc())
@@ -172,8 +183,8 @@ async def model_column_inputs(scope: Scope, session: AsyncSession) -> ModelColum
         runs=[
             ModelColumnRunRow(
                 id=row[0],
-                machine_id=row[1],
-                machine_snapshot=row[2],
+                endpoint_id=row[1],
+                endpoint_snapshot=row[2],
                 model_id=row[3],
                 created_at=row[4],
             )
@@ -186,6 +197,7 @@ async def model_column_inputs(scope: Scope, session: AsyncSession) -> ModelColum
                 status=row[2],
                 rating=row[3],
                 tokens_per_sec=row[4],
+                duration_ms=row[5],
             )
             for row in result_rows
         ],
@@ -199,7 +211,7 @@ class CompareCellRow:
     result: RunResult
     run_created_at: datetime
     run_params: str | None
-    machine_id: int | None = None
+    endpoint_id: int | None = None
     model_id: str = ""
 
 
@@ -227,10 +239,10 @@ async def compare_cells_for_models(
     test_case_ids: Sequence[int] | None,
 ) -> list[CompareCellRow]:
     """Model mode: the `ok` and `error` results of non-archived runs, restricted
-    to the selected (machine, model) *pairs*.
+    to the selected (endpoint, model) *pairs*.
 
     The pair predicate matters: filtering on the model id alone would load the
-    same model's results from every other machine and then throw them away, and
+    same model's results from every other endpoint and then throw them away, and
     `tokens_per_sec` is a property of the hardware. Errors are fetched too, so a
     newer failed attempt can be *reported* rather than silently skipped.
     """
@@ -241,15 +253,15 @@ async def compare_cells_for_models(
 
     pairs = [
         and_(
-            Run.machine_id.is_(None) if machine_id is None else Run.machine_id == machine_id,
+            Run.endpoint_id.is_(None) if endpoint_id is None else Run.endpoint_id == endpoint_id,
             Run.model_id == model_id,
         )
-        for machine_id, model_id in columns
+        for endpoint_id, model_id in columns
     ]
 
     statement = apply_where(
         select(
-            RunResult, Run.created_at, Run.params, Run.machine_id, Run.model_id
+            RunResult, Run.created_at, Run.params, Run.endpoint_id, Run.model_id
         ).join(Run, RunResult.run_id == Run.id),
         where_scoped(
             scope,
@@ -268,7 +280,7 @@ async def compare_cells_for_models(
             result=row[0],
             run_created_at=row[1],
             run_params=row[2],
-            machine_id=row[3],
+            endpoint_id=row[3],
             model_id=row[4],
         )
         for row in rows.all()

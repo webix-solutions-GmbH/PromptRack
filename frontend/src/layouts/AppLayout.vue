@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // App shell: a top bar naming the product and a side nav grouped the way the
 // work happens — Suite is the versioned content (prompts, test cases),
-// Environment is the credentials that run it (machines, toolsets; both
+// Environment is the credentials that run it (endpoints, toolsets; both
 // admin-gated for the same reason the backend draws that line — see
 // CLAUDE.md's "content vs. credentials"), then Evaluate, then Settings.
 // Every item below has a route as of Task 5.2 (Results was the last inert
@@ -15,7 +15,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Select from 'primevue/select'
 import Button from 'primevue/button'
+import Menu from 'primevue/menu'
 import { useAuthStore } from '../stores/auth'
+import { useThemeStore, type ThemeMode } from '../stores/theme'
 import { versionApi, type Version } from '../api/version'
 
 type NavItem = { label: string; to?: string }
@@ -33,7 +35,7 @@ const sections: NavSection[] = [
   {
     label: 'Environment',
     items: [
-      { label: 'Machines', to: '/machines' },
+      { label: 'Endpoints', to: '/endpoints' },
       { label: 'Toolsets', to: '/toolsets' },
     ],
   },
@@ -52,6 +54,14 @@ const sections: NavSection[] = [
 
 const auth = useAuthStore()
 const router = useRouter()
+const theme = useThemeStore()
+
+// AppLayout is the app's one always-mounted root (App.vue renders it
+// unconditionally; the `v-if="!auth.user"` below only swaps its template),
+// so its setup is the one place a listener meant to live for the whole app
+// can be registered exactly once — including on the signed-out /login and
+// /setup screens, which get the persisted class but no toggle to change it.
+theme.init()
 
 // Fetched once on mount; a failure renders nothing rather than an error,
 // since a missing build identity is not worth interrupting the shell over.
@@ -95,6 +105,27 @@ async function signOut() {
   await auth.logout()
   await router.push({ name: 'login' })
 }
+
+// A PrimeVue popup `Menu` (ref + `toggle()`, per its documented pattern) is
+// the whole picker; a computed items array (rather than a static one) is
+// what lets the `#item` template below re-render the checkmark as `theme.mode`
+// changes without a second source of truth to keep in sync with it.
+const themeMenu = ref()
+const themeModeItems: { mode: ThemeMode; label: string; icon: string }[] = [
+  { mode: 'light', label: 'Light', icon: 'pi pi-sun' },
+  { mode: 'dark', label: 'Dark', icon: 'pi pi-moon' },
+  { mode: 'system', label: 'System', icon: 'pi pi-desktop' },
+]
+const themeItems = computed(() =>
+  themeModeItems.map((item) => ({
+    ...item,
+    command: () => theme.setMode(item.mode),
+  })),
+)
+
+function toggleThemeMenu(event: Event) {
+  themeMenu.value?.toggle(event)
+}
 </script>
 
 <template>
@@ -108,6 +139,40 @@ async function signOut() {
            and resized to 128px tall (2x), 15 KB against the master's 565 KB. -->
       <img src="/brand/promptrack-mark-128.png" alt="" class="app-logo" />
       <span class="app-title">PromptRack</span>
+      <Select
+        :model-value="auth.activeCustomer?.id"
+        :options="visibleCustomers"
+        option-label="name"
+        option-value="id"
+        placeholder="Select workspace"
+        class="workspace-select"
+        @update:model-value="onWorkspaceChange"
+      >
+        <template #option="{ option }">
+          {{ option.name }}{{ option.is_base ? ' — Base' : '' }}{{
+            option.archived ? ' (archived)' : ''
+          }}
+        </template>
+      </Select>
+      <div class="topbar-spacer" />
+      <Button
+        :icon="theme.resolved === 'dark' ? 'pi pi-moon' : 'pi pi-sun'"
+        text
+        rounded
+        aria-label="Change theme"
+        aria-haspopup="true"
+        aria-controls="theme-menu"
+        @click="toggleThemeMenu"
+      />
+      <Menu ref="themeMenu" id="theme-menu" :model="themeItems" :popup="true">
+        <template #item="{ item, props }">
+          <a class="theme-menu-item" v-bind="props.action">
+            <span :class="item.icon" />
+            <span class="theme-menu-label">{{ item.label }}</span>
+            <i v-if="item.mode === theme.mode" class="pi pi-check theme-menu-check" />
+          </a>
+        </template>
+      </Menu>
     </header>
     <div class="app-body">
       <nav class="app-sidenav">
@@ -131,22 +196,6 @@ async function signOut() {
           </span>
         </div>
         <div class="nav-spacer" />
-        <div class="nav-section">
-          <h2 class="nav-section-label">Workspace</h2>
-          <Select
-            :model-value="auth.activeCustomer?.id"
-            :options="visibleCustomers"
-            option-label="name"
-            option-value="id"
-            placeholder="Select workspace"
-            class="workspace-select"
-            @update:model-value="onWorkspaceChange"
-          >
-            <template #option="{ option }">
-              {{ option.name }}{{ option.archived ? ' (archived)' : '' }}
-            </template>
-          </Select>
-        </div>
         <div class="nav-section account-section">
           <span class="account-email" :title="auth.user.email">{{ auth.user.email }}</span>
           <div class="account-row">
@@ -286,8 +335,40 @@ async function signOut() {
   flex: 1;
 }
 
+/* Sized for the topbar's 3.5rem height rather than the full-width sidebar
+ * column it used to sit in: a fixed width so it doesn't jostle the theme
+ * toggle as workspace names vary, and `align-items: center` on the topbar
+ * already handles vertical centering. */
 .workspace-select {
-  width: 100%;
+  width: 14rem;
+  flex-shrink: 0;
+}
+
+/* Pushes the theme toggle to the far right, mirroring `.nav-spacer` doing
+ * the same job vertically in the sidenav. */
+.topbar-spacer {
+  flex: 1;
+}
+
+.theme-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 0.875rem;
+  color: var(--p-text-color);
+  cursor: pointer;
+}
+
+.theme-menu-item:hover {
+  background: var(--p-content-hover-background);
+}
+
+.theme-menu-label {
+  flex: 1;
+}
+
+.theme-menu-check {
+  color: var(--p-primary-color);
 }
 
 .account-section {

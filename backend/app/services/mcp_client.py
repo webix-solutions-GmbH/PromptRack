@@ -1,7 +1,7 @@
 """A live MCP client: list a server's tools and call one, over streamable HTTP.
 
 Transport is streamable HTTP only, via the official SDK (`mcp`) rather than a
-hand-rolled JSON-RPC layer. A toolset is configured exactly like a machine — a
+hand-rolled JSON-RPC layer. A toolset is configured exactly like an endpoint — a
 URL plus optional auth headers — so the deployed container needs nothing baked
 in: an Odoo or websearch MCP server runs as its own container on the same
 network and is reached by URL. Port of
@@ -12,7 +12,7 @@ again, which keeps lifecycle and failure handling trivial for a sequential,
 low-frequency caller (a discovery pass, or later a run's tool loop).
 
 Kept free of the database and of `app.repos` on purpose, the same split
-`app.services.discovery` makes for machine probing — this is a pure network
+`app.services.discovery` makes for endpoint probing — this is a pure network
 call plus response parsing.
 """
 

@@ -34,7 +34,7 @@ in-memory maps built as each table is written.
 
 **Scope.** This is an operational tool, so it constructs its own
 `system_scope("legacy sqlite import")` and uses it for the repository calls that
-take one (`commit_version`, `insert_run_results`). The root rows — machines,
+take one (`commit_version`, `insert_run_results`). The root rows — endpoints,
 prompts, toolsets, test groups, runs — are inserted **directly through the
 session** with an explicit `customer_id`, because `scope_values()` deliberately
 refuses a system scope (a new row has no defensible workspace to land in) and
@@ -43,7 +43,7 @@ workspace those inserts land in is the one resolved once at the top of
 `import_legacy`, and nothing here writes outside it.
 
 **Safety.** The whole import is one transaction. It refuses outright if the
-target workspace already holds machines, prompts, toolsets, test groups or runs:
+target workspace already holds endpoints, prompts, toolsets, test groups or runs:
 this is a one-shot import, not a sync, and there are no upsert semantics to fall
 back on. `--dry-run` does the entire translation and rolls back.
 
@@ -68,8 +68,8 @@ from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 from app.db import async_session, engine  # noqa: E402
 from app.models import (  # noqa: E402
-    Machine,
-    MachineModel,
+    Endpoint,
+    EndpointModel,
     Prompt,
     Run,
     TestCase,
@@ -212,8 +212,8 @@ class Summary:
 
     customer: str
     customer_created: bool = False
-    machines: int = 0
-    machine_models: int = 0
+    endpoints: int = 0
+    endpoint_models: int = 0
     toolsets: int = 0
     tools: int = 0
     prompts_from_system_prompts: int = 0
@@ -237,8 +237,8 @@ class Summary:
         lines = [
             f"workspace                     {self.customer}"
             f"{' (created)' if self.customer_created else ' (existing)'}",
-            f"machines                      {self.machines}",
-            f"machine_models                {self.machine_models}",
+            f"endpoints                     {self.endpoints}",
+            f"endpoint_models               {self.endpoint_models}",
             f"toolsets                      {self.toolsets}",
             f"tools                         {self.tools}",
             f"prompts                       {self.prompts}"
@@ -288,7 +288,7 @@ async def resolve_workspace(
         held = ", ".join(
             f"{count} {label}"
             for label, count in (
-                ("machines", counts.machines),
+                ("endpoints", counts.endpoints),
                 ("prompts", counts.prompts),
                 ("toolsets", counts.toolsets),
                 ("test groups", counts.test_groups),
@@ -314,8 +314,8 @@ async def import_legacy(
     scope = system_scope("legacy sqlite import")
     customer_id = await resolve_workspace(session, customer_name, summary)
 
-    machine_ids = await _import_machines(session, connection, customer_id, summary)
-    await _import_machine_models(session, connection, machine_ids, summary)
+    endpoint_ids = await _import_endpoints(session, connection, customer_id, summary)
+    await _import_endpoint_models(session, connection, endpoint_ids, summary)
     toolset_ids = await _import_toolsets(session, connection, customer_id, summary)
     await _import_tools(session, connection, toolset_ids, summary)
 
@@ -334,7 +334,7 @@ async def import_legacy(
         session,
         connection,
         customer_id,
-        machine_ids,
+        endpoint_ids,
         case_ids,
         prompt_for_case,
         versions,
@@ -343,15 +343,21 @@ async def import_legacy(
     return summary
 
 
-async def _import_machines(
+async def _import_endpoints(
     session: AsyncSession,
     connection: sqlite3.Connection,
     customer_id: int,
     summary: Summary,
 ) -> dict[int, int]:
+    """`machines` there, `endpoints` here.
+
+    Every `"machine…"` string below names a *source* table or column: the old
+    app's SQLite file predates the rename and will never be migrated, so the
+    read side keeps saying machine while everything written says endpoint.
+    """
     ids: dict[int, int] = {}
     for row in read_table(connection, "machines", "id"):
-        machine = Machine(
+        endpoint = Endpoint(
             customer_id=customer_id,
             name=row["name"],
             base_url=row["base_url"],
@@ -363,23 +369,23 @@ async def _import_machines(
             created_at=to_utc_required(row["created_at"]),
             updated_at=to_utc_required(row["updated_at"]),
         )
-        session.add(machine)
+        session.add(endpoint)
         await session.flush()
-        ids[row["id"]] = machine.id
-    summary.machines = len(ids)
+        ids[row["id"]] = endpoint.id
+    summary.endpoints = len(ids)
     return ids
 
 
-async def _import_machine_models(
+async def _import_endpoint_models(
     session: AsyncSession,
     connection: sqlite3.Connection,
-    machine_ids: dict[int, int],
+    endpoint_ids: dict[int, int],
     summary: Summary,
 ) -> None:
     for row in read_table(connection, "machine_models", "id"):
         session.add(
-            MachineModel(
-                machine_id=machine_ids[row["machine_id"]],
+            EndpointModel(
+                endpoint_id=endpoint_ids[row["machine_id"]],
                 model_id=row["model_id"],
                 currently_loaded=bool(row["currently_loaded"]),
                 first_seen_at=to_utc_required(row["first_seen_at"]),
@@ -387,7 +393,7 @@ async def _import_machine_models(
                 source=row["source"],
             )
         )
-        summary.machine_models += 1
+        summary.endpoint_models += 1
     await session.flush()
 
 
@@ -597,7 +603,7 @@ async def _import_runs(
     session: AsyncSession,
     connection: sqlite3.Connection,
     customer_id: int,
-    machine_ids: dict[int, int],
+    endpoint_ids: dict[int, int],
     case_ids: dict[int, int],
     prompt_for_case: dict[int, int],
     versions: dict[int, VersionRef],
@@ -614,11 +620,11 @@ async def _import_runs(
         results_by_run.setdefault(row["run_id"], []).append(row)
 
     for row in read_table(connection, "runs", "id"):
-        legacy_machine = row["machine_id"]
+        legacy_endpoint = row["machine_id"]
         run = Run(
             customer_id=customer_id,
-            machine_id=None if legacy_machine is None else machine_ids[legacy_machine],
-            machine_snapshot=row["machine_snapshot"],
+            endpoint_id=None if legacy_endpoint is None else endpoint_ids[legacy_endpoint],
+            endpoint_snapshot=row["machine_snapshot"],
             model_id=row["model_id"],
             params=row["params"],
             comment=row["comment"],

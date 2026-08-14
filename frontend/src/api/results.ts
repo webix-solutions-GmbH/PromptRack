@@ -17,7 +17,7 @@ export type CompareMode = 'runs' | 'models'
 export interface CompareRunView {
   id: number
   model_id: string
-  machine_name: string
+  endpoint_name: string
   status: string
   /** Archived runs are kept out of the picker unless already selected. */
   archived: boolean
@@ -29,6 +29,10 @@ export interface CompareRunView {
   ok: number
   error: number
   avg_rate: number | null
+  /** Sum of `duration_ms` over the run's own results — model generation time
+   * only, tool wait excluded, so a high tok/s can't hide an over-reasoning
+   * model's actual cost in time. `null` when nothing was measured. */
+  total_duration_ms: number | null
 }
 
 /** A newer attempt at the same test case that was *not* used as the cell —
@@ -65,6 +69,10 @@ export interface CompareCellView {
    * is what lets "the instruction changed" and "the data changed" be two
    * different drift sentences. */
   task_prompt_text: string | null
+  /** The rubric as frozen into this row — never rendered per cell. The row
+   * carries the copy its cells agree on (`CompareRowView.expected_output`);
+   * this is only what that decision is made from, server-side. */
+  expected_output: string | null
   /** Raw `tools_snapshot` JSON string, or null. */
   tools_snapshot: string | null
   tool_mode: ToolMode
@@ -100,11 +108,19 @@ export interface CompareRowView {
   test_case_title: string
   test_case_text: string | null
   cells: (CompareCellView | null)[]
+  /** The rubric every cell of this row froze — `null` both when there is no
+   * rubric and when the cells disagree about it, in which case `drift` carries
+   * `"expected output"` instead. Computed server-side
+   * (`app.services.compare.shared_expected_output`) for the same reason
+   * `drift` is: one answer to "identical across the row", under one
+   * normalization. */
+  expected_output: string | null
   /** Conditions not held constant across this row's cells. The three frozen
    * texts are named separately — `"system prompt"`, `"task prompt"`,
-   * `"test case text"` — alongside `"tools"`, `"tool mode"`, `"tool choice"`,
-   * `"params"` and `"max turns"`; model mode adds `"<part> edited since"` for
-   * a part rewritten after every compared run. Computed server-side
+   * `"test case text"` — alongside `"expected output"`, `"tools"`,
+   * `"tool mode"`, `"tool choice"`, `"params"` and `"max turns"`; model mode
+   * adds `"<part> edited since"` for a *sent* part rewritten after every
+   * compared run (never the rubric, which is not sent). Computed server-side
    * (`app.services.compare.describe_row_drift`); nothing here re-derives it. */
   drift: string[]
 }
@@ -113,7 +129,7 @@ export interface CompareRowView {
 export interface ModelColumnView {
   key: string
   model_id: string
-  machine_name: string
+  endpoint_name: string
   run_count: number
   latest_run_at: string
   test_case_count: number
@@ -121,6 +137,9 @@ export interface ModelColumnView {
   meh: number
   bad: number
   avg_rate: number | null
+  /** Sum of `duration_ms` over this column's `ok` results, tallied across
+   * every run of the model rather than read off any one run. */
+  total_duration_ms: number | null
 }
 
 export interface GroupOption {
@@ -138,6 +157,9 @@ export interface ColumnTally {
   bad: number
   unrated: number
   avg_rate: number | null
+  /** Sum of `duration_ms` over the cells **on screen** — same "not a whole-run
+   * total" caveat as the rest of this tally. */
+  total_duration_ms: number | null
 }
 
 export interface MatrixResponse {
@@ -167,7 +189,8 @@ export interface MatrixQuery {
   mode?: CompareMode
   /** Run ids for run mode. */
   runs?: number[]
-  /** `<machine_id>|<model_id>` column keys for model mode. */
+  /** `<endpoint_id>|<model_id>` column keys for model mode — format unchanged
+   * by the machines→endpoints rename; a shared link is a contract. */
   models?: string[]
   group?: number[]
 }

@@ -205,7 +205,7 @@ def _sse(payload: Any) -> bytes:
 async def mock_llm_models() -> Response:
     """Model list for the built-in mock endpoint.
 
-    Point a machine at `http://localhost:8077/api/mock-llm` to exercise runs
+    Point an endpoint at `http://localhost:8077/api/mock-llm` to exercise runs
     without real hardware.
     """
     if not mocks_enabled():

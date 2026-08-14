@@ -152,7 +152,7 @@ async def require_writer(actor: CurrentUser) -> Actor:
 
 
 async def require_admin(actor: CurrentUser) -> Actor:
-    """Machines, toolsets, workspaces, user management."""
+    """Endpoints, toolsets, workspaces, user management."""
     if not actor.can_administer:
         raise AuthError(status.HTTP_403_FORBIDDEN, "Administrator access is required.")
     return actor

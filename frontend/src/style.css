@@ -16,12 +16,29 @@ body {
   height: 100%;
 }
 
+/* 17px is the app's 100%: `1rem` means 17px everywhere, and `body` below takes
+ * it undiluted. It has to sit on `html` rather than on `body`, because every
+ * size in the app is written in `rem` — which resolves against the *root*, not
+ * against an inherited body size, so a `body`-only bump would have scaled
+ * almost nothing.
+ *
+ * Two consequences worth knowing. A `px` value here overrides a reader's own
+ * larger browser default rather than scaling on top of it (a percentage would
+ * have compounded with it) — that is deliberate, since 17px is the chosen
+ * baseline and not a nudge. And `rem` inside a `@media` query always resolves
+ * against the browser's initial 16px by spec, never this value, so the
+ * breakpoints in DashboardView, RunDetailView and ResultRow stay at the pixel
+ * widths they were tuned at while the content inside them grew. */
+html {
+  font-size: 17px;
+}
+
 body {
   margin: 0;
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif,
     'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
-  font-size: 0.9375rem;
+  font-size: 1rem;
   line-height: 1.5;
   background: var(--p-content-background);
   color: var(--p-text-color);

@@ -62,8 +62,8 @@ MAX_GROUP_FILTER = 200
 #: Which pivot `/results` is showing.
 CompareMode = Literal["runs", "models"]
 
-#: What a run whose machine row is gone displays as.
-DELETED_MACHINE_NAME = "(deleted machine)"
+#: What a run whose endpoint row is gone displays as.
+DELETED_ENDPOINT_NAME = "(deleted endpoint)"
 
 
 # ---------------------------------------------------------------------------
@@ -133,23 +133,23 @@ def _text_key(text: str | None) -> str:
     return _WHITESPACE.sub(" ", text or "").strip()
 
 
-def snapshot_machine_name(raw: str | None) -> str:
-    """Machine name out of a run's frozen `machine_snapshot` JSON.
+def snapshot_endpoint_name(raw: str | None) -> str:
+    """Endpoint name out of a run's frozen `endpoint_snapshot` JSON.
 
-    Rendering never reads the live machine row — that is the snapshot invariant
-    — so a deleted or renamed machine still shows the name the run was made
+    Rendering never reads the live endpoint row — that is the snapshot invariant
+    — so a deleted or renamed endpoint still shows the name the run was made
     against, and a snapshot that cannot be parsed degrades to a label rather
     than to an exception.
     """
     try:
         parsed: Any = json.loads(raw) if raw else None
     except ValueError:
-        return DELETED_MACHINE_NAME
+        return DELETED_ENDPOINT_NAME
     if isinstance(parsed, dict):
         name = parsed.get("name")
         if isinstance(name, str) and name:
             return name
-    return DELETED_MACHINE_NAME
+    return DELETED_ENDPOINT_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ class CompareRunView:
 
     id: int
     model_id: str
-    machine_name: str
+    endpoint_name: str
     status: str
     #: Archived runs are kept out of the picker unless already selected.
     archived: bool
@@ -175,6 +175,12 @@ class CompareRunView:
     ok: int
     error: int
     avg_rate: float | None
+    #: Sum of `duration_ms` over the run's own results — model generation time
+    #: only, immune to a run being paused and resumed days later, which is why
+    #: this is a sum of the frozen per-result durations and not `finished_at -
+    #: started_at`. A high tok/s can still be a slow suite if the model
+    #: over-reasons, which is what this sits beside the rate to catch.
+    total_duration_ms: int | None
 
 
 @dataclass(frozen=True)
@@ -219,6 +225,11 @@ class CompareCellView:
     #: which is what lets "the instruction changed" and "the data changed" be
     #: two different sentences.
     task_prompt_text: str | None
+    #: The rubric as frozen into the row — never sent to a model, and never
+    #: rendered per cell: it is row-level information, so the row carries the
+    #: copy the cells agree on (:func:`shared_expected_output`) and a row whose
+    #: cells disagree says so as drift instead.
+    expected_output: str | None
     #: Raw `tools_snapshot` JSON, compared key-insensitively for drift.
     tools_snapshot: str | None
     tool_mode: ToolMode
@@ -260,6 +271,14 @@ class CompareRowView:
     test_case_text: str | None
     #: Same length and order as the selected columns; `None` = no result.
     cells: list[CompareCellView | None]
+    #: The rubric every cell of this row froze, or `None` when the row has no
+    #: rubric *or* its cells disagree about it — see
+    #: :func:`shared_expected_output`. Computed here rather than on the client
+    #: for the same reason `drift` is: the "identical across the row" question
+    #: is answered once, by the same normalization, so a whitespace-only
+    #: difference cannot be silently dropped by one mechanism while the other
+    #: stays quiet about it.
+    expected_output: str | None
     #: Conditions that are *not* held constant across the row; see
     #: :func:`describe_row_drift`. Filled by :func:`annotate_drift`.
     drift: list[str] = field(default_factory=list)
@@ -307,6 +326,36 @@ class CompareTestCaseView:
 
 
 # ---------------------------------------------------------------------------
+# Row-level rubric
+# ---------------------------------------------------------------------------
+
+
+def shared_expected_output(cells: Sequence[CompareCellView | None]) -> str | None:
+    """The rubric the row's cells all froze, or `None` if there isn't one.
+
+    `None` covers both "no rubric at all" and "the cells disagree", because
+    neither may be rendered as *the row's* rubric: a test case edited between
+    two runs would otherwise show one cell's rubric as if the whole row had
+    been graded by it. A disagreement is reported as drift instead (the
+    `"expected output"` entry of :func:`describe_row_drift`), which is where a
+    row-level difference belongs — repeating the rubric in every column is the
+    duplication this layout exists to remove.
+
+    Identity is `_text_key`, the same normalization drift uses, and not byte
+    equality: with byte equality a trailing newline would blank the row header
+    while drift stayed silent, and the reader would lose the rubric with
+    nothing to explain where it went.
+    """
+    present = [cell for cell in cells if cell is not None]
+    if not present:
+        return None
+    keys = {_text_key(cell.expected_output) for cell in present}
+    if len(keys) != 1 or not keys.pop():
+        return None
+    return present[0].expected_output
+
+
+# ---------------------------------------------------------------------------
 # Run mode
 # ---------------------------------------------------------------------------
 
@@ -334,6 +383,7 @@ class _RowBuilder:
             test_case_title=self.test_case_title,
             test_case_text=self.test_case_text,
             cells=self.cells,
+            expected_output=shared_expected_output(self.cells),
         )
 
 
@@ -425,22 +475,26 @@ def build_compare_matrix(
 
 @dataclass(frozen=True)
 class ModelColumnRef:
-    """A model column as a (machine, model) pair — what a query filters on."""
+    """A model column as an (endpoint, model) pair — what a query filters on."""
 
-    machine_id: int | None
+    endpoint_id: int | None
     model_id: str
 
 
-def model_column_key(machine_id: int | None, model_id: str) -> str:
-    """Stable identity of a model column: `<machine_id>|<model_id>`.
+def model_column_key(endpoint_id: int | None, model_id: str) -> str:
+    """Stable identity of a model column: `<endpoint_id>|<model_id>`.
 
-    Keyed on the machine *id* rather than its name so renaming an endpoint does
-    not split a column, and including the machine at all because
+    The string itself is part of the `/results` URL and did **not** change
+    with the machines→endpoints rename: a shared link is a contract, so only
+    the identifiers around this format were renamed.
+
+    Keyed on the endpoint *id* rather than its name so renaming an endpoint does
+    not split a column, and including the endpoint at all because
     `tokens_per_sec` is a property of the hardware — one model on two boxes must
-    stay two columns or the speed numbers become noise. A deleted machine
+    stay two columns or the speed numbers become noise. A deleted endpoint
     collapses to id `0`.
     """
-    return f"{machine_id or 0}|{model_id}"
+    return f"{endpoint_id or 0}|{model_id}"
 
 
 def split_model_column_key(key: str) -> ModelColumnRef | None:
@@ -448,11 +502,11 @@ def split_model_column_key(key: str) -> ModelColumnRef | None:
     separator = key.find("|")
     if separator <= 0:
         return None
-    machine_id = _parse_int(key[:separator])
+    endpoint_id = _parse_int(key[:separator])
     model_id = key[separator + 1 :]
-    if machine_id is None or machine_id < 0 or not model_id:
+    if endpoint_id is None or endpoint_id < 0 or not model_id:
         return None
-    return ModelColumnRef(machine_id=machine_id or None, model_id=model_id)
+    return ModelColumnRef(endpoint_id=endpoint_id or None, model_id=model_id)
 
 
 def parse_model_column_keys(
@@ -483,7 +537,7 @@ class ModelColumnView:
 
     key: str
     model_id: str
-    machine_name: str
+    endpoint_name: str
     #: Non-archived runs that produced at least one usable result for this pair.
     run_count: int
     latest_run_at: datetime
@@ -493,6 +547,10 @@ class ModelColumnView:
     meh: int
     bad: int
     avg_rate: float | None
+    #: Sum of `duration_ms` over this column's `ok` results — same generation-
+    #: time-only reasoning as :attr:`CompareRunView.total_duration_ms`, tallied
+    #: here rather than read from SQL because a model column spans several runs.
+    total_duration_ms: int | None
 
 
 @dataclass(frozen=True)
@@ -500,8 +558,8 @@ class ModelColumnRun:
     """The `runs` fields :func:`build_model_columns` needs."""
 
     id: int
-    machine_id: int | None
-    machine_name: str
+    endpoint_id: int | None
+    endpoint_name: str
     model_id: str
     created_at: datetime
     archived: bool
@@ -516,13 +574,14 @@ class ModelColumnResult:
     status: str
     rating: str | None
     tokens_per_sec: float | None
+    duration_ms: int | None
 
 
 @dataclass
 class _ColumnBuilder:
     key: str
     model_id: str
-    machine_name: str
+    endpoint_name: str
     run_count: int
     latest_run_at: datetime
     good: int
@@ -530,12 +589,13 @@ class _ColumnBuilder:
     bad: int
     test_case_ids: set[int]
     rates: list[float]
+    durations: list[int]
 
     def freeze(self) -> ModelColumnView:
         return ModelColumnView(
             key=self.key,
             model_id=self.model_id,
-            machine_name=self.machine_name,
+            endpoint_name=self.endpoint_name,
             run_count=self.run_count,
             latest_run_at=self.latest_run_at,
             test_case_count=len(self.test_case_ids),
@@ -543,11 +603,22 @@ class _ColumnBuilder:
             meh=self.meh,
             bad=self.bad,
             avg_rate=_average(self.rates),
+            total_duration_ms=_sum_or_none(self.durations),
         )
 
 
 def _average(values: Sequence[float]) -> float | None:
     return sum(values) / len(values) if values else None
+
+
+def _sum_or_none(values: Sequence[int]) -> int | None:
+    """Mirrors SQL `sum()` over an all-NULL column: `None`, never `0`.
+
+    Rows with a null duration are simply skipped by the caller before this
+    ever sees them, so an empty list here means "nothing measured", not "the
+    measured total was zero".
+    """
+    return sum(values) if values else None
 
 
 def build_model_columns(
@@ -575,13 +646,13 @@ def build_model_columns(
         if not ok_results:
             continue
 
-        key = model_column_key(run.machine_id, run.model_id)
+        key = model_column_key(run.endpoint_id, run.model_id)
         column = columns.get(key)
         if column is None:
             column = _ColumnBuilder(
                 key=key,
                 model_id=run.model_id,
-                machine_name=run.machine_name,
+                endpoint_name=run.endpoint_name,
                 run_count=0,
                 latest_run_at=run.created_at,
                 good=0,
@@ -589,15 +660,16 @@ def build_model_columns(
                 bad=0,
                 test_case_ids=set(),
                 rates=[],
+                durations=[],
             )
             columns[key] = column
 
         column.run_count += 1
         if run.created_at >= column.latest_run_at:
             column.latest_run_at = run.created_at
-            # A deleted machine has no live name; the newest snapshot is the
+            # A deleted endpoint has no live name; the newest snapshot is the
             # best one available.
-            column.machine_name = run.machine_name
+            column.endpoint_name = run.endpoint_name
 
         for result in ok_results:
             # A deleted test case can never be a model-mode row (rows are
@@ -607,6 +679,8 @@ def build_model_columns(
                 column.test_case_ids.add(result.test_case_id)
             if result.tokens_per_sec is not None:
                 column.rates.append(result.tokens_per_sec)
+            if result.duration_ms is not None:
+                column.durations.append(result.duration_ms)
             # Anything unrecognised counts as unrated, never as a verdict — the
             # rating column is plain text, so a legacy value must not vanish
             # into `bad` (nor be invented into `good`).
@@ -619,7 +693,7 @@ def build_model_columns(
 
     return sorted(
         (column.freeze() for column in columns.values()),
-        key=lambda column: (column.model_id, column.machine_name),
+        key=lambda column: (column.model_id, column.endpoint_name),
     )
 
 
@@ -704,6 +778,10 @@ def build_model_matrix(
                 test_case_title=test_case.title,
                 test_case_text=test_case.text,
                 cells=row_cells,
+                # The *frozen* rubric, like the frozen texts beside it — model
+                # mode anchors a row's identity to the live test case, but what
+                # a cell was graded against is what its own run recorded.
+                expected_output=shared_expected_output(row_cells),
             )
         )
 
@@ -769,6 +847,14 @@ def describe_row_drift(
             (label, lambda cell, of=of: _text_key(of(cell)))
             for label, of in _TEXT_ASPECTS
         ),
+        # Deliberately outside `_TEXT_ASPECTS`: the rubric is not one of the
+        # three texts sent to the model, so it takes no "edited since"
+        # comparison (`LiveTexts` describes what a live case would *send*, and
+        # the rubric is never sent). Across the row it is drift like anything
+        # else — and it is what the row header falls back to reporting when
+        # `shared_expected_output` refuses to show one cell's rubric as the
+        # row's.
+        ("expected output", lambda cell: _text_key(cell.expected_output)),
         ("tools", lambda cell: _stable_json(cell.tools_snapshot)),
         ("tool mode", lambda cell: cell.tool_mode),
         ("tool choice", lambda cell: cell.tool_choice or "(unset)"),

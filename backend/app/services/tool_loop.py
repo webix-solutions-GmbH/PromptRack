@@ -16,7 +16,7 @@ Three things this module is responsible for, and the reasoning behind each:
   connection-level :class:`~app.services.llm.LlmError` can fail a result.
 * **Metric aggregation.** :func:`aggregate` folds per-turn numbers into the
   columns `run_results` already has. `duration_ms` sums the *model* turns only
-  — waiting on a slow tool must not read as a slow machine — and the
+  — waiting on a slow tool must not read as a slow endpoint — and the
   throughput denominator is the sum of each turn's own generation window, so
   later prefills are never counted as generation. For a single turn it reduces
   exactly to `compute_tokens_per_sec(tokens, duration, ttft)`.
@@ -25,7 +25,7 @@ The frozen half of a run's tool configuration lives here too
 (:class:`SnapshotTool` and its (de)serializers): the definition sent to the
 model and a manual tool's canned response are *content* and travel with the
 run, while an MCP toolset's URL and headers are credentials and are read live
-at execution time — the same line a machine's `base_url`/`api_key` sits on.
+at execution time — the same line an endpoint's `base_url`/`api_key` sits on.
 Which is why the loop takes an `execute_tool` callable rather than looking a
 server up itself: building that executor needs a scoped database read, and is
 the executor's job.
@@ -441,7 +441,7 @@ async def _execute_one(
 
 
 class ChatStreamer(Protocol):
-    """The one call the loop makes against a machine — a test seam.
+    """The one call the loop makes against an endpoint — a test seam.
 
     Production passes :func:`app.services.llm.stream_chat`; the tests pass a
     scripted stand-in, which is what keeps the loop's own behaviour (turn

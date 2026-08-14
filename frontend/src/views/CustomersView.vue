@@ -53,7 +53,7 @@ async function reload() {
 function describeContents(customer: Customer): string {
   const counts = customer.content
   const parts = [
-    `${counts.machines} machine${counts.machines === 1 ? '' : 's'}`,
+    `${counts.endpoints} endpoint${counts.endpoints === 1 ? '' : 's'}`,
     `${counts.prompts} prompt${counts.prompts === 1 ? '' : 's'}`,
     `${counts.toolsets} toolset${counts.toolsets === 1 ? '' : 's'}`,
     `${counts.test_groups} test group${counts.test_groups === 1 ? '' : 's'}`,
@@ -146,7 +146,7 @@ async function removeCustomer(customer: Customer) {
     toast.add({ severity: 'success', summary: 'Workspace deleted', life: 3000 })
     await reload()
   } catch (err) {
-    // The delete guard answers with a sentence ("holds 3 machines, 1 run…")
+    // The delete guard answers with a sentence ("holds 3 endpoints, 1 run…")
     // rather than a raw constraint violation — surface it as-is.
     toast.add({
       severity: 'error',
@@ -166,7 +166,7 @@ async function removeCustomer(customer: Customer) {
       <div class="page-heading">
         <h1>Workspaces</h1>
         <p class="subtitle">
-          One workspace per customer engagement. Machines, prompts, toolsets, test cases and runs
+          One workspace per customer engagement. Endpoints, prompts, toolsets, test cases and runs
           each belong to exactly one — switch between them in the sidebar.
         </p>
       </div>
@@ -181,6 +181,7 @@ async function removeCustomer(customer: Customer) {
         <template #body="{ data }: { data: Customer }">
           <div class="name-cell">
             <span class="name">{{ data.name }}</span>
+            <Tag v-if="data.is_base" value="Base" severity="contrast" />
             <Tag v-if="data.id === auth.activeCustomer?.id" value="active" severity="info" />
             <Tag v-if="data.id === defaultId" value="default" severity="secondary" />
             <Tag v-if="data.archived" value="archived" severity="warn" />
@@ -204,7 +205,7 @@ async function removeCustomer(customer: Customer) {
               @click="openEdit(data)"
             />
             <Button
-              v-if="auth.canWrite"
+              v-if="auth.canWrite && !data.is_base"
               :label="data.archived ? 'Unarchive' : 'Archive'"
               text
               size="small"
@@ -212,7 +213,7 @@ async function removeCustomer(customer: Customer) {
               @click="toggleArchived(data)"
             />
             <Button
-              v-if="auth.canAdminister"
+              v-if="auth.canAdminister && !data.is_base"
               label="Delete"
               text
               size="small"

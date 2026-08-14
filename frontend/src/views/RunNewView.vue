@@ -1,18 +1,18 @@
 <script setup lang="ts">
-// New run: pick a machine + model, pick which test-case groups to run, and
+// New run: pick an endpoint + model, pick which test-case groups to run, and
 // go. Port of `git show master:src/components/runs/new-run-form.tsx` (model
-// detection: probe on machine select, auto-select a single loaded model,
+// detection: probe on endpoint select, auto-select a single loaded model,
 // degrade to a warning + previously-seen models, discard a slow probe's
-// answer for a machine the user has since switched away from) plus the
+// answer for an endpoint the user has since switched away from) plus the
 // pivot's "Verify" entry point (spec §"Workflow & UI": a version's baseline
 // run gets a Verify button that opens this page prefilled).
 //
 // Deviation from the old app, forced by what the landed backend contract
 // actually exposes (flagged for reconciliation — see this task's report):
-// `GET /machines/{id}/models` (the "previously seen" model history used by
+// `GET /endpoints/{id}/models` (the "previously seen" model history used by
 // the old "Currently loaded" / "Previously seen" optgroups) has no route on
-// `backend/app/api/machines.py` yet, though `../api/machines.ts` and
-// `MachineEditView.vue` already assume it exists. `historyModels` below
+// `backend/app/api/endpoints.py` yet, though `../api/endpoints.ts` and
+// `EndpointEditView.vue` already assume it exists. `historyModels` below
 // calls it anyway (for symmetry with that existing convention, and so this
 // view starts working the moment the route lands) but degrades silently to
 // an empty list on failure, same as an unreachable endpoint's warning.
@@ -25,7 +25,7 @@ import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
-import { machinesApi, type Machine, type MachineModel } from '../api/machines'
+import { endpointsApi, type Endpoint, type EndpointModel } from '../api/endpoints'
 import { runsApi } from '../api/runs'
 import { testGroupsApi, type TestGroup } from '../api/testCases'
 import { ApiError } from '../api/client'
@@ -35,12 +35,12 @@ const router = useRouter()
 
 const CUSTOM = '__custom__'
 
-const machines = ref<Machine[]>([])
+const endpoints = ref<Endpoint[]>([])
 const groups = ref<TestGroup[]>([])
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 
-const machineId = ref<number | null>(null)
+const endpointId = ref<number | null>(null)
 const modelChoice = ref('')
 const customModel = ref('')
 const selectedGroupIds = ref<number[]>([])
@@ -55,12 +55,12 @@ async function load() {
   loading.value = true
   loadError.value = null
   try {
-    const [machineRows, groupRows] = await Promise.all([machinesApi.list(), testGroupsApi.list()])
-    machines.value = machineRows
+    const [endpointRows, groupRows] = await Promise.all([endpointsApi.list(), testGroupsApi.list()])
+    endpoints.value = endpointRows
     groups.value = groupRows
-    if (machineRows.length > 0) machineId.value = machineRows[0]!.id
+    if (endpointRows.length > 0) endpointId.value = endpointRows[0]!.id
   } catch (err) {
-    loadError.value = err instanceof ApiError ? err.message : 'Failed to load machines or groups.'
+    loadError.value = err instanceof ApiError ? err.message : 'Failed to load endpoints or groups.'
   } finally {
     loading.value = false
   }
@@ -80,9 +80,9 @@ type ProbeState =
   | { status: 'error'; message: string }
 
 const probe = ref<ProbeState>({ status: 'idle' })
-const historyModels = ref<MachineModel[]>([])
+const historyModels = ref<EndpointModel[]>([])
 /** Discards a slow probe's answer once the user has switched to a different
- * machine — the same sequence guard the old app used a ref for. */
+ * endpoint — the same sequence guard the old app used a ref for. */
 let probeSeq = 0
 
 async function detectModels(id: number) {
@@ -91,7 +91,7 @@ async function detectModels(id: number) {
 
   // The model history fetch is best-effort (see the module comment above on
   // the endpoint it depends on) and must never block the discover probe.
-  void machinesApi
+  void endpointsApi
     .listModels(id)
     .then((rows) => {
       if (probeSeq === seq) historyModels.value = rows
@@ -100,9 +100,9 @@ async function detectModels(id: number) {
       if (probeSeq === seq) historyModels.value = []
     })
 
-  let result: Awaited<ReturnType<typeof machinesApi.discover>>
+  let result: Awaited<ReturnType<typeof endpointsApi.discover>>
   try {
-    result = await machinesApi.discover(id)
+    result = await endpointsApi.discover(id)
   } catch {
     if (probeSeq === seq) probe.value = { status: 'error', message: 'Could not reach the endpoint.' }
     return
@@ -123,7 +123,7 @@ async function detectModels(id: number) {
   }
 }
 
-watch(machineId, (id) => {
+watch(endpointId, (id) => {
   modelChoice.value = ''
   historyModels.value = []
   probe.value = { status: 'idle' }
@@ -132,7 +132,7 @@ watch(machineId, (id) => {
 
 const detected = computed(() => (probe.value.status === 'ok' ? new Set(probe.value.models) : null))
 
-function isLoaded(model: MachineModel): boolean {
+function isLoaded(model: EndpointModel): boolean {
   return detected.value ? detected.value.has(model.model_id) : model.currently_loaded
 }
 
@@ -193,17 +193,23 @@ async function preloadBaseline() {
     selectedGroupIds.value = [...new Set(matched)]
     baselineNote.value =
       matched.length > 0
-        ? `Preloaded ${matched.length} group(s) from run #${baselineId}. Pick the model/machine to verify.`
+        ? `Preloaded ${matched.length} group(s) from run #${baselineId}. Pick the model/endpoint to verify.`
         : `Run #${baselineId}'s groups no longer exist — pick groups manually.`
   } catch {
     baselineNote.value = `Could not load run #${baselineId} to preload its groups.`
   }
 }
 
+// The Select's own `#value` slot needs this to mark a shared endpoint even
+// once picked, not only while it is still one option among several.
+const selectedEndpoint = computed(
+  () => endpoints.value.find((endpoint) => endpoint.id === endpointId.value) ?? null,
+)
+
 // --- submit ------------------------------------------------------------
 
 const canSubmit = computed(
-  () => machineId.value !== null && resolvedModelId.value.length > 0 && selectedGroupIds.value.length > 0,
+  () => endpointId.value !== null && resolvedModelId.value.length > 0 && selectedGroupIds.value.length > 0,
 )
 
 function toggleGroup(id: number) {
@@ -214,12 +220,12 @@ function toggleGroup(id: number) {
 }
 
 async function submit() {
-  if (!canSubmit.value || machineId.value === null) return
+  if (!canSubmit.value || endpointId.value === null) return
   submitError.value = null
   submitting.value = true
   try {
     const created = await runsApi.create({
-      machine_id: machineId.value,
+      endpoint_id: endpointId.value,
       model_id: resolvedModelId.value,
       group_ids: selectedGroupIds.value,
       temperature: temperature.value,
@@ -240,29 +246,36 @@ async function submit() {
     <div class="page-heading">
       <h1>New run</h1>
       <p class="subtitle">
-        Every test case in the selected groups is executed sequentially against one machine and
-        model. Test cases, prompts and machine specs are snapshotted, so later edits never change
+        Every test case in the selected groups is executed sequentially against one endpoint and
+        model. Test cases, prompts and endpoint specs are snapshotted, so later edits never change
         this run's history.
       </p>
     </div>
 
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
-    <div v-if="!loading && machines.length === 0" class="empty-state">
-      Add a machine first — a run needs an endpoint to talk to.
+    <div v-if="!loading && endpoints.length === 0" class="empty-state">
+      Add an endpoint first — a run needs one to talk to.
     </div>
 
     <form v-else-if="!loading" class="form" @submit.prevent="submit">
       <div class="field-row">
         <div class="field">
-          <label for="run-machine">Machine *</label>
+          <label for="run-endpoint">Endpoint *</label>
           <Select
-            id="run-machine"
-            v-model="machineId"
-            :options="machines"
+            id="run-endpoint"
+            v-model="endpointId"
+            :options="endpoints"
             option-label="name"
             option-value="id"
-          />
+          >
+            <template #option="{ option }: { option: Endpoint }">
+              {{ option.name }}{{ option.is_global ? ' (Global)' : '' }}
+            </template>
+            <template #value>
+              {{ selectedEndpoint?.name }}{{ selectedEndpoint?.is_global ? ' (Global)' : '' }}
+            </template>
+          </Select>
         </div>
 
         <div class="field">
@@ -273,8 +286,8 @@ async function submit() {
               label="Re-detect"
               text
               size="small"
-              :disabled="probe.status === 'loading' || machineId === null"
-              @click="machineId !== null && detectModels(machineId)"
+              :disabled="probe.status === 'loading' || endpointId === null"
+              @click="endpointId !== null && detectModels(endpointId)"
             />
           </div>
           <Select

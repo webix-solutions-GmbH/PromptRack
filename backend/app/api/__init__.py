@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.customers import router as customers_router
-from app.api.machines import router as machines_router
+from app.api.endpoints import router as endpoints_router
 from app.api.mocks import router as mocks_router
 from app.api.prompts import router as prompts_router
 from app.api.results import router as results_matrix_router
@@ -30,7 +30,7 @@ router.include_router(version_router)
 router.include_router(auth_router)
 router.include_router(tokens_router)
 router.include_router(customers_router)
-router.include_router(machines_router)
+router.include_router(endpoints_router)
 router.include_router(prompts_router)
 router.include_router(toolsets_router)
 router.include_router(test_groups_router)

@@ -17,12 +17,11 @@ import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
 import Message from 'primevue/message'
-import { resultsApi, type CompareCellView, type CompareMode, type CompareRowView, type MatrixResponse } from '../api/results'
+import { resultsApi, type CompareCellView, type CompareMode, type MatrixResponse } from '../api/results'
 import { ApiError } from '../api/client'
-import { formatDateTime, formatRate } from '../lib/format'
+import { formatDateTime, formatDuration, formatRate } from '../lib/format'
 import type { Rating } from '../lib/rating'
 import MatrixTable from '../components/results/MatrixTable.vue'
-import CellDetail from '../components/results/CellDetail.vue'
 import { useAuthStore } from '../stores/auth'
 
 // Mirrors `MAX_COMPARE_RUNS`/`MAX_COMPARE_MODELS` in
@@ -154,51 +153,27 @@ const columnCount = computed(() =>
 const rows = computed(() => matrix.value?.rows ?? [])
 const belowMinimum = computed(() => matrix.value !== null && columnCount.value < matrix.value.min_columns)
 
-// --- cell detail dialog ------------------------------------------------
+// --- rating write-through ------------------------------------------------
 
-const activeCell = ref<CompareCellView | null>(null)
-const activeRow = ref<CompareRowView | null>(null)
-
-const dialogVisible = computed({
-  get: () => activeCell.value !== null,
-  set: (value: boolean) => {
-    if (!value) {
-      activeCell.value = null
-      activeRow.value = null
-    }
-  },
-})
-
-function openCell(payload: { cell: CompareCellView; row: CompareRowView }) {
-  activeCell.value = payload.cell
-  activeRow.value = payload.row
-}
-
-const columnLabel = computed(() => {
-  const cell = activeCell.value
-  if (!cell || !matrix.value) return ''
-  if (mode.value === 'runs') {
-    const run = matrix.value.run_columns.find((candidate) => candidate.id === cell.run_id)
-    return run ? `${run.model_id} @ ${run.machine_name}` : `run #${cell.run_id}`
-  }
-  const column = matrix.value.model_columns.find((candidate) => candidate.key === cell.column_key)
-  return column ? `${column.model_id} @ ${column.machine_name}` : cell.column_key
-})
-
-function handleRatingChange(patch: { rating?: Rating | null; ratingNote?: string | null }) {
-  if (!matrix.value || !activeCell.value) return
-  const cellId = activeCell.value.id
+// `RatingButtons` has already sent the PATCH by the time this fires; patching
+// the cell in place keeps it and the tallies it feeds honest without
+// re-requesting the whole comparison.
+function handleRatingChange(payload: {
+  cell: CompareCellView
+  patch: { rating?: Rating | null; ratingNote?: string | null }
+}) {
+  if (!matrix.value) return
+  const { cell: target, patch } = payload
   const updated: CompareCellView = {
-    ...activeCell.value,
+    ...target,
     ...('rating' in patch ? { rating: patch.rating ?? null } : {}),
     ...('ratingNote' in patch ? { rating_note: patch.ratingNote ?? null } : {}),
   }
-  activeCell.value = updated
   matrix.value = {
     ...matrix.value,
     rows: matrix.value.rows.map((row) => ({
       ...row,
-      cells: row.cells.map((cell) => (cell !== null && cell.id === cellId ? updated : cell)),
+      cells: row.cells.map((cell) => (cell !== null && cell.id === target.id ? updated : cell)),
     })),
   }
 }
@@ -244,10 +219,13 @@ function handleRatingChange(patch: { rating?: Rating | null; ratingNote?: string
               <th></th>
               <th>Run</th>
               <th>Model</th>
-              <th>Machine</th>
+              <th>Endpoint</th>
               <th>Created</th>
               <th title="good / meh / bad">Rating</th>
               <th>Avg speed</th>
+              <th title="Sum of every result's generation time; tool waiting excluded">
+                Total time
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -268,10 +246,11 @@ function handleRatingChange(patch: { rating?: Rating | null; ratingNote?: string
               </td>
               <td>#{{ run.id }}</td>
               <td class="mono">{{ run.model_id }}</td>
-              <td>{{ run.machine_name }}</td>
+              <td>{{ run.endpoint_name }}</td>
               <td>{{ formatDateTime(run.created_at) }}</td>
               <td>{{ run.good }}/{{ run.meh }}/{{ run.bad }}</td>
               <td>{{ formatRate(run.avg_rate) }}</td>
+              <td>{{ formatDuration(run.total_duration_ms) }}</td>
             </tr>
           </tbody>
         </table>
@@ -287,12 +266,15 @@ function handleRatingChange(patch: { rating?: Rating | null; ratingNote?: string
               <tr>
                 <th></th>
                 <th>Model</th>
-                <th>Machine</th>
+                <th>Endpoint</th>
                 <th title="Distinct test cases with a usable result">Test cases</th>
                 <th>Runs</th>
                 <th>Latest run</th>
                 <th title="good / meh / bad">Rating</th>
                 <th>Avg speed</th>
+                <th title="Sum of every result's generation time; tool waiting excluded">
+                  Total time
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -315,12 +297,13 @@ function handleRatingChange(patch: { rating?: Rating | null; ratingNote?: string
                   />
                 </td>
                 <td class="mono">{{ column.model_id }}</td>
-                <td>{{ column.machine_name }}</td>
+                <td>{{ column.endpoint_name }}</td>
                 <td>{{ column.test_case_count }}</td>
                 <td>{{ column.run_count }}</td>
                 <td>{{ formatDateTime(column.latest_run_at) }}</td>
                 <td>{{ column.good }}/{{ column.meh }}/{{ column.bad }}</td>
                 <td>{{ formatRate(column.avg_rate) }}</td>
+                <td>{{ formatDuration(column.total_duration_ms) }}</td>
               </tr>
             </tbody>
           </table>
@@ -380,21 +363,11 @@ function handleRatingChange(patch: { rating?: Rating | null; ratingNote?: string
           :run-columns="matrix.run_columns"
           :model-columns="matrix.model_columns"
           :column-tallies="matrix.column_tallies"
-          @cell-click="openCell"
+          :can-write="auth.canWrite"
+          @rating-change="handleRatingChange"
         />
       </section>
     </template>
-
-    <CellDetail
-      v-model:visible="dialogVisible"
-      :cell="activeCell"
-      :row-group="activeRow?.group_name ?? ''"
-      :row-title="activeRow?.test_case_title ?? ''"
-      :drift="activeRow?.drift ?? []"
-      :column-label="columnLabel"
-      :can-write="auth.canWrite"
-      @rating-change="handleRatingChange"
-    />
   </div>
 </template>
 

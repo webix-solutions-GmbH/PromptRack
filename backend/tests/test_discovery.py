@@ -1,7 +1,7 @@
 """`app.services.discovery.probe_models` — parsing and error-mapping only.
 
 No database, no real network: `httpx.MockTransport` stands in for the
-machine's OpenAI-compatible endpoint, keeping this in the fast suite next to
+endpoint's OpenAI-compatible endpoint, keeping this in the fast suite next to
 `test_attribution.py` and (in Phase 4) `test_llm.py`.
 """
 

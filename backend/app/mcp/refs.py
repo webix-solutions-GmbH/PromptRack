@@ -6,8 +6,8 @@ signature's type hints, so the old `requireString` / `optionalInteger` family
 has no work left to do. What does *not* come for free is the part that made the
 old surface pleasant to drive from an agent:
 
-* **Everything relatable by name is** — a group, a prompt, a toolset or a
-  machine may be named instead of numbered, because a client that has just
+* **Everything relatable by name is** — a group, a prompt, a toolset or an
+  endpoint may be named instead of numbered, because a client that has just
   created a group knows its name and would otherwise have to look the id up
   again. A numeric string is always an id (`"12"` is never a sensible name, and
   treating it as one would silently create a second group called "12").
