@@ -1,3 +1,7 @@
+# Pinned for the same reason as docker-compose.dev.yml: without it Compose
+# names the project after the directory, and renaming the checkout orphans
+# `pgdata` — which here is the production database.
+name: promptrack
 services:
   postgres:
     image: postgres:17-alpine

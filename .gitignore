@@ -47,6 +47,13 @@ next-env.d.ts
 # local sqlite database
 /data/
 
+# The retired app's SQLite database, kept locally as the import source for
+# backend/scripts/import_legacy_sqlite.py. Never committed: it holds a live
+# API key for the ki01.webix.de endpoint.
+docs/app.db
+docs/app.db-shm
+docs/app.db-wal
+
 # drizzle/ (SQL migrations generated from src/db/schema.ts) is committed, not ignored.
 docs/notes.md
 docs/superpowers/

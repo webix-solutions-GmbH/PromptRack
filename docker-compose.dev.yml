@@ -1,4 +1,12 @@
 # Development database only. Production compose (Task 6.3) is docker-compose.yml.
+#
+# `name` is pinned rather than left to default: Compose otherwise derives the
+# project name from the directory, so the named volume below becomes
+# `<dirname>_promptrack-dev-pgdata` and renaming the checkout silently orphans
+# the database (this happened once — Webix.AI.Agent-Model-Eval → PromptRack —
+# and the next `up` mounted a fresh empty volume). Pinned, the volume keeps its
+# name wherever the repo lives.
+name: promptrack
 services:
   postgres:
     image: postgres:17-alpine
