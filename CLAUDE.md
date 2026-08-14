@@ -48,12 +48,10 @@ and recreate a column instead), so a rename needs the generated file hand-edited
 terminal for the equivalent case in the old stack.
 
 Git: branch is `rewrite`, built on top of `master` (the retired Next.js/TypeScript
-implementation, kept for reference — see "This is a rewrite" below). Two remotes:
+implementation, kept for reference — see "This is a rewrite" below). One remote:
 `origin` is GitHub (`philphilphil/PromptRack`, private, renamed from `modelfit`; note the
-capitalisation — the lowercase URL only resolves through GitHub's redirect) and `azure` is
-Azure DevOps (`webixsolutionsgmbh/Development/Webix.AI.Agent-Model-Eval`, the work remote,
-whose project name predates the PromptRack rename). `rewrite` tracks `origin/rewrite`;
-`azure` holds only `master`.
+capitalisation — the lowercase URL only resolves through GitHub's redirect). `rewrite`
+tracks `origin/rewrite`.
 
 ## What this is
 
