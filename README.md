@@ -49,7 +49,8 @@ In a second terminal:
 cd frontend && npm install && npm run dev
 ```
 
-Or bring both dev servers up together, after the database is up: `scripts/dev.sh`.
+Or bring the database, migrations and both dev servers up together with `make run`
+(`make` on its own lists the other targets: `test`, `lint`, `typecheck`, `check`).
 
 - Backend: `http://localhost:8000` (`/api/health`, `/api/mcp`)
 - Frontend: `http://localhost:5173` (vite dev server, proxies `/api` to the backend)

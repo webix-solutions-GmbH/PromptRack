@@ -16,6 +16,7 @@ cd backend && uv run uvicorn app.main:app --reload         # http://localhost:80
 cd frontend && npm install && npm run dev                  # http://localhost:5173, proxies /api
 
 scripts/dev.sh                       # both dev servers together, db + migrations first
+make run                             # the same thing; `make` lists every target
 
 cd backend && uv run pytest                                 # pure suite, no database
 cd backend && uv run pytest tests/test_llm.py                # single test file
