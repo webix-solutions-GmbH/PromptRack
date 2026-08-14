@@ -11,7 +11,7 @@ repository convention: the request boundary decides where the unit of work ends
 (:mod:`app.auth.router` is the caller that commits).
 """
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import func, select, text, update
@@ -78,6 +78,27 @@ async def find_user_by_email(session: AsyncSession, email: str) -> User | None:
     """
     statement = select(User).where(func.lower(User.email) == func.lower(email))
     return (await session.scalars(statement)).first()
+
+
+async def list_display_names(
+    session: AsyncSession, user_ids: Iterable[int | None]
+) -> dict[int, str]:
+    """The name to show for a batch of users, keyed by id — one query rather
+    than one per row, for a version list's "author" column or similar.
+
+    Falls back to the address when the name is blank. A ``None`` id (no
+    author, or the user's row is gone — ``created_by``/``deployed_by`` are
+    both ``SET NULL`` on delete) is simply skipped; the caller reads a
+    missing key as "no name to show".
+    """
+    ids = {user_id for user_id in user_ids if user_id is not None}
+    if not ids:
+        return {}
+    statement = select(User.id, User.name, User.email).where(User.id.in_(ids))
+    return {
+        user_id: (name.strip() or email)
+        for user_id, name, email in (await session.execute(statement)).all()
+    }
 
 
 async def find_user_by_oidc_subject(session: AsyncSession, subject: str) -> User | None:

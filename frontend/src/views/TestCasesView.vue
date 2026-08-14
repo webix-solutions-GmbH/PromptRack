@@ -65,7 +65,7 @@ function selectGroup(groupId: number | null) {
 }
 
 function promptRefFor(caseRow: TestCase): string {
-  return caseRow.prompt_id === null ? '—' : `prompt #${caseRow.prompt_id}`
+  return caseRow.prompt_name ?? '—'
 }
 
 // --- group create / rename / delete --------------------------------------

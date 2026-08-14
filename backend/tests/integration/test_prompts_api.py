@@ -15,12 +15,14 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.main import app
+from app.models import User
 from app.repos.machines import create_machine
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt
@@ -247,6 +249,61 @@ class TestVersioning:
         assert body["dirty"] is False
         assert body["head_version"] == {"id": version_body["id"], "version": 1}
 
+    async def test_committed_version_reports_the_authors_name(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """`created_by_name` is resolved server-side (`app.auth.users.list_display_names`)
+        so the history panel never renders a bare user id — checked on the
+        commit response itself, the list, and the single-version read.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        prompt = await create_prompt(scope, session, name="Greeting", content="Say hi.")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        committed = await client.post(
+            f"/api/prompts/{prompt.id}/commit", json={"message": "v1"}
+        )
+        assert committed.status_code == 201, committed.text
+        assert committed.json()["created_by_name"] == "member@example.com"
+
+        listed = await client.get(f"/api/prompts/{prompt.id}/versions")
+        assert listed.json()[0]["created_by_name"] == "member@example.com"
+
+        got = await client.get(f"/api/prompts/versions/{committed.json()['id']}")
+        assert got.json()["created_by_name"] == "member@example.com"
+
+    async def test_a_deleted_authors_version_reports_no_name(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """`prompt_versions.created_by` is `SET NULL` when the author's account
+        is deleted, so both the raw id and the resolved name read null —
+        never a name looked up from a user row that no longer exists.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        prompt = await create_prompt(scope, session, name="Greeting", content="Say hi.")
+        await session.commit()
+        author_id = await make_user(session, "gone@example.com", "member", customer_id)
+        await login(client, "gone@example.com")
+
+        committed = await client.post(
+            f"/api/prompts/{prompt.id}/commit", json={"message": "v1"}
+        )
+        assert committed.status_code == 201, committed.text
+        version_id = committed.json()["id"]
+
+        await session.execute(delete(User).where(User.id == author_id))
+        await session.commit()
+
+        await make_user(session, "viewer@example.com", "viewer", customer_id)
+        await login(client, "viewer@example.com")
+
+        got = await client.get(f"/api/prompts/versions/{version_id}")
+        assert got.status_code == 200
+        assert got.json()["created_by"] is None
+        assert got.json()["created_by_name"] is None
+
     async def test_committing_with_no_changes_is_refused(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
@@ -333,6 +390,7 @@ class TestVersioning:
         body = deployed.json()
         assert body["deployed_version"] == {"id": v1.id, "version": 1}
         assert body["deployed_at"] is not None
+        assert body["deployed_by_name"] == "member@example.com"
 
     async def test_deploy_refuses_a_version_belonging_to_a_different_prompt(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.guards import CurrentScope, CurrentUser, DbSession, Writer
+from app.auth.users import list_display_names
 from app.models import Prompt, PromptVersion
 from app.repos.prompt_versions import (
     NoChangesError,
@@ -75,6 +76,10 @@ class PromptView(BaseModel):
     head_version: VersionSummary | None
     deployed_version: VersionSummary | None
     deployed_at: datetime | None
+    #: Who moved the `deployed` pointer, resolved from `prompts.deployed_by`
+    #: (`users.name`, falling back to `users.email`; `None` when nothing is
+    #: deployed yet, or that user's account is gone — `SET NULL` on delete).
+    deployed_by_name: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -138,6 +143,11 @@ class PromptVersionView(BaseModel):
     message: str
     created_at: datetime
     created_by: int | None
+    #: The author's name (`users.name`, falling back to `users.email`),
+    #: resolved server-side so the history panel never renders a bare id.
+    #: `None` alongside `created_by is None`, or when that user's account has
+    #: since been deleted (`SET NULL`).
+    created_by_name: str | None
     baseline_run_id: int | None
 
 
@@ -189,7 +199,7 @@ def _version_summary(version_id: int | None, refs: list[VersionRef]) -> VersionS
     return None
 
 
-def _prompt_view(prompt: Prompt, refs: list[VersionRef]) -> PromptView:
+def _prompt_view(prompt: Prompt, refs: list[VersionRef], names: dict[int, str]) -> PromptView:
     head = head_version(refs)
     return PromptView(
         id=prompt.id,
@@ -199,12 +209,13 @@ def _prompt_view(prompt: Prompt, refs: list[VersionRef]) -> PromptView:
         head_version=_version_summary(head.id, refs) if head is not None else None,
         deployed_version=_version_summary(prompt.deployed_version_id, refs),
         deployed_at=prompt.deployed_at,
+        deployed_by_name=names.get(prompt.deployed_by) if prompt.deployed_by is not None else None,
         created_at=prompt.created_at,
         updated_at=prompt.updated_at,
     )
 
 
-def _version_view(version: PromptVersion) -> PromptVersionView:
+def _version_view(version: PromptVersion, names: dict[int, str]) -> PromptVersionView:
     return PromptVersionView(
         id=version.id,
         prompt_id=version.prompt_id,
@@ -213,6 +224,7 @@ def _version_view(version: PromptVersion) -> PromptVersionView:
         message=version.message,
         created_at=version.created_at,
         created_by=version.created_by,
+        created_by_name=names.get(version.created_by) if version.created_by is not None else None,
         baseline_run_id=version.baseline_run_id,
     )
 
@@ -232,7 +244,9 @@ async def _prompt_view_by_id(
     scope: Scope, session: AsyncSession, prompt_id: int
 ) -> PromptView:
     prompt = await _get_prompt_or_404(scope, session, prompt_id)
-    return _prompt_view(prompt, await _refs_for(scope, session, prompt_id))
+    refs = await _refs_for(scope, session, prompt_id)
+    names = await list_display_names(session, [prompt.deployed_by])
+    return _prompt_view(prompt, refs, names)
 
 
 async def _get_version_or_404(
@@ -277,7 +291,8 @@ async def list_prompts_endpoint(
     del actor
     prompts = await list_prompts(scope, session, order=order)
     refs_by_prompt = await list_version_refs(scope, session, [p.id for p in prompts])
-    return [_prompt_view(p, refs_by_prompt.get(p.id, [])) for p in prompts]
+    names = await list_display_names(session, [p.deployed_by for p in prompts])
+    return [_prompt_view(p, refs_by_prompt.get(p.id, []), names) for p in prompts]
 
 
 @router.get("/{prompt_id}")
@@ -295,7 +310,7 @@ async def create_prompt_endpoint(
     del actor
     prompt = await create_prompt(scope, session, name=body.name, content=body.content)
     await session.commit()
-    return _prompt_view(prompt, [])
+    return _prompt_view(prompt, [], {})
 
 
 @router.patch("/{prompt_id}")
@@ -365,7 +380,8 @@ async def commit_prompt_endpoint(
     except NoChangesError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     await session.commit()
-    return _version_view(version)
+    names = await list_display_names(session, [version.created_by])
+    return _version_view(version, names)
 
 
 @router.get("/{prompt_id}/versions")
@@ -376,7 +392,8 @@ async def list_prompt_versions_endpoint(
     del actor
     await _get_prompt_or_404(scope, session, prompt_id)
     versions = await list_versions(scope, session, prompt_id)
-    return [_version_view(v) for v in versions]
+    names = await list_display_names(session, [v.created_by for v in versions])
+    return [_version_view(v, names) for v in versions]
 
 
 @router.get("/versions/{version_id}")
@@ -387,7 +404,8 @@ async def get_prompt_version_endpoint(
     version = await get_version(scope, session, version_id)
     if version is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such version.")
-    return _version_view(version)
+    names = await list_display_names(session, [version.created_by])
+    return _version_view(version, names)
 
 
 @router.post("/{prompt_id}/deploy")
@@ -436,7 +454,8 @@ async def set_baseline_endpoint(
     version = await get_version(scope, session, version_id)
     if version is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such version.")
-    return _version_view(version)
+    names = await list_display_names(session, [version.created_by])
+    return _version_view(version, names)
 
 
 @router.post("/{prompt_id}/restore")

@@ -53,11 +53,7 @@ function isBusy(version: PromptVersion): boolean {
     </Column>
     <Column field="message" header="Message" />
     <Column header="Author">
-      <!-- No user-lookup endpoint exists yet to resolve a name (see
-           api/prompts.ts) — the bare id is what the backend model carries. -->
-      <template #body="{ data }: { data: PromptVersion }">{{
-        data.created_by !== null ? `user #${data.created_by}` : '—'
-      }}</template>
+      <template #body="{ data }: { data: PromptVersion }">{{ data.created_by_name ?? '—' }}</template>
     </Column>
     <Column header="Date">
       <template #body="{ data }: { data: PromptVersion }">{{ formatDateTime(data.created_at) }}</template>

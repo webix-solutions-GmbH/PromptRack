@@ -22,11 +22,9 @@
 // dirty (draft ≠ head)") — this module never re-derives dirtiness client-side,
 // the same way `machines.ts` never re-derives `loaded_count`.
 //
-// Deviation flagged for reconciliation with Task 3.3: `PromptVersion.created_by`
-// is modeled here as the bare user id (matching `backend/app/models/prompts.py`
-// exactly), since no user-lookup endpoint exists yet for the history panel to
-// join against for an author name. `VersionHistory.vue` renders it as `user #N`
-// until a richer shape (e.g. `created_by_name`) lands.
+// `PromptVersion.created_by_name` and `Prompt.deployed_by_name` are resolved
+// server-side (`backend/app/api/prompts.py`, `app.auth.users.list_display_names`)
+// so the history panel and the editor never render a bare user id.
 //
 // `setBaseline` is part of the Task 3.3 contract but has no caller in this
 // task's UI — Task 3.6's own action list for a version is view/diff/deploy/
@@ -46,10 +44,11 @@ export interface Prompt {
   name: string
   /** The mutable draft — what the editor writes and what a run always tests. */
   content: string
-  /** When the pointer was moved. *Who* moved it is stored (`prompts.deployed_by`)
-   * but not exposed — there is no user-lookup endpoint to render a name with,
-   * the same reason `PromptVersion.created_by` shows as `user #N`. */
+  /** When the pointer was moved. */
   deployed_at: string | null
+  /** Who moved it — `prompts.deployed_by` resolved to a name server-side.
+   * `null` when nothing is deployed yet, or that user's account is gone. */
+  deployed_by_name: string | null
   created_at: string
   updated_at: string
   head_version: PromptVersionSummary | null
@@ -80,6 +79,10 @@ export interface PromptVersion {
   message: string
   created_at: string
   created_by: number | null
+  /** The author's display name, resolved server-side. `null` alongside
+   * `created_by === null`, or when that user's account has since been
+   * deleted. */
+  created_by_name: string | null
   baseline_run_id: number | null
 }
 

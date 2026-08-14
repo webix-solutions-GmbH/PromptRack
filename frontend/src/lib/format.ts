@@ -52,6 +52,23 @@ export function computeTokensPerSec(
   return Number.isFinite(rate) ? rate : null
 }
 
+/**
+ * Token-count chip text: `7 in / 40 out` when the prompt-token count is
+ * known, falling back to the bare completion count (still `~`-marked when
+ * estimated) when it isn't — same as when a provider's usage block never
+ * arrives (`backend/app/services/llm.py`). `null` when there is no
+ * completion count to show at all, so callers can `v-if` the chip away.
+ */
+export function formatTokenLabel(
+  promptTokens: number | null,
+  completionTokens: number | null,
+  estimated: boolean,
+): string | null {
+  if (completionTokens === null) return null
+  const completion = `${estimated ? '~' : ''}${completionTokens}`
+  return promptTokens !== null ? `${promptTokens} in / ${completion} out` : completion
+}
+
 /** Renders a run's `params` (temperature/max_tokens) for display. */
 export function formatParams(params: Record<string, unknown> | null): string {
   if (!params) return 'server defaults'

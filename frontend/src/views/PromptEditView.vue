@@ -271,6 +271,7 @@ async function removePrompt() {
         <p class="status-line">{{ describeVersionStatus(prompt) }}</p>
         <p v-if="prompt.deployed_at" class="meta">
           Deployed {{ formatDateTime(prompt.deployed_at) }}
+          <template v-if="prompt.deployed_by_name">by {{ prompt.deployed_by_name }}</template>
         </p>
       </div>
 

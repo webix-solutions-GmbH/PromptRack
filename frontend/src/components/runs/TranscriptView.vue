@@ -10,7 +10,7 @@
 // `backend/app/services/tool_loop.py`) rather than the old app's OpenAI-wire
 // `{id, function: {name, arguments}}` nesting.
 import { computed } from 'vue'
-import { formatDuration, formatRate, computeTokensPerSec } from '../../lib/format'
+import { formatDuration, formatRate, computeTokensPerSec, formatTokenLabel } from '../../lib/format'
 import { splitThinking } from '../../lib/thinking'
 import type { StoppedReason, TranscriptMessage, TurnMetrics } from '../../api/runs'
 
@@ -78,15 +78,13 @@ function assistantParts(message: TranscriptMessage) {
           <span class="chip">duration <b>{{ formatDuration(turnByIndex.get(row.turn)!.duration_ms) }}</b></span>
           <span class="chip">
             tokens
-            <b
-              >{{ turnByIndex.get(row.turn)!.tokens_estimated ? '~' : '' }}{{
-                turnByIndex.get(row.turn)!.completion_tokens
-              }}{{
-                turnByIndex.get(row.turn)!.prompt_tokens !== null
-                  ? ` / ${turnByIndex.get(row.turn)!.prompt_tokens} in`
-                  : ''
-              }}</b
-            >
+            <b>{{
+              formatTokenLabel(
+                turnByIndex.get(row.turn)!.prompt_tokens,
+                turnByIndex.get(row.turn)!.completion_tokens,
+                turnByIndex.get(row.turn)!.tokens_estimated,
+              )
+            }}</b>
           </span>
           <span class="chip"
             >speed

@@ -7,7 +7,7 @@
 // (`versionLabel`, spec §"Attribution surfaced").
 import { computed } from 'vue'
 import Tag from 'primevue/tag'
-import { formatDuration, formatRate } from '../../lib/format'
+import { formatDuration, formatRate, formatTokenLabel } from '../../lib/format'
 import { splitThinking } from '../../lib/thinking'
 import type { Rating } from '../../lib/rating'
 import type { RunResultView } from '../../api/runs'
@@ -39,13 +39,9 @@ const hasMetrics = computed(
     props.result.completion_tokens !== null ||
     props.result.tokens_per_sec !== null,
 )
-const tokenLabel = computed(() => {
-  const r = props.result
-  if (r.completion_tokens === null) return null
-  const estimated = r.tokens_estimated ? '~' : ''
-  const inTokens = r.prompt_tokens !== null ? ` / ${r.prompt_tokens} in` : ''
-  return `${estimated}${r.completion_tokens}${inTokens}`
-})
+const tokenLabel = computed(() =>
+  formatTokenLabel(props.result.prompt_tokens, props.result.completion_tokens, props.result.tokens_estimated),
+)
 
 const statusSeverity: Record<string, 'secondary' | 'info' | 'success' | 'danger'> = {
   pending: 'secondary',

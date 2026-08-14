@@ -80,6 +80,10 @@ export interface TestCase {
   expected_output: string | null
   /** The prompt asset this case runs against, or `null` for no base prompt. */
   prompt_id: number | null
+  /** The referenced prompt's current name, resolved server-side. `null`
+   * alongside `prompt_id === null`, or when that prompt has since been
+   * deleted. */
+  prompt_name: string | null
   mode: PromptMode
   custom_text: string | null
   tool_mode: ToolMode

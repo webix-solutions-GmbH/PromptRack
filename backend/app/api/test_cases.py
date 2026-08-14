@@ -17,6 +17,7 @@ every keystroke while a case is still being drafted — and is `CurrentUser`,
 not `Writer`, since it writes nothing.
 """
 
+from collections.abc import Sequence
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, status
@@ -25,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.guards import CurrentScope, CurrentUser, DbSession, Writer
 from app.models import PromptMode, TestCase, ToolChoice, ToolMode
-from app.repos.prompts import get_prompt
+from app.repos.prompts import get_prompt, list_prompts_by_ids
 from app.repos.test_cases import (
     create_test_case,
     delete_test_case,
@@ -59,6 +60,10 @@ class TestCaseView(BaseModel):
     content: str
     expected_output: str | None
     prompt_id: int | None
+    #: The referenced prompt's current name, resolved server-side so the list
+    #: never renders a bare id. `None` when `prompt_id` is `None`, or when
+    #: that prompt has since been deleted (`SET NULL`).
+    prompt_name: str | None
     mode: PromptMode
     custom_text: str | None
     tool_mode: ToolMode
@@ -185,7 +190,7 @@ class EffectivePromptView(BaseModel):
 # --------------------------------------------------------------------------
 
 
-def _view(test_case: TestCase, toolset_ids: list[int]) -> TestCaseView:
+def _view(test_case: TestCase, toolset_ids: list[int], prompt_name: str | None) -> TestCaseView:
     return TestCaseView(
         id=test_case.id,
         group_id=test_case.group_id,
@@ -193,6 +198,7 @@ def _view(test_case: TestCase, toolset_ids: list[int]) -> TestCaseView:
         content=test_case.content,
         expected_output=test_case.expected_output,
         prompt_id=test_case.prompt_id,
+        prompt_name=prompt_name,
         mode=test_case.mode,
         custom_text=test_case.custom_text,
         tool_mode=test_case.tool_mode,
@@ -222,12 +228,29 @@ async def _toolset_ids_by_case(
     return grouped
 
 
+async def _prompt_names_by_case(
+    scope: Scope, session: AsyncSession, test_cases: Sequence[TestCase]
+) -> dict[int, str]:
+    """The referenced prompt's current name for a batch of test cases, keyed
+    by prompt id — one query for a whole list rather than one per row. A
+    `test_case.prompt_id` absent from this dict (including `None` itself)
+    means "no name to show": no prompt, or the prompt was deleted since
+    (`SET NULL`).
+    """
+    prompt_ids = {tc.prompt_id for tc in test_cases if tc.prompt_id is not None}
+    if not prompt_ids:
+        return {}
+    prompts = await list_prompts_by_ids(scope, session, list(prompt_ids))
+    return {prompt.id: prompt.name for prompt in prompts}
+
+
 async def _view_by_id(scope: Scope, session: AsyncSession, test_case_id: int) -> TestCaseView:
     test_case = await _get_or_404(scope, session, test_case_id)
     toolset_ids = (await _toolset_ids_by_case(scope, session, [test_case_id])).get(
         test_case_id, []
     )
-    return _view(test_case, toolset_ids)
+    prompt_names = await _prompt_names_by_case(scope, session, [test_case])
+    return _view(test_case, toolset_ids, prompt_names.get(test_case.prompt_id))
 
 
 # --------------------------------------------------------------------------
@@ -266,7 +289,10 @@ async def list_test_cases_endpoint(
     del actor
     test_cases = await list_test_cases(scope, session, group_id=group_id)
     toolset_ids = await _toolset_ids_by_case(scope, session, [tc.id for tc in test_cases])
-    return [_view(tc, toolset_ids.get(tc.id, [])) for tc in test_cases]
+    prompt_names = await _prompt_names_by_case(scope, session, test_cases)
+    return [
+        _view(tc, toolset_ids.get(tc.id, []), prompt_names.get(tc.prompt_id)) for tc in test_cases
+    ]
 
 
 @router.get("/{test_case_id}")
@@ -312,7 +338,8 @@ async def create_test_case_endpoint(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     await session.commit()
-    return _view(test_case, body.toolset_ids)
+    prompt_names = await _prompt_names_by_case(scope, session, [test_case])
+    return _view(test_case, body.toolset_ids, prompt_names.get(test_case.prompt_id))
 
 
 @router.patch("/{test_case_id}")

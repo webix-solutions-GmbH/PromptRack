@@ -15,7 +15,7 @@ from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.main import app
-from app.repos.prompts import create_prompt
+from app.repos.prompts import create_prompt, delete_prompt
 from app.repos.test_cases import create_test_case, create_test_group, replace_toolset_links
 from app.repos.toolsets import create_tool, create_toolset, set_tool_enabled
 from app.scope import Scope
@@ -129,7 +129,59 @@ class TestTestCaseCrud:
         )
         assert created.status_code == 201, created.text
         assert created.json()["prompt_id"] == prompt.id
+        assert created.json()["prompt_name"] == "Base"
         assert created.json()["mode"] == "override"
+
+        listed = await client.get("/api/test-cases", params={"group_id": group.id})
+        assert listed.json()[0]["prompt_name"] == "Base"
+
+        got = await client.get(f"/api/test-cases/{created.json()['id']}")
+        assert got.json()["prompt_name"] == "Base"
+
+    async def test_a_test_case_with_no_prompt_reports_no_name(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        group = await create_test_group(scope, session, name="Group A")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        created = await client.post(
+            "/api/test-cases", json={"group_id": group.id, "title": "t", "content": "hi"}
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["prompt_id"] is None
+        assert created.json()["prompt_name"] is None
+
+    async def test_a_deleted_prompts_reference_reports_no_name(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """`test_cases.prompt_id` is `SET NULL` when its prompt is deleted, so
+        a case that referenced it reports both a null id and a null name —
+        never a name resolved from a row that no longer exists.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        group = await create_test_group(scope, session, name="Group A")
+        prompt = await create_prompt(scope, session, name="Base", content="You are helpful.")
+        case = await create_test_case(
+            scope, session, group_id=group.id, title="t", content="hi", prompt_id=prompt.id
+        )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        await delete_prompt(scope, session, prompt.id)
+        await session.commit()
+
+        got = await client.get(f"/api/test-cases/{case.id}")
+        assert got.status_code == 200
+        assert got.json()["prompt_id"] is None
+        assert got.json()["prompt_name"] is None
+
+        listed = await client.get("/api/test-cases", params={"group_id": group.id})
+        assert listed.json()[0]["prompt_id"] is None
+        assert listed.json()[0]["prompt_name"] is None
 
     async def test_creating_with_a_foreign_group_is_refused(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
