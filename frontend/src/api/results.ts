@@ -49,14 +49,22 @@ export interface CompareCellView {
    * fallback client-side never needs to read it. */
   scope_key: string
   test_case_id: number | null
-  /** The committed prompt version this result tested, when the draft was
-   * clean at run creation. Null = a dirty draft, or no prompt at all. */
-  prompt_version_id: number | null
+  /** The committed version each slot's prompt was at, when that draft was
+   * clean at run creation. Null = a dirty draft, or an empty slot. One per
+   * slot: the two drafts are independent. */
+  system_prompt_version_id: number | null
+  task_prompt_version_id: number | null
   sort_order: number
   group_name: string
   test_case_title: string
-  test_case_text: string
-  effective_prompt_text: string | null
+  /** The test case's own `content` — the data half of the user message. */
+  test_case_text: string | null
+  /** The system prompt's text as frozen into the row; compared on its own. */
+  system_prompt_text: string | null
+  /** The task prompt's text as frozen into the row; compared on its own, which
+   * is what lets "the instruction changed" and "the data changed" be two
+   * different drift sentences. */
+  task_prompt_text: string | null
   /** Raw `tools_snapshot` JSON string, or null. */
   tools_snapshot: string | null
   tool_mode: ToolMode
@@ -90,11 +98,14 @@ export interface CompareRowView {
   test_case_id: number | null
   group_name: string
   test_case_title: string
-  test_case_text: string
+  test_case_text: string | null
   cells: (CompareCellView | null)[]
-  /** Conditions not held constant across this row's cells — e.g. "tools",
-   * "params", or (model mode) "test case edited since". Already computed
-   * server-side; nothing here re-derives it. */
+  /** Conditions not held constant across this row's cells. The three frozen
+   * texts are named separately — `"system prompt"`, `"task prompt"`,
+   * `"test case text"` — alongside `"tools"`, `"tool mode"`, `"tool choice"`,
+   * `"params"` and `"max turns"`; model mode adds `"<part> edited since"` for
+   * a part rewritten after every compared run. Computed server-side
+   * (`app.services.compare.describe_row_drift`); nothing here re-derives it. */
   drift: string[]
 }
 

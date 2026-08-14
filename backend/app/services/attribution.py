@@ -1,15 +1,19 @@
 """Which committed version a piece of draft text is — the pure rule.
 
-``run_results.prompt_version_id`` is **attribution, not selection**: a run
-always tests the prompt's current draft, and this is what records which
-committed version that draft happened to be. There is no version picker at run
-creation and there is not meant to be one — the column answers "what did this
-result actually test", after the fact.
+``run_results.system_prompt_version_id`` and its ``task_`` twin are
+**attribution, not selection**: a run always tests each slot's prompt at its
+current draft, and these are what record which committed version that draft
+happened to be. There is no version picker at run creation and there is not
+meant to be one — the columns answer "what did this result actually test",
+after the fact. One per slot, so a dirty system prompt cannot cost the task
+prompt its attribution.
 
 The whole rule is byte equality against the committed versions, newest first.
 No whitespace normalisation: a trailing newline changes what the model
 receives, so it is a different prompt, and a result labelled ``v4`` has to mean
-the text of v4 exactly.
+the text of v4 exactly. Since the pivot the text fed in here **is** what goes on
+the wire — a prompt's draft, verbatim, with nothing spliced into it — so a match
+is exact rather than a claim about a derived string.
 
 Kept free of SQLAlchemy so it can be read and tested without a database; the
 repository is what fetches the versions (scoped) and hands them here.
@@ -46,9 +50,10 @@ def head_version(versions: Iterable[VersionRef]) -> VersionRef | None:
 def match_version(draft_text: str | None, versions: Iterable[VersionRef]) -> int | None:
     """The id of the version a draft is byte-identical to, or ``None``.
 
-    ``None`` covers both "the draft is dirty" and "there was no prompt at all",
-    which is exactly the distinction ``run_results.prompt_version_id`` refuses
-    to make: either way the result tested text that no commit stands behind.
+    ``None`` covers both "the draft is dirty" and "that slot held no prompt at
+    all", which is exactly the distinction the two ``*_prompt_version_id``
+    columns refuse to make: either way the result tested text that no commit
+    stands behind.
 
     Matching runs newest first, which only matters after a revert: commit v3
     restoring v1's text makes a run of that draft ``v3`` — the commit that is

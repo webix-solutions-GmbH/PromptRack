@@ -64,8 +64,13 @@ function selectGroup(groupId: number | null) {
   router.push({ query: { ...route.query, group: groupId ?? undefined } })
 }
 
+/** Both slots in one column, prefixed by which channel each one is sent on —
+ * a case can reference a system prompt, a task prompt, both, or neither. */
 function promptRefFor(caseRow: TestCase): string {
-  return caseRow.prompt_name ?? '—'
+  const refs: string[] = []
+  if (caseRow.system_prompt_name) refs.push(`system: ${caseRow.system_prompt_name}`)
+  if (caseRow.task_prompt_name) refs.push(`task: ${caseRow.task_prompt_name}`)
+  return refs.length > 0 ? refs.join(' · ') : '—'
 }
 
 // --- group create / rename / delete --------------------------------------

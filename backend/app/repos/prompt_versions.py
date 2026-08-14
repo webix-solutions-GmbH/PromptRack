@@ -25,7 +25,7 @@ forget them.
 
 from collections.abc import Sequence
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Prompt, PromptVersion, Run, RunResult
@@ -54,7 +54,11 @@ class NotAttributedError(VersionError):
 
     A baseline is evidence, so it has to be a run whose results are attributed
     to the version it justifies — otherwise "verified" would rest on a run of
-    some other text.
+    some other text. Attribution may have arrived through either slot: a
+    version of a ``system`` prompt can only ever appear in
+    ``run_results.system_prompt_version_id`` and a ``task`` prompt's only in
+    ``task_prompt_version_id``, so asking about both is the same question as
+    asking about the right one, and simpler.
     """
 
 
@@ -232,9 +236,14 @@ async def set_baseline(
 
     Three things have to hold, and none of them is expressible as a foreign
     key: the version is in this workspace, the run is too, and the run really
-    tested *this* version. The last one is what makes a baseline evidence
+    tested *this* version — through **either** prompt slot; see
+    :class:`NotAttributedError`. The last one is what makes a baseline evidence
     rather than a label; a run of a dirty draft carries no attribution at all
     and therefore can never be one.
+
+    One run can be the baseline for versions of two different prompts at once
+    (its rows attribute a system prompt's version *and* a task prompt's), which
+    is correct: it really did test both.
     """
     if await get_version(scope, session, version_id) is None:
         raise CrossCustomerError(
@@ -263,11 +272,14 @@ async def set_baseline(
 async def _has_attributed_result(
     scope: Scope, session: AsyncSession, run_id: int, version_id: int
 ) -> bool:
-    """Whether any of a run's results tested the given version.
+    """Whether any of a run's results tested the given version, in either slot.
 
     Scoped through the run, the parent ``run_results`` inherits its workspace
     from, so a foreign run cannot answer "yes" here even though the caller has
     already been told it does not exist.
+
+    The ``OR`` is safe because a version id is unique across both columns: the
+    prompt's kind decides which column its versions can ever land in.
     """
     statement = apply_where(
         select(RunResult.id).join(Run, RunResult.run_id == Run.id),
@@ -275,7 +287,10 @@ async def _has_attributed_result(
             scope,
             Run,
             RunResult.run_id == run_id,
-            RunResult.prompt_version_id == version_id,
+            or_(
+                RunResult.system_prompt_version_id == version_id,
+                RunResult.task_prompt_version_id == version_id,
+            ),
         ),
     ).limit(1)
     return (await session.scalars(statement)).first() is not None

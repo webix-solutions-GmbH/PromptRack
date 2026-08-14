@@ -2,10 +2,17 @@
 `git show master:src/lib/compare.test.ts`.
 
 Every case there survives under the pivoted names (`prompts` → `test_cases`,
-the frozen system message → the effective prompt), because what each one pins
+the frozen system message → the three frozen texts), because what each one pins
 is a rule about *matching and fallback*, not about what the rows are called:
 which results land in one row, which cell a column shows when several results
 compete, and what a difference between cells is allowed to mean.
+
+The prompt-kinds pivot adds one thing to the last of those: a row now freezes
+**three** texts — the system prompt, the task prompt and the test case's own
+content — and each is compared and *named* on its own. "The task prompt was
+rewritten" and "the data was corrected" are different findings, and the drift
+tests below pin each part independently, in both directions (across the row,
+and against the live test case in model mode).
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ from typing import Any
 from app.services.compare import (
     CompareCellView,
     CompareTestCaseView,
+    LiveTexts,
     ModelColumnResult,
     ModelColumnRun,
     annotate_drift,
@@ -24,6 +32,7 @@ from app.services.compare import (
     build_model_columns,
     build_model_matrix,
     describe_row_drift,
+    live_texts_by_test_case,
     model_column_key,
     parse_compare_mode,
     parse_model_column_keys,
@@ -50,12 +59,14 @@ def cell(run_id: int, **overrides: Any) -> CompareCellView:
         "run_created_at": at(1000),
         "scope_key": "",
         "test_case_id": None,
-        "prompt_version_id": None,
+        "system_prompt_version_id": None,
+        "task_prompt_version_id": None,
         "sort_order": 0,
         "group_name": "group",
         "test_case_title": "title",
         "test_case_text": "text",
-        "effective_prompt_text": None,
+        "system_prompt_text": None,
+        "task_prompt_text": None,
         "tools_snapshot": None,
         "tool_mode": "none",
         "tool_choice": None,
@@ -86,6 +97,20 @@ def live_case(case_id: int, **overrides: Any) -> CompareTestCaseView:
         "text": f"text {case_id}",
     }
     return CompareTestCaseView(**{**defaults, **overrides})
+
+
+def live(**overrides: Any) -> LiveTexts:
+    """What the live test case would send today, in three parts.
+
+    Defaults match `cell()`'s defaults, so a test only names the part it is
+    actually changing and every other part is held constant by construction.
+    """
+    defaults: dict[str, Any] = {
+        "test_case_text": "text",
+        "system_prompt_text": None,
+        "task_prompt_text": None,
+    }
+    return LiveTexts(**{**defaults, **overrides})
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +318,51 @@ class TestBuildCompareMatrix:
 
     def test_returns_no_rows_when_there_are_no_results(self) -> None:
         assert build_compare_matrix([1, 2], []) == []
+
+
+class TestBlankTextIsNoFallbackKey:
+    """`content` is nullable now — a case whose task prompt is the whole user
+    message has no data of its own. "Both of these are empty" is not evidence
+    that two rows are the same test case, so a blank text is not a match key in
+    either direction.
+    """
+
+    def test_two_deleted_cases_with_no_content_stay_separate_rows(self) -> None:
+        for blank in (None, "", "   "):
+            rows = build_compare_matrix(
+                [1, 2],
+                [
+                    cell(1, test_case_id=None, test_case_text=blank, scope_key="a"),
+                    cell(2, test_case_id=None, test_case_text=blank, scope_key="a"),
+                ],
+            )
+            assert len(rows) == 2, blank
+
+    def test_a_live_case_never_adopts_a_blank_deleted_row(self) -> None:
+        rows = build_compare_matrix(
+            [1, 2],
+            [
+                cell(1, test_case_id=None, test_case_text=None, scope_key="a"),
+                cell(2, test_case_id=42, test_case_text=None, scope_key="a"),
+            ],
+        )
+
+        assert len(rows) == 2
+        assert [row.test_case_id for row in rows] == [None, 42]
+
+    def test_blank_rows_of_one_run_do_not_collapse_onto_each_other(self) -> None:
+        # The failure this guards: one blank deleted case adopting every other
+        # blank row in the run, merging unrelated cases into a single row.
+        rows = build_compare_matrix(
+            [1],
+            [
+                cell(1, test_case_id=None, test_case_text=None, sort_order=0),
+                cell(1, test_case_id=None, test_case_text=None, sort_order=1),
+                cell(1, test_case_id=None, test_case_text=None, sort_order=2),
+            ],
+        )
+
+        assert len(rows) == 3
 
 
 class TestScopeIsolation:
@@ -537,8 +607,8 @@ class TestDescribeRowDrift:
         assert (
             describe_row_drift(
                 [
-                    cell(1, test_case_text="same", effective_prompt_text="sys"),
-                    cell(2, test_case_text="same", effective_prompt_text="sys"),
+                    cell(1, test_case_text="same", system_prompt_text="sys"),
+                    cell(2, test_case_text="same", system_prompt_text="sys"),
                 ]
             )
             == []
@@ -550,19 +620,19 @@ class TestDescribeRowDrift:
                 cell(
                     1,
                     test_case_text="a",
-                    effective_prompt_text="sys",
+                    system_prompt_text="sys",
                     run_params='{"temperature":0}',
                 ),
                 cell(
                     2,
                     test_case_text="b",
-                    effective_prompt_text=None,
+                    system_prompt_text=None,
                     run_params='{"temperature":1}',
                 ),
             ]
         )
 
-        assert drift == ["test case text", "effective prompt", "params"]
+        assert drift == ["system prompt", "test case text", "params"]
 
     def test_ignores_whitespace_and_json_key_order(self) -> None:
         assert (
@@ -593,21 +663,136 @@ class TestDescribeRowDrift:
             ]
         ) == ["tools", "max turns"]
 
-    def test_flags_a_test_case_edited_after_every_compared_run(self) -> None:
-        assert describe_row_drift(
-            [cell(1, test_case_text="v1"), cell(2, test_case_text="v1")], "v2"
-        ) == ["test case edited since"]
-
-    def test_does_not_flag_an_edit_when_the_live_text_matches(self) -> None:
-        assert describe_row_drift([cell(1, test_case_text="v1")], "v1") == []
-
     def test_ignores_empty_columns(self) -> None:
         assert describe_row_drift([None, None]) == []
         assert describe_row_drift([None, cell(1)]) == []
 
 
+class TestTextPartsDriftIndependently:
+    """The payoff of freezing three texts instead of one derived message.
+
+    Each part is compared on its own and named on its own, so a reader can tell
+    "the instruction changed" from "the data changed" — which the pre-pivot
+    single "effective prompt" could never say.
+    """
+
+    def test_only_the_system_prompt_differing_names_only_it(self) -> None:
+        assert describe_row_drift(
+            [cell(1, system_prompt_text="v1"), cell(2, system_prompt_text="v2")]
+        ) == ["system prompt"]
+
+    def test_only_the_task_prompt_differing_names_only_it(self) -> None:
+        assert describe_row_drift(
+            [cell(1, task_prompt_text="v1"), cell(2, task_prompt_text="v2")]
+        ) == ["task prompt"]
+
+    def test_only_the_test_case_text_differing_names_only_it(self) -> None:
+        assert describe_row_drift(
+            [cell(1, test_case_text="a"), cell(2, test_case_text="b")]
+        ) == ["test case text"]
+
+    def test_a_rewritten_task_prompt_is_not_reported_as_changed_data(self) -> None:
+        # The whole point: the data is byte-identical, so nothing may suggest
+        # the test case itself moved.
+        drift = describe_row_drift(
+            [
+                cell(1, task_prompt_text="Extract the PO.", test_case_text="invoice"),
+                cell(2, task_prompt_text="Extract the PO number.", test_case_text="invoice"),
+            ]
+        )
+        assert drift == ["task prompt"]
+
+    def test_all_three_are_reported_together_in_channel_order(self) -> None:
+        drift = describe_row_drift(
+            [
+                cell(1, system_prompt_text="s1", task_prompt_text="t1", test_case_text="c1"),
+                cell(2, system_prompt_text="s2", task_prompt_text="t2", test_case_text="c2"),
+            ]
+        )
+        assert drift == ["system prompt", "task prompt", "test case text"]
+
+    def test_an_absent_part_and_a_whitespace_only_one_are_not_drift(self) -> None:
+        # Both send nothing, so they are the same condition.
+        assert (
+            describe_row_drift(
+                [
+                    cell(1, system_prompt_text=None, task_prompt_text=None),
+                    cell(2, system_prompt_text="  \n", task_prompt_text="\t"),
+                ]
+            )
+            == []
+        )
+
+    def test_a_part_appearing_in_only_one_cell_is_drift(self) -> None:
+        assert describe_row_drift(
+            [cell(1, task_prompt_text=None), cell(2, task_prompt_text="Extract the PO.")]
+        ) == ["task prompt"]
+
+
+class TestEditedSinceIsAlsoPerPart:
+    """Model mode's second comparison: against what the live case sends today.
+
+    Three comparisons rather than one, each with its own sentence, so "the task
+    prompt was rewritten since" is never reported as "the test case was edited".
+    """
+
+    def test_flags_a_test_case_edited_after_every_compared_run(self) -> None:
+        assert describe_row_drift(
+            [cell(1, test_case_text="v1"), cell(2, test_case_text="v1")],
+            live(test_case_text="v2"),
+        ) == ["test case text edited since"]
+
+    def test_flags_a_system_prompt_edited_since_on_its_own(self) -> None:
+        assert describe_row_drift(
+            [cell(1, system_prompt_text="v1"), cell(2, system_prompt_text="v1")],
+            live(system_prompt_text="v2"),
+        ) == ["system prompt edited since"]
+
+    def test_flags_a_task_prompt_edited_since_on_its_own(self) -> None:
+        assert describe_row_drift(
+            [cell(1, task_prompt_text="v1"), cell(2, task_prompt_text="v1")],
+            live(task_prompt_text="v2"),
+        ) == ["task prompt edited since"]
+
+    def test_names_each_edited_part_separately_when_several_moved(self) -> None:
+        assert describe_row_drift(
+            [cell(1, system_prompt_text="s1", task_prompt_text="t1", test_case_text="c1")],
+            live(system_prompt_text="s2", task_prompt_text="t2", test_case_text="c2"),
+        ) == [
+            "system prompt edited since",
+            "task prompt edited since",
+            "test case text edited since",
+        ]
+
+    def test_does_not_flag_a_part_that_still_matches_live(self) -> None:
+        assert (
+            describe_row_drift(
+                [cell(1, system_prompt_text="s", task_prompt_text="t", test_case_text="c")],
+                live(system_prompt_text="s", task_prompt_text="t", test_case_text="c"),
+            )
+            == []
+        )
+
+    def test_does_not_repeat_a_part_already_drifting_across_the_row(self) -> None:
+        # It is already named; saying it also drifted from live adds nothing a
+        # reader can act on.
+        assert describe_row_drift(
+            [cell(1, task_prompt_text="t1"), cell(2, task_prompt_text="t2")],
+            live(task_prompt_text="t3"),
+        ) == ["task prompt"]
+
+    def test_compares_live_against_the_first_cell_ignoring_whitespace(self) -> None:
+        assert (
+            describe_row_drift(
+                [cell(1, test_case_text="hello  world")],
+                live(test_case_text=" hello world\n"),
+            )
+            == []
+        )
+
+
 class TestAnnotateDrift:
-    def test_anchors_to_the_live_text_only_in_model_mode(self) -> None:
+    def test_anchors_to_the_live_texts_only_in_model_mode(self) -> None:
         # The same row, described twice: run mode has no live test case to
         # compare against, so only model mode can report an edit.
         rows = build_model_matrix(
@@ -616,7 +801,40 @@ class TestAnnotateDrift:
             [model_cell(1, "1|a", test_case_id=10, test_case_text="frozen")],
         ).rows
 
-        assert annotate_drift(rows, anchored_to_live_test_case=True)[0].drift == [
-            "test case edited since"
-        ]
-        assert annotate_drift(rows, anchored_to_live_test_case=False)[0].drift == []
+        anchored = annotate_drift(rows, live_by_test_case={10: live(test_case_text="live")})
+        assert anchored[0].drift == ["test case text edited since"]
+        assert annotate_drift(rows)[0].drift == []
+
+    def test_reads_the_live_texts_off_the_live_test_case_rows(self) -> None:
+        # `live_texts_by_test_case` is the map the API hands in; the prompt
+        # drafts on the live case are what "edited since" compares against.
+        cases = [live_case(10, text="frozen", task_prompt_text="rewritten")]
+        rows = build_model_matrix(
+            ["1|a"],
+            cases,
+            [
+                model_cell(
+                    1,
+                    "1|a",
+                    test_case_id=10,
+                    test_case_text="frozen",
+                    task_prompt_text="original",
+                )
+            ],
+        ).rows
+
+        drift = annotate_drift(rows, live_by_test_case=live_texts_by_test_case(cases))[0].drift
+        assert drift == ["task prompt edited since"]
+
+    def test_a_row_with_no_live_test_case_is_only_compared_across_the_row(self) -> None:
+        # A deleted test case has no live anchor, so only the row-internal
+        # comparison can speak — and it must not blow up looking for one.
+        rows = build_compare_matrix(
+            [1, 2],
+            [
+                cell(1, test_case_id=None, test_case_text="a", scope_key="x"),
+                cell(2, test_case_id=None, test_case_text="a", scope_key="x"),
+            ],
+        )
+
+        assert annotate_drift(rows, live_by_test_case={10: live()})[0].drift == []

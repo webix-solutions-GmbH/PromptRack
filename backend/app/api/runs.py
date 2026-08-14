@@ -54,6 +54,7 @@ from app.repos.runs import (
 from app.repos.scoped import utc_now
 from app.scope import CrossCustomerError, Scope
 from app.services.executor import execute_run, run_in_background
+from app.services.message_assembly import NoUserMessageError
 from app.services.run_create import RunCreateError, create_run_record
 from app.services.run_events import (
     NDJSON_MEDIA_TYPE,
@@ -120,16 +121,26 @@ class RunResultView(BaseModel):
     id: int
     run_id: int
     test_case_id: int | None
-    #: The committed version the tested draft matched, if any — attribution,
-    #: not selection. Null means the run tested a dirty draft (or no prompt).
-    prompt_version_id: int | None
+    #: The committed version each slot's draft matched, if any — attribution,
+    #: not selection. Null means that slot tested a dirty draft, or is empty.
+    #: One per slot: the two prompts are versioned independently.
+    system_prompt_version_id: int | None
+    task_prompt_version_id: int | None
     sort_order: int
 
     group_name: str
     test_case_title: str
-    test_case_text: str
+    #: The test case's own `content` — the data half of the user message,
+    #: frozen on its own. The task prompt is the other half; the executor
+    #: joins them (`app.services.message_assembly.user_message`).
+    test_case_text: str | None
     expected_output: str | None
-    effective_prompt_text: str | None
+    #: The system prompt's draft text, verbatim, as it was at run creation.
+    system_prompt_text: str | None
+    #: The task prompt's draft text, verbatim. Kept apart from
+    #: `test_case_text` so `/results` can say *the task prompt changed*
+    #: instead of *the user message changed*.
+    task_prompt_text: str | None
     tools_snapshot: list[Any] | None
     tool_mode: ToolMode
     tool_choice: ToolChoice | None
@@ -259,13 +270,15 @@ def _result_view(result: RunResult) -> RunResultView:
         id=result.id,
         run_id=result.run_id,
         test_case_id=result.test_case_id,
-        prompt_version_id=result.prompt_version_id,
+        system_prompt_version_id=result.system_prompt_version_id,
+        task_prompt_version_id=result.task_prompt_version_id,
         sort_order=result.sort_order,
         group_name=result.group_name,
         test_case_title=result.test_case_title,
         test_case_text=result.test_case_text,
         expected_output=result.expected_output,
-        effective_prompt_text=result.effective_prompt_text,
+        system_prompt_text=result.system_prompt_text,
+        task_prompt_text=result.task_prompt_text,
         tools_snapshot=_json_value(result.tools_snapshot),
         tool_mode=result.tool_mode,
         tool_choice=result.tool_choice,
@@ -345,7 +358,11 @@ async def create_run_endpoint(
         )
     except CrossCustomerError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except (RunCreateError, ToolConfigError) as exc:
+    except (RunCreateError, ToolConfigError, NoUserMessageError) as exc:
+        # `NoUserMessageError` is not a `RunCreateError` on purpose (a test case
+        # left with neither content nor a task prompt — a deleted prompt SET
+        # NULLs the slot), but at this boundary it is the same thing: a refusal
+        # naming the case to fix, not a server fault.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     await session.commit()

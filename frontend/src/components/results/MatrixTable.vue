@@ -83,9 +83,18 @@ const columnHeaders = computed<ColumnHeader[]>(() => {
   })
 })
 
+/** Two voices in one list: `"<part> edited since"` compares this row against the
+ * live test case, everything else compares the cells against each other. The
+ * three text parts are named separately now ("system prompt", "task prompt",
+ * "test case text"), so the old single-string special case would have missed
+ * two of them. */
 function driftLabel(drift: string[]): string {
-  if (drift.length === 1 && drift[0] === 'test case edited since') return drift[0]
-  return `differs across cells: ${drift.join(', ')}`
+  const edited = drift.filter((entry) => entry.endsWith('edited since'))
+  const differs = drift.filter((entry) => !entry.endsWith('edited since'))
+  const parts: string[] = []
+  if (differs.length > 0) parts.push(`differs across cells: ${differs.join(', ')}`)
+  if (edited.length > 0) parts.push(edited.join(', '))
+  return parts.join(' · ')
 }
 
 function preview(cell: CompareCellView): { text: string; clamped: boolean } {
@@ -131,7 +140,9 @@ function preview(cell: CompareCellView): { text: string; clamped: boolean } {
               <span class="row-title">{{ row.test_case_title }}</span>
               <details class="row-details">
                 <summary>Test case</summary>
-                <p class="row-text">{{ row.test_case_text }}</p>
+                <!-- `content` is nullable: a task prompt can be the whole user
+                     message on its own. -->
+                <p class="row-text">{{ row.test_case_text ?? '(no content)' }}</p>
               </details>
               <p v-if="row.drift.length > 0" class="drift-note">{{ driftLabel(row.drift) }}</p>
             </div>

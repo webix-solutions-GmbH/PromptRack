@@ -58,6 +58,7 @@ from app.services.compare import (
     build_compare_matrix,
     build_model_columns,
     build_model_matrix,
+    live_texts_by_test_case,
     model_column_key,
     parse_compare_mode,
     parse_id_list,
@@ -149,9 +150,10 @@ def _tool_call_names(transcript_json: str | None) -> list[str]:
 def _to_cell(scope: Scope, row: CompareCellRow, column_key: str = "") -> CompareCellView:
     """One `run_results` row as a matrix cell.
 
-    Always the row's own snapshots (test-case text, effective prompt, tools);
-    the run is consulted only for what is not frozen per result — when it was
-    created, and the request params it was sent with.
+    Always the row's own snapshots — the three frozen texts (system prompt,
+    task prompt, the case's own content) and the tools; the run is consulted
+    only for what is not frozen per result — when it was created, and the
+    request params it was sent with.
     """
     result = row.result
     return CompareCellView(
@@ -162,12 +164,14 @@ def _to_cell(scope: Scope, row: CompareCellRow, column_key: str = "") -> Compare
         # fallback from matching across workspaces.
         scope_key=str(scope.customer_id or ""),
         test_case_id=result.test_case_id,
-        prompt_version_id=result.prompt_version_id,
+        system_prompt_version_id=result.system_prompt_version_id,
+        task_prompt_version_id=result.task_prompt_version_id,
         sort_order=result.sort_order,
         group_name=result.group_name,
         test_case_title=result.test_case_title,
         test_case_text=result.test_case_text,
-        effective_prompt_text=result.effective_prompt_text,
+        system_prompt_text=result.system_prompt_text,
+        task_prompt_text=result.task_prompt_text,
         tools_snapshot=result.tools_snapshot,
         tool_mode=result.tool_mode,
         tool_choice=result.tool_choice,
@@ -279,9 +283,10 @@ async def _run_mode(
             _to_cell(scope, row)
             for row in await compare_cells_for_runs(scope, session, selected_ids)
         ]
-        rows = annotate_drift(
-            build_compare_matrix(selected_ids, cells), anchored_to_live_test_case=False
-        )
+        # Run mode passes no live anchor: its rows are a set of runs, not a
+        # claim about what the suite says today, so "edited since" would be
+        # meaningless here.
+        rows = annotate_drift(build_compare_matrix(selected_ids, cells))
 
     return MatrixResponse(
         mode="runs",
@@ -337,6 +342,11 @@ async def _model_mode(
             group_name=row.group_name,
             title=row.title,
             text=row.text,
+            # The *current* drafts of the two slots' prompts, which is what
+            # makes model mode's "edited since" three comparisons rather than
+            # one. `compare_test_case_rows` joins `prompts` twice for them.
+            system_prompt_text=row.system_prompt_text,
+            task_prompt_text=row.task_prompt_text,
         )
         for row in await compare_test_case_rows(scope, session)
     ]
@@ -375,7 +385,7 @@ async def _model_mode(
         ]
 
     matrix = build_model_matrix(selected_keys, scoped_cases, cells)
-    rows = annotate_drift(matrix.rows, anchored_to_live_test_case=True)
+    rows = annotate_drift(matrix.rows, live_by_test_case=live_texts_by_test_case(scoped_cases))
 
     return MatrixResponse(
         mode="models",

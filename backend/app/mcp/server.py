@@ -79,12 +79,21 @@ from app.mcp.refs import (
     McpToolError,
     RowRef,
     has_key,
+    optional_row_ref,
     parse_row_ref,
     parse_row_refs,
     resolve_row_ref,
     truncate,
 )
-from app.models import Prompt, PromptVersion, Run, RunResult, TestCase, TestGroup
+from app.models import (
+    Prompt,
+    PromptKind,
+    PromptVersion,
+    Run,
+    RunResult,
+    TestCase,
+    TestGroup,
+)
 from app.repos.customers import (
     count_customer_content,
     count_test_cases_by_customer,
@@ -101,7 +110,14 @@ from app.repos.prompt_versions import (
     list_versions,
     set_baseline,
 )
-from app.repos.prompts import create_prompt, find_prompt_by_name, list_prompts, update_prompt
+from app.repos.prompts import (
+    PromptKindChangeError,
+    PromptSlotError,
+    create_prompt,
+    find_prompt_by_name,
+    list_prompts,
+    update_prompt,
+)
 from app.repos.results import list_comparable_runs
 from app.repos.runs import (
     get_run,
@@ -128,9 +144,9 @@ from app.repos.test_cases import create_test_group as create_test_group_row
 from app.repos.toolsets import list_toolsets
 from app.scope import CrossCustomerError, Scope
 from app.services.attribution import VersionRef, head_version, is_dirty
-from app.services.effective_prompt import resolve_effective_prompt
 from app.services.executor import execute_run, run_in_background
 from app.services.llm_info import parse_llm_info
+from app.services.message_assembly import NoUserMessageError
 from app.services.run_create import RunCreateError, create_run_record
 from app.services.run_lock import is_run_executing
 from app.services.tool_config import ToolConfigError, assert_tool_config, normalize_max_turns
@@ -414,11 +430,30 @@ async def _resolve_prompt(scope: Scope, session: AsyncSession, ref: RowRef) -> P
     return resolve_row_ref(ref, await list_prompts(scope, session, "name"), "prompt")
 
 
+async def _resolve_slot(
+    scope: Scope, session: AsyncSession, value: Any, label: str
+) -> int | None:
+    """One of a test case's two prompt slots: a name, an id, or `None` to empty it.
+
+    Only *existence* is resolved here. Whether the prompt's `kind` fits the
+    slot is `assert_prompt_slot`'s call, made from inside the repository
+    function, so every write path is covered by the same check.
+    """
+    ref = optional_row_ref(value, label)
+    if ref is None:
+        return None
+    return (await _resolve_prompt(scope, session, ref)).id
+
+
 def _prompt_view(prompt: Prompt, refs: Sequence[VersionRef]) -> dict[str, Any]:
     head = head_version(refs)
     return {
         "id": prompt.id,
         "name": prompt.name,
+        # Which channel this prompt is sent on: "system" as the system
+        # message, "task" at the head of the user message. A property of the
+        # asset, so it also says which of a test case's two slots can hold it.
+        "kind": prompt.kind,
         # `content` is the draft: what the editor writes and what a run always
         # tests. `dirty` is the editor's own indicator.
         "content": prompt.content,
@@ -450,7 +485,8 @@ def _version_view(version: PromptVersion, *, include_content: bool = True) -> di
     "list_prompts",
     "List the prompt assets with their current draft text and version state: `dirty` means the "
     "draft differs from the newest commit, and `deployed_version` is the human claim about what "
-    "is live at the customer. A test case references one of these as its base.",
+    "is live at the customer. A test case references one of these in its system slot and/or its "
+    'task slot; `kind` ("system" or "task") says which slot a prompt is eligible for.',
     write=False,
 )
 async def list_prompts_tool(ctx: Context, customer: CustomerArg = None) -> dict[str, Any]:
@@ -462,23 +498,55 @@ async def list_prompts_tool(ctx: Context, customer: CustomerArg = None) -> dict[
         }
 
 
+#: The two channels a prompt can be sent on. Declared as a schema `enum` on
+#: both write tools *and* re-checked at runtime by `_parse_kind`, so a client
+#: that skips schema validation still gets a readable refusal instead of an
+#: unknown value reaching the column.
+KIND_VALUES = ("system", "task")
+
+
+def _parse_kind(value: Any) -> PromptKind:
+    """An unrecognised kind is **refused**, never coerced.
+
+    Deliberately the opposite of `app.auth.policy.parse_role`, which degrades
+    an unknown role to `viewer`: degrading is safe there because the fallback
+    is the least privileged value, while here there is no safe fallback —
+    guessing a channel would silently move the text between the system message
+    and the user message.
+    """
+    if value in KIND_VALUES:
+        return value  # type: ignore[return-value]
+    known = " or ".join(f'"{kind}"' for kind in KIND_VALUES)
+    raise McpToolError(f'"kind" must be {known}, not {value!r}.')
+
+
 @_tool(
     "create_prompt",
-    "Create a prompt asset — typically the real system prompt of the app whose test cases you "
-    "are pushing. The text starts as an uncommitted draft; commit_prompt freezes it as v1. "
-    "Fails if the name is taken; use update_prompt to change an existing one.",
+    "Create a prompt asset. kind decides the channel it is sent on: "
+    '"system" (default) frames the model and is sent as the system message; "task" is the '
+    "instruction for one call and is sent at the head of the user message, ahead of the test "
+    "case's own content. The text starts as an uncommitted draft; commit_prompt freezes it as "
+    "v1. Fails if the name is taken; use update_prompt to change an existing one.",
     write=True,
 )
 async def create_prompt_tool(
     ctx: Context,
     name: Annotated[str, Field(description='Short label, e.g. "Helpdesk agent (prod)".')],
     content: Annotated[str, Field(description="The prompt itself, verbatim.")],
+    kind: Annotated[
+        Literal["system", "task"],
+        Field(
+            description='"system" (default) to send it as the system message, "task" to send '
+            "it at the head of the user message."
+        ),
+    ] = "system",
     customer: CustomerArg = None,
 ) -> dict[str, Any]:
     async with _scoped_call(ctx, customer, "create_prompt") as (session, scope, _):
         cleaned = name.strip()
         if not cleaned or not content.strip():
             raise McpToolError('"name" and "content" are required.')
+        prompt_kind = _parse_kind(kind)
 
         existing = await find_prompt_by_name(scope, session, cleaned)
         if existing:
@@ -487,7 +555,9 @@ async def create_prompt_tool(
                 "Use update_prompt to change it."
             )
 
-        prompt = await create_prompt(scope, session, name=cleaned, content=content)
+        prompt = await create_prompt(
+            scope, session, name=cleaned, content=content, kind=prompt_kind
+        )
         await session.commit()
         return {"prompt": _prompt_view(prompt, [])}
 
@@ -496,7 +566,8 @@ async def create_prompt_tool(
     "update_prompt",
     "Change a prompt's draft in place. This does not create a version: the draft is a working "
     "copy, and commit_prompt is what freezes it. Past runs are unaffected — each run froze the "
-    "resolved prompt it actually sent.",
+    "prompt texts it actually sent. Changing kind is refused while any test case references "
+    "the prompt: that would move its text to the other channel behind those cases' backs.",
     write=True,
 )
 async def update_prompt_tool(
@@ -504,6 +575,10 @@ async def update_prompt_tool(
     prompt: Annotated[str | int, Field(description="Name or id of the prompt to change.")],
     name: Annotated[str | None, Field(description="New name.")] = None,
     content: Annotated[str | None, Field(description="New draft text.")] = None,
+    kind: Annotated[
+        Literal["system", "task"] | None,
+        Field(description="Move the prompt to the other channel. Refused while referenced."),
+    ] = None,
     customer: CustomerArg = None,
 ) -> dict[str, Any]:
     async with _scoped_call(ctx, customer, "update_prompt") as (session, scope, _):
@@ -518,9 +593,14 @@ async def update_prompt_tool(
             if not content.strip():
                 raise McpToolError('"content" cannot be blank.')
             values["content"] = content
+        if kind is not None:
+            values["kind"] = _parse_kind(kind)
 
         if values:
-            await update_prompt(scope, session, target.id, values)
+            try:
+                await update_prompt(scope, session, target.id, values)
+            except PromptKindChangeError as exc:
+                raise McpToolError(str(exc)) from exc
             await session.commit()
             # The write went out as a bulk UPDATE, so the instance this session
             # already holds is re-read rather than trusted — the same care
@@ -652,9 +732,14 @@ async def _test_case_views(
     include_content: bool,
     max_content_chars: int,
 ) -> list[dict[str, Any]]:
-    """Test cases as an MCP client sees them — including the *resolved* prompt,
-    so a caller can check what a run would actually send as its system message
-    without reimplementing append/override itself.
+    """Test cases as an MCP client sees them.
+
+    Both prompt slots are reported twice over: as the referenced asset
+    (`system_prompt` / `task_prompt`, id and name) and as the text those slots
+    currently hold (`system_prompt_text` / `task_prompt_text`) — the same two
+    key names `get_run_result` uses for the frozen copies, so reading a case
+    and reading its result speak one vocabulary. `task_prompt_text` is the
+    head of the user message; `content` is the rest of it.
     """
     if not cases:
         return []
@@ -669,7 +754,14 @@ async def _test_case_views(
 
     views: list[dict[str, Any]] = []
     for case in cases:
-        prompt = prompts.get(case.prompt_id) if case.prompt_id is not None else None
+        # One id-keyed map serves both slots: a prompt has exactly one kind, so
+        # the same prompt can never sit in both slots of one case.
+        system_prompt = (
+            prompts.get(case.system_prompt_id) if case.system_prompt_id is not None else None
+        )
+        task_prompt = (
+            prompts.get(case.task_prompt_id) if case.task_prompt_id is not None else None
+        )
         content = (
             truncate(case.content, max_content_chars)
             if include_content
@@ -686,16 +778,20 @@ async def _test_case_views(
                 "content": content.text,
                 "content_truncated": content.truncated,
                 "expected_output": case.expected_output,
-                "prompt": (
+                "system_prompt": (
                     None
-                    if prompt is None
-                    else {"id": prompt.id, "name": prompt.name}
+                    if system_prompt is None
+                    else {"id": system_prompt.id, "name": system_prompt.name}
                 ),
-                "mode": case.mode,
-                "custom_text": case.custom_text,
-                "effective_prompt": resolve_effective_prompt(
-                    None if prompt is None else prompt.content, case.mode, case.custom_text
+                "task_prompt": (
+                    None
+                    if task_prompt is None
+                    else {"id": task_prompt.id, "name": task_prompt.name}
                 ),
+                "system_prompt_text": (
+                    None if system_prompt is None else system_prompt.content
+                ),
+                "task_prompt_text": None if task_prompt is None else task_prompt.content,
                 "tool_mode": case.tool_mode,
                 "tool_choice": case.tool_choice,
                 "max_turns": case.max_turns,
@@ -791,8 +887,9 @@ async def create_test_group_tool(
 
 @_tool(
     "list_test_cases",
-    "List test cases, optionally narrowed to one group. Includes each case's resolved effective "
-    "prompt and tool configuration.",
+    "List test cases, optionally narrowed to one group. Includes each case's two prompt slots "
+    "(the system prompt and the task prompt, with the text each currently holds) and its tool "
+    "configuration.",
     write=False,
 )
 async def list_test_cases_tool(
@@ -827,7 +924,11 @@ async def list_test_cases_tool(
 
 @_tool(
     "create_test_case",
-    "Create a test case in a group. For an ordinary one-shot test leave the tool fields out. "
+    "Create a test case in a group. A case holds no prompt text of its own: it names up to two "
+    "prompt assets — system_prompt (sent as the system message) and task_prompt (sent at the "
+    "head of the user message) — plus content, the data that follows the task prompt. At least "
+    "one of task_prompt and content must have text in it, or the request has no user message. "
+    "For an ordinary one-shot test leave the tool fields out. "
     'For a tool/API test set tool_mode to "definitions" (record what the model wanted to call, '
     'execute nothing) or "execute" (really run the calls and loop) and name the toolsets to '
     "offer; toolsets themselves are authored in the web UI, not here.",
@@ -840,7 +941,13 @@ async def create_test_case_tool(
         Field(description="Name or id of the test group. Create it with create_test_group."),
     ],
     title: Annotated[str, Field(description="Short label shown in lists and comparisons.")],
-    content: Annotated[str, Field(description="The user message sent to the model.")],
+    content: Annotated[
+        str | None,
+        Field(
+            description="The data half of the user message, sent after the task prompt. May be "
+            "omitted when a task prompt is the whole user message."
+        ),
+    ] = None,
     expected_output: Annotated[
         str | None,
         Field(
@@ -848,19 +955,16 @@ async def create_test_case_tool(
             "when rating; never sent to the model."
         ),
     ] = None,
-    prompt: Annotated[
-        str | int | None, Field(description="Name or id of the prompt asset to use as the base.")
+    system_prompt: Annotated[
+        str | int | None,
+        Field(description='Name or id of a kind="system" prompt, sent as the system message.'),
     ] = None,
-    mode: Annotated[
-        Literal["append", "override"],
+    task_prompt: Annotated[
+        str | int | None,
         Field(
-            description='"append" (default) sends the prompt plus custom_text; "override" sends '
-            "custom_text alone."
+            description='Name or id of a kind="task" prompt, sent at the head of the user '
+            "message, ahead of content."
         ),
-    ] = "append",
-    custom_text: Annotated[
-        str | None,
-        Field(description="Per-case system text. Used alone if no base prompt is given."),
     ] = None,
     tool_mode: Annotated[
         Literal["none", "definitions", "execute"], Field(description='Default "none".')
@@ -883,22 +987,22 @@ async def create_test_case_tool(
     customer: CustomerArg = None,
 ) -> dict[str, Any]:
     async with _scoped_call(ctx, customer, "create_test_case") as (session, scope, _):
-        if not title.strip() or not content.strip():
-            raise McpToolError('"title" and "content" are required.')
+        if not title.strip():
+            raise McpToolError('"title" is required.')
 
         group_row = await _resolve_group(scope, session, parse_row_ref(group, '"group"'))
-        prompt_row = (
-            None
-            if prompt is None
-            else await _resolve_prompt(scope, session, parse_row_ref(prompt, '"prompt"'))
+        system_prompt_id = await _resolve_slot(
+            scope, session, system_prompt, '"system_prompt"'
         )
+        task_prompt_id = await _resolve_slot(scope, session, task_prompt, '"task_prompt"')
         toolset_ids = await _resolve_toolsets(
             scope, session, parse_row_refs(toolsets, "toolsets")
         )
 
-        # The same rule the test-case editor enforces, run through the very
-        # same function, so a case authored here can never be one run creation
-        # would later refuse.
+        # The same rules the test-case editor enforces, run through the very
+        # same functions, so a case authored here can never be one run creation
+        # would later refuse. The slot kind check and the user-message guard
+        # both live inside `create_test_case` itself.
         try:
             await assert_tool_config(
                 scope,
@@ -912,17 +1016,21 @@ async def create_test_case_tool(
                 session,
                 group_id=group_row.id,
                 title=title.strip(),
-                content=content,
+                content=_blank_to_none(content),
                 expected_output=_blank_to_none(expected_output),
-                prompt_id=None if prompt_row is None else prompt_row.id,
-                mode=mode,
-                custom_text=_blank_to_none(custom_text),
+                system_prompt_id=system_prompt_id,
+                task_prompt_id=task_prompt_id,
                 tool_mode=tool_mode,
                 tool_choice=tool_choice,
                 max_turns=normalize_max_turns(max_turns),
             )
             await replace_toolset_links(scope, session, case.id, toolset_ids)
-        except (ToolConfigError, CrossCustomerError) as exc:
+        except (
+            ToolConfigError,
+            CrossCustomerError,
+            PromptSlotError,
+            NoUserMessageError,
+        ) as exc:
             raise McpToolError(str(exc)) from exc
 
         await session.commit()
@@ -942,13 +1050,18 @@ async def update_test_case_tool(
         str | int | None, Field(description="Move the case to this group.")
     ] = None,
     title: Annotated[str | None, Field(description="New title.")] = None,
-    content: Annotated[str | None, Field(description="New input text.")] = None,
-    expected_output: Annotated[str | None, Field(description="New rubric, or null.")] = None,
-    prompt: Annotated[
-        str | int | None, Field(description="Base prompt asset, or null to detach it.")
+    content: Annotated[
+        str | None, Field(description="New data half of the user message, or null to clear it.")
     ] = None,
-    mode: Literal["append", "override"] | None = None,
-    custom_text: Annotated[str | None, Field(description="Per-case system text, or null.")] = None,
+    expected_output: Annotated[str | None, Field(description="New rubric, or null.")] = None,
+    system_prompt: Annotated[
+        str | int | None,
+        Field(description='A kind="system" prompt asset, or null to empty the slot.'),
+    ] = None,
+    task_prompt: Annotated[
+        str | int | None,
+        Field(description='A kind="task" prompt asset, or null to empty the slot.'),
+    ] = None,
     tool_mode: Literal["none", "definitions", "execute"] | None = None,
     tool_choice: Literal["auto", "required", "none"] | None = None,
     max_turns: int | None = None,
@@ -977,21 +1090,20 @@ async def update_test_case_tool(
                 raise McpToolError('"title" cannot be blank.')
             values["title"] = title.strip()
         if has_key(args, "content"):
-            if not content or not content.strip():
-                raise McpToolError('"content" cannot be blank.')
-            values["content"] = content
+            # Blank content is legal now — a task prompt can be the whole user
+            # message. `update_test_case` refuses only the case where clearing
+            # it leaves the row with nothing to send.
+            values["content"] = _blank_to_none(content)
         if has_key(args, "expected_output"):
             values["expected_output"] = _blank_to_none(expected_output)
-        if has_key(args, "prompt"):
-            values["prompt_id"] = (
-                None
-                if prompt is None
-                else (await _resolve_prompt(scope, session, parse_row_ref(prompt, '"prompt"'))).id
+        if has_key(args, "system_prompt"):
+            values["system_prompt_id"] = await _resolve_slot(
+                scope, session, system_prompt, '"system_prompt"'
             )
-        if has_key(args, "mode"):
-            values["mode"] = mode or "append"
-        if has_key(args, "custom_text"):
-            values["custom_text"] = _blank_to_none(custom_text)
+        if has_key(args, "task_prompt"):
+            values["task_prompt_id"] = await _resolve_slot(
+                scope, session, task_prompt, '"task_prompt"'
+            )
         if has_key(args, "tool_mode"):
             values["tool_mode"] = tool_mode or "none"
         if has_key(args, "tool_choice"):
@@ -1000,8 +1112,10 @@ async def update_test_case_tool(
             values["max_turns"] = normalize_max_turns(max_turns)
 
         # The tool configuration has to be checked as it will be *after* the
-        # patch: switching mode without naming toolsets keeps the ones already
-        # linked, and validating against an empty set would refuse it wrongly.
+        # patch: switching tool_mode without naming toolsets keeps the ones
+        # already linked, and validating against an empty set would refuse it
+        # wrongly. `update_test_case` applies the same post-patch reasoning to
+        # the user-message guard, which it can only do by reading the row.
         replace_links = has_key(args, "toolsets")
         if replace_links:
             toolset_ids = await _resolve_toolsets(
@@ -1023,7 +1137,12 @@ async def update_test_case_tool(
                 await update_test_case(scope, session, test_case_id, values)
             if replace_links:
                 await replace_toolset_links(scope, session, test_case_id, toolset_ids)
-        except (ToolConfigError, CrossCustomerError) as exc:
+        except (
+            ToolConfigError,
+            CrossCustomerError,
+            PromptSlotError,
+            NoUserMessageError,
+        ) as exc:
             raise McpToolError(str(exc)) from exc
 
         await session.commit()
@@ -1096,9 +1215,11 @@ def _result_row(result: RunResult, response: str | None, truncated: bool) -> dic
     row: dict[str, Any] = {
         "result_id": result.id,
         "test_case_id": result.test_case_id,
-        # Attribution, not selection: which committed version the tested draft
-        # matched. Null means the run tested a dirty draft, or no prompt.
-        "prompt_version_id": result.prompt_version_id,
+        # Attribution, not selection: which committed version each slot's
+        # tested draft matched. Null means that slot tested a dirty draft, or
+        # holds no prompt at all. One per slot — the two are independent.
+        "system_prompt_version_id": result.system_prompt_version_id,
+        "task_prompt_version_id": result.task_prompt_version_id,
         "group": result.group_name,
         "title": result.test_case_title,
         "status": result.status,
@@ -1160,9 +1281,10 @@ def _snapshot_tool_details(snapshot: Any) -> list[dict[str, Any]]:
 
 @_tool(
     "create_run",
-    "Create a run of one or more test groups against a model on a machine. The case text, "
-    "resolved prompt and tool definitions are frozen into the run, so later edits never rewrite "
-    "it, and each result records which committed prompt version it tested. Set execute: true to "
+    "Create a run of one or more test groups against a model on a machine. Three texts — the "
+    "system prompt, the task prompt and the case's own content — plus the tool definitions are "
+    "frozen into the run separately, so later edits never rewrite it, and each result records "
+    "which committed version each of the two prompts was at. Set execute: true to "
     "start it immediately; otherwise it stays pending and can be started with execute_run or "
     "from the UI.",
     write=True,
@@ -1242,9 +1364,14 @@ async def create_run_tool(
                 params=params or None,
                 comment=comment,
             )
-        except (RunCreateError, ToolConfigError, CrossCustomerError) as exc:
+        except (
+            RunCreateError,
+            ToolConfigError,
+            NoUserMessageError,
+            CrossCustomerError,
+        ) as exc:
             # These are refusals for the caller (an empty group, a tool test
-            # without tools), not server faults.
+            # without tools, a case with no user message), not server faults.
             raise McpToolError(str(exc)) from exc
 
         await session.commit()
@@ -1442,7 +1569,8 @@ async def get_run_tool(
 
 @_tool(
     "get_run_result",
-    "Fetch one result in full: the frozen test-case text and prompt it was sent, the "
+    "Fetch one result in full: the three frozen texts it was sent (system_prompt_text, "
+    "task_prompt_text and test_case_text, the last being the case's own content), the "
     "untruncated response, and for a tool test the whole transcript (every tool call, its "
     "arguments and what came back) with per-turn metrics.",
     write=False,
@@ -1464,11 +1592,13 @@ async def get_run_result_tool(
             "result_id": result.id,
             "run_id": result.run_id,
             "test_case_id": result.test_case_id,
-            "prompt_version_id": result.prompt_version_id,
+            "system_prompt_version_id": result.system_prompt_version_id,
+            "task_prompt_version_id": result.task_prompt_version_id,
             "group": result.group_name,
             "title": result.test_case_title,
             "test_case_text": result.test_case_text,
-            "prompt_text": result.effective_prompt_text,
+            "system_prompt_text": result.system_prompt_text,
+            "task_prompt_text": result.task_prompt_text,
             "expected_output": result.expected_output,
             "status": result.status,
             "error": result.error,

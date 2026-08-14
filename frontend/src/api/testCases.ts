@@ -25,9 +25,15 @@
 //                                                   semantics + post-patch tool-config check)")
 //   DELETE /api/test-cases/{id}                  -> (204)
 //
-//   POST   /api/test-cases/effective-prompt
-//          { prompt_id: number | null, mode: PromptMode, custom_text: string | null }
-//          -> { content: string | null }
+// A test case holds **no prompt text of its own** (prompt-kinds spec): it
+// references up to two prompt assets by slot — `system_prompt_id` (sent as the
+// system message) and `task_prompt_id` (sent at the head of the user message) —
+// plus its own `content`, the data half of that user message. Both slots are
+// checked server-side by `app.repos.prompts.assert_prompt_slot`: same workspace
+// **and** matching `kind`, so a `task` prompt in the system slot is a 400.
+// `POST /api/test-cases/effective-prompt` is gone with `mode`/`custom_text` —
+// there is nothing left to derive, and the editor's preview is a client-side
+// concatenation of two texts it already fetched.
 //
 // `toolset_ids` travels on `TestCase`/`TestCaseInput` directly rather than
 // through a separate link endpoint — `create_test_case`/`update_test_case`
@@ -37,21 +43,9 @@
 // tool_config.py`) is the server-side authority refusing "no enabled tools"
 // or a duplicate tool name across selected toolsets; `collectToolNameCollisions`
 // in `../lib/tools.ts` mirrors it client-side only for instant feedback while
-// editing, same reasoning as the effective-prompt preview below.
-//
-// Deviation flagged for reconciliation with Task 3.4: `previewEffectivePrompt`
-// below is included for contract completeness (the same reason `promptsApi`
-// ships `setBaseline` unused by Task 3.6) but `TestCaseEditView` does not call
-// it — the live preview is computed purely client-side by
-// `../lib/effectivePrompt.ts`, a byte-for-byte port of the same pure function
-// the backend endpoint wraps (`resolve_effective_prompt`), so the preview
-// updates on every keystroke with no round trip, matching the old React
-// editor's behavior (`git show master:src/components/prompts/prompt-editor.tsx`,
-// which imported `resolveEffectiveSystemPrompt` directly rather than calling
-// an API).
+// editing, same reasoning as the assembled-message preview in the editor.
 import { api } from './client'
 
-export type PromptMode = 'append' | 'override'
 export type ToolMode = 'none' | 'definitions' | 'execute'
 export type ToolChoice = 'auto' | 'required' | 'none'
 
@@ -74,18 +68,21 @@ export interface TestCase {
   id: number
   group_id: number
   title: string
-  /** The user message sent to the model. */
-  content: string
+  /** The data half of the user message. Nullable: a task prompt can be the
+   * whole user message on its own ("this prompt takes no input"). */
+  content: string | null
   /** The rubric. Never sent to the model. */
   expected_output: string | null
-  /** The prompt asset this case runs against, or `null` for no base prompt. */
-  prompt_id: number | null
-  /** The referenced prompt's current name, resolved server-side. `null`
-   * alongside `prompt_id === null`, or when that prompt has since been
-   * deleted. */
-  prompt_name: string | null
-  mode: PromptMode
-  custom_text: string | null
+  /** The `system`-kind prompt asset sent as the system message, or `null`. */
+  system_prompt_id: number | null
+  /** That prompt's current name, resolved server-side so the list never
+   * renders a bare id. `null` alongside `system_prompt_id === null`, or when
+   * the prompt has since been deleted (`SET NULL`). */
+  system_prompt_name: string | null
+  /** The `task`-kind prompt asset sent at the head of the user message. */
+  task_prompt_id: number | null
+  /** Same as `system_prompt_name`, for the task slot. */
+  task_prompt_name: string | null
   tool_mode: ToolMode
   tool_choice: ToolChoice | null
   max_turns: number
@@ -98,21 +95,17 @@ export interface TestCase {
 export interface TestCaseInput {
   group_id: number
   title: string
-  content: string
+  /** Optional here, but not free: the server refuses a case where **both**
+   * `task_prompt_id` and `content` resolve to blank, since that request would
+   * carry no user message at all (`assert_user_message`, a 400). */
+  content?: string | null
   expected_output?: string | null
-  prompt_id?: number | null
-  mode?: PromptMode
-  custom_text?: string | null
+  system_prompt_id?: number | null
+  task_prompt_id?: number | null
   tool_mode?: ToolMode
   tool_choice?: ToolChoice | null
   max_turns?: number
   toolset_ids?: number[]
-}
-
-export interface EffectivePromptPreview {
-  /** `null` when the resolved prompt is empty or whitespace-only — i.e. the
-   * run sends no system message at all. */
-  content: string | null
 }
 
 export const testGroupsApi = {
@@ -130,9 +123,4 @@ export const testCasesApi = {
   update: (id: number, input: Partial<TestCaseInput>) =>
     api.patch<TestCase>(`/test-cases/${id}`, input),
   remove: (id: number) => api.delete<void>(`/test-cases/${id}`),
-  previewEffectivePrompt: (input: {
-    prompt_id: number | null
-    mode: PromptMode
-    custom_text: string | null
-  }) => api.post<EffectivePromptPreview>('/test-cases/effective-prompt', input),
 }

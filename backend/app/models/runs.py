@@ -2,10 +2,16 @@
 
 `run_results` is where the **snapshot invariant** lives: editing or deleting a
 prompt, test case, machine or toolset must never change how a past run
-displays, so run creation freezes the text and the tool configuration into
-these rows. The FKs back to the live rows are kept (all `SET NULL`) only for
-cross-run comparison and version attribution; rendering always uses the
-snapshot columns.
+displays, so run creation freezes the **three texts** (`system_prompt_text`,
+`task_prompt_text`, `test_case_text`), the **two version ids** attributing them
+(`system_prompt_version_id`, `task_prompt_version_id`) and the tool
+configuration into these rows. The texts stay separate rather than
+pre-assembled: it is what lets `/results` say *the task prompt changed* instead
+of *the user message changed*. Assembly happens at execution time
+(`app.services.message_assembly`).
+
+The FKs back to the live rows are kept (all `SET NULL`) only for cross-run
+comparison and version attribution; rendering always uses the snapshot columns.
 """
 
 from datetime import datetime
@@ -81,9 +87,14 @@ class RunResult(Base):
         ForeignKey("test_cases.id", ondelete="SET NULL")
     )
     # Attribution, not selection: a run always tests the current draft, and
-    # this is set only when that draft was byte-equal to a committed version (a
-    # clean working tree). Null = the run tested a dirty draft or no prompt.
-    prompt_version_id: Mapped[int | None] = mapped_column(
+    # these are set only when that draft was byte-equal to a committed version
+    # (a clean working tree). Null = the run tested a dirty draft, or that slot
+    # held no prompt. One per slot, because the two drafts are independent —
+    # a dirty system prompt must not cost the task prompt its attribution.
+    system_prompt_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("prompt_versions.id", ondelete="SET NULL")
+    )
+    task_prompt_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("prompt_versions.id", ondelete="SET NULL")
     )
     sort_order: Mapped[int] = mapped_column(server_default=text("0"))
@@ -91,11 +102,18 @@ class RunResult(Base):
     # --- frozen inputs -----------------------------------------------------
     group_name: Mapped[str]
     test_case_title: Mapped[str]
-    test_case_text: Mapped[str]
+    #: The test case's own `content` — the data half of the user message, and
+    #: nothing else. Nullable, because a case whose task prompt is the whole
+    #: user message has no data of its own.
+    test_case_text: Mapped[str | None]
     expected_output: Mapped[str | None]
-    #: The **already-resolved** system message (prompt + mode + custom text),
-    #: or null when the resolution came out empty.
-    effective_prompt_text: Mapped[str | None]
+    #: The system prompt's draft text, verbatim, exactly as it will be sent.
+    #: Null = no system prompt. Not derived from anything, which is what makes
+    #: `system_prompt_version_id` above able to name the version it really is.
+    system_prompt_text: Mapped[str | None]
+    #: The task prompt's draft text, verbatim. Prepended to `test_case_text`
+    #: (blank line between) to make the user message.
+    task_prompt_text: Mapped[str | None]
     #: The exact JSON array of tool definitions sent to the model. Editing or
     #: deleting a toolset afterwards can never rewrite what a past run asked
     #: for.
@@ -141,5 +159,8 @@ class RunResult(Base):
     __table_args__ = (
         Index("run_results_run_id_idx", "run_id"),
         Index("run_results_test_case_id_idx", "test_case_id"),
-        Index("run_results_prompt_version_id_idx", "prompt_version_id"),
+        # Both slots are indexed: `set_baseline`'s attribution check is an OR
+        # across the two columns, so it scans either.
+        Index("run_results_system_prompt_version_id_idx", "system_prompt_version_id"),
+        Index("run_results_task_prompt_version_id_idx", "task_prompt_version_id"),
     )

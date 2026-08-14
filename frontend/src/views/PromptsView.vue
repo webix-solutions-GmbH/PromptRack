@@ -3,7 +3,7 @@
 // Creating/editing content is member-writable (unlike machines/toolsets,
 // which hold credentials and stay admin-only): every writer can start a new
 // prompt or edit a draft.
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -11,10 +11,17 @@ import DataTable from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
+import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
-import { promptsApi, describeVersionStatus, type Prompt } from '../api/prompts'
+import {
+  promptsApi,
+  describeVersionStatus,
+  PROMPT_KINDS,
+  type Prompt,
+  type PromptKind,
+} from '../api/prompts'
 import { ApiError } from '../api/client'
 import { formatDateTime } from '../lib/format'
 import { useAuthStore } from '../stores/auth'
@@ -40,15 +47,40 @@ async function load() {
 
 onMounted(load)
 
+// --- kind filter --------------------------------------------------------
+
+// The standard suite alone puts ~20 rows on this page, so "show me only the
+// task prompts" is the difference between a list and a haystack. `null` is
+// "all kinds" — a filter, not a selection, so it never hides a row silently.
+const kindFilter = ref<PromptKind | null>(null)
+
+const kindFilterOptions = [
+  { label: 'All', value: null },
+  ...PROMPT_KINDS.map((kind) => ({ label: kind.label, value: kind.value })),
+]
+
+const visiblePrompts = computed(() =>
+  kindFilter.value === null
+    ? prompts.value
+    : prompts.value.filter((prompt) => prompt.kind === kindFilter.value),
+)
+
+function kindLabel(kind: PromptKind): string {
+  return PROMPT_KINDS.find((option) => option.value === kind)?.label ?? kind
+}
+
 // --- create dialog -----------------------------------------------------
 
 interface PromptFormState {
   name: string
   content: string
+  kind: PromptKind
 }
 
 function emptyForm(): PromptFormState {
-  return { name: '', content: '' }
+  // `system` is the server's own default and the channel everything authored
+  // before the prompt-kinds pivot was sent on.
+  return { name: '', content: '', kind: 'system' }
 }
 
 const dialogOpen = ref(false)
@@ -66,7 +98,11 @@ async function submitForm() {
   formError.value = null
   saving.value = true
   try {
-    await promptsApi.create({ name: form.value.name, content: form.value.content })
+    await promptsApi.create({
+      name: form.value.name,
+      content: form.value.content,
+      kind: form.value.kind,
+    })
     toast.add({ severity: 'success', summary: 'Prompt created', life: 3000 })
     dialogOpen.value = false
     await load()
@@ -93,7 +129,18 @@ async function submitForm() {
 
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
-    <DataTable :value="prompts" :loading="loading" data-key="id" class="table">
+    <div class="filter-row">
+      <span class="filter-label">Kind</span>
+      <SelectButton
+        v-model="kindFilter"
+        :options="kindFilterOptions"
+        option-label="label"
+        option-value="value"
+        :allow-empty="false"
+      />
+    </div>
+
+    <DataTable :value="visiblePrompts" :loading="loading" data-key="id" class="table">
       <template #empty>No prompts yet — add one with "New prompt".</template>
       <Column field="name" header="Name">
         <template #body="{ data }: { data: Prompt }">
@@ -101,6 +148,23 @@ async function submitForm() {
             <RouterLink :to="`/prompts/${data.id}`" class="name-link">{{ data.name }}</RouterLink>
             <Tag v-if="data.dirty" value="dirty" severity="warn" />
           </div>
+        </template>
+      </Column>
+      <Column header="Kind">
+        <template #body="{ data }: { data: Prompt }">
+          <Tag
+            :value="kindLabel(data.kind)"
+            :severity="data.kind === 'system' ? 'info' : 'secondary'"
+          />
+        </template>
+      </Column>
+      <Column header="Used by">
+        <template #body="{ data }: { data: Prompt }">
+          <span :class="{ unused: data.used_by_test_case_count === 0 }">
+            {{ data.used_by_test_case_count }} test case{{
+              data.used_by_test_case_count === 1 ? '' : 's'
+            }}
+          </span>
         </template>
       </Column>
       <Column header="Version status">
@@ -116,6 +180,19 @@ async function submitForm() {
         <div class="field">
           <label for="prompt-name">Name *</label>
           <InputText id="prompt-name" v-model="form.name" required placeholder="Order support agent" autofocus />
+        </div>
+        <div class="field">
+          <span class="label">Kind</span>
+          <SelectButton
+            v-model="form.kind"
+            :options="PROMPT_KINDS"
+            option-label="label"
+            option-value="value"
+            :allow-empty="false"
+          />
+          <p class="hint">
+            {{ PROMPT_KINDS.find((kind) => kind.value === form.kind)?.hint }}
+          </p>
         </div>
         <div class="field">
           <label for="prompt-content">Draft content</label>
@@ -198,10 +275,33 @@ async function submitForm() {
   gap: 0.375rem;
 }
 
-.field label {
+.field label,
+.field .label {
   font-size: 0.8125rem;
   font-weight: 500;
   color: var(--p-text-muted-color);
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.filter-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--p-text-muted-color);
+}
+
+.unused {
+  color: var(--p-text-muted-color);
+}
+
+.hint {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  margin: 0;
 }
 
 .mono-input :deep(textarea) {

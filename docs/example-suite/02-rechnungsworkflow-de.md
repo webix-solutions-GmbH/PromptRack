@@ -12,14 +12,14 @@ Deutsche Prompts für einen Kreditoren-Workflow: Extraktion, ERP-Abgleich, Prüf
 
 A German accounts-payable workflow: extraction, ERP reconciliation, arithmetic checking, coding, discount terms, supplier correspondence, release decision, duplicate detection.
 
-All eight are plain one-shot tests: `tool_mode: none`, no prompt, no toolsets. **Keep the German text exactly as written** — the point of the group is German-language behaviour, and two test cases (`Kontierungsvorschlag`, `Freigabeentscheidung`) grade on German output strings.
+All eight are plain one-shot tests: `tool_mode: none`, neither prompt slot filled, no toolsets — the `content` alone is the whole user message. **Keep the German text exactly as written** — the point of the group is German-language behaviour, and two test cases (`Kontierungsvorschlag`, `Freigabeentscheidung`) grade on German output strings.
 
 ---
 
 ## 1. Rechnungsdaten extrahieren
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -66,7 +66,7 @@ Prüfen: gültiges JSON ohne Codeblöcke, exakte Schlüssel, Datum ISO, Zahlen m
 ## 2. Abgleich Rechnung ↔ Bestellung (ERP)
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -112,7 +112,7 @@ Patchpanel 24-Port: OK.
 ## 3. Rechnerische Prüfung
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -141,7 +141,7 @@ Fehler 2: Der Bruttobetrag ist folglich falsch — korrekt wären 840,14 EUR sta
 ## 4. Kontierungsvorschlag
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -173,7 +173,7 @@ Prüfen: Markdown-Tabelle, jede Position genau eine Kategorie, keine Zusatztexte
 ## 5. Skonto und Zahlungsziel
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -204,7 +204,7 @@ Gib die Daten im Format TT.MM.JJJJ und die Beträge in EUR an, mit kurzem Rechen
 ## 6. Klärungs-E-Mail an Lieferant
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -219,14 +219,14 @@ Formuliere eine professionelle, höfliche E-Mail auf Deutsch an den Lieferanten 
 
 `expected_output`:
 
-_none — this prompt is rated by reading the answer._
+_none — this test case is rated by reading the answer._
 
 ---
 
 ## 7. Freigabeentscheidung (JSON)
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -257,7 +257,7 @@ Prüfen: entscheidung muss "freigeben" sein (Betrag unter 5.000 EUR, Bestellbezu
 ## 8. Duplikatprüfung
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 

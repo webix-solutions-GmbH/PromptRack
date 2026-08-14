@@ -1,9 +1,12 @@
 <script setup lang="ts">
 // Test case create/edit — the port of the old prompt editor
 // (`git show master:src/components/prompts/prompt-editor.tsx`) under the
-// pivot's terminology: a test case references a *prompt* asset (the
-// versioned system prompt) plus append/override custom text, offers any
-// number of toolsets, and carries the rubric that never reaches the model.
+// prompt-kinds terminology: a test case holds no prompt text of its own. It
+// references up to two prompt *assets* by slot — a `system`-kind prompt sent
+// as the system message and a `task`-kind prompt sent at the head of the user
+// message — plus its own `content`, the data half of that user message. It
+// offers any number of toolsets and carries the rubric that never reaches the
+// model.
 //
 // One component handles both routes (`/test-cases/new` and
 // `/test-cases/:id`), same shape as the old editor taking an optional
@@ -12,6 +15,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
+import Dialog from 'primevue/dialog'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
@@ -23,17 +27,15 @@ import { useToast } from 'primevue/usetoast'
 import {
   testCasesApi,
   testGroupsApi,
-  type PromptMode,
   type TestCase,
   type TestGroup,
   type ToolChoice,
   type ToolMode,
 } from '../api/testCases'
-import { promptsApi, type Prompt } from '../api/prompts'
+import { promptsApi, PROMPT_KINDS, type Prompt, type PromptKind } from '../api/prompts'
 import { toolsetsApi, type Tool, type Toolset } from '../api/toolsets'
 import { ApiError } from '../api/client'
 import { collectToolNameCollisions, DEFAULT_MAX_TURNS, MAX_TURNS_LIMIT } from '../lib/tools'
-import { resolveEffectivePrompt } from '../lib/effectivePrompt'
 import { useAuthStore } from '../stores/auth'
 
 const props = defineProps<{ id?: string }>()
@@ -72,9 +74,8 @@ interface FormState {
   title: string
   content: string
   expectedOutput: string
-  promptId: number | null
-  mode: PromptMode
-  customText: string
+  systemPromptId: number | null
+  taskPromptId: number | null
   toolMode: ToolMode
   toolsetIds: number[]
   toolChoice: ToolChoice | ''
@@ -87,9 +88,8 @@ function emptyForm(groupId: number | null): FormState {
     title: '',
     content: '',
     expectedOutput: '',
-    promptId: null,
-    mode: 'append',
-    customText: '',
+    systemPromptId: null,
+    taskPromptId: null,
     toolMode: 'none',
     toolsetIds: [],
     toolChoice: '',
@@ -118,11 +118,10 @@ function applyTestCase(row: TestCase) {
   testCase.value = row
   form.groupId = row.group_id
   form.title = row.title
-  form.content = row.content
+  form.content = row.content ?? ''
   form.expectedOutput = row.expected_output ?? ''
-  form.promptId = row.prompt_id
-  form.mode = row.mode
-  form.customText = row.custom_text ?? ''
+  form.systemPromptId = row.system_prompt_id
+  form.taskPromptId = row.task_prompt_id
   form.toolMode = row.tool_mode
   form.toolsetIds = [...row.toolset_ids]
   form.toolChoice = row.tool_choice ?? ''
@@ -157,19 +156,121 @@ async function load() {
 onMounted(load)
 watch(testCaseId, load)
 
-// --- effective prompt preview (pure, client-side — see ../lib/effectivePrompt.ts) --
+// --- prompt slots ------------------------------------------------------
 
-const selectedBasePrompt = computed<Prompt | undefined>(() =>
-  prompts.value.find((p) => p.id === form.promptId),
+/** Sentinel option id: picking it opens the "new prompt" dialog instead of
+ * selecting anything. Negative, so it can never collide with a real row id. */
+const NEW_PROMPT = -1
+
+function promptsOfKind(kind: PromptKind): Prompt[] {
+  return prompts.value.filter((prompt) => prompt.kind === kind)
+}
+
+/** The slot's own prompts plus the create-in-place item. Authoring a one-off
+ * prompt used to be a textarea on this page; keeping it one click away is what
+ * stops the pivot from making the common case slower (spec §Frontend,
+ * "Authoring must not regress"). */
+function slotOptions(kind: PromptKind): { id: number; name: string }[] {
+  return [
+    ...promptsOfKind(kind).map((prompt) => ({ id: prompt.id, name: prompt.name })),
+    { id: NEW_PROMPT, name: '＋ New prompt…' },
+  ]
+}
+
+const systemPromptOptions = computed(() => slotOptions('system'))
+const taskPromptOptions = computed(() => slotOptions('task'))
+
+/** The sentinel never lands in `form` — it opens the dialog and the select
+ * keeps whatever was already chosen. */
+function selectSlot(kind: PromptKind, value: number | null) {
+  if (value === NEW_PROMPT) {
+    openNewPrompt(kind)
+    return
+  }
+  if (kind === 'system') form.systemPromptId = value
+  else form.taskPromptId = value
+}
+
+const systemPrompt = computed<Prompt | null>(
+  () => prompts.value.find((prompt) => prompt.id === form.systemPromptId) ?? null,
+)
+const taskPrompt = computed<Prompt | null>(
+  () => prompts.value.find((prompt) => prompt.id === form.taskPromptId) ?? null,
 )
 
-const effectivePreview = computed(() =>
-  resolveEffectivePrompt({
-    mode: form.mode,
-    baseContent: selectedBasePrompt.value?.content ?? null,
-    customText: form.customText,
-  }),
+// --- assembled message preview -----------------------------------------
+
+// Mirrors `backend/app/services/message_assembly.py`: whitespace-only text is
+// absent on either side, and the user message is `task + "\n\n" + content`,
+// with the data last. Computed here rather than fetched — both prompt drafts
+// already arrived with `promptsApi.list()` for the selects — so the preview
+// updates on every keystroke with no round trip, the same reasoning the old
+// editor's effective-prompt preview had. Keep it identical to the backend's if
+// either changes.
+function present(value: string | null | undefined): string | null {
+  const trimmed = (value ?? '').trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+const systemMessagePreview = computed(() => present(systemPrompt.value?.content))
+
+const userMessagePreview = computed(() => {
+  const task = present(taskPrompt.value?.content)
+  const data = present(form.content)
+  if (task && data) return `${task}\n\n${data}`
+  return task ?? data ?? ''
+})
+
+// The same guard the server enforces on save *and* again at run creation
+// (`assert_user_message`), surfaced while the case is being written rather
+// than when a save is refused.
+const userMessageError = computed(() =>
+  userMessagePreview.value.length > 0
+    ? null
+    : 'This test case has no user message. Give it content, or select a task prompt with text in it.',
 )
+
+// --- create a prompt without leaving the page ---------------------------
+
+const newPromptOpen = ref(false)
+const newPromptKind = ref<PromptKind>('system')
+const newPromptForm = reactive({ name: '', content: '' })
+const newPromptError = ref<string | null>(null)
+const creatingPrompt = ref(false)
+
+function openNewPrompt(kind: PromptKind) {
+  newPromptKind.value = kind
+  // Prefilled from the test case's title and suffixed with the slot, so the
+  // two prompts of one case are still told apart in `/prompts`.
+  const title = form.title.trim()
+  newPromptForm.name = title.length > 0 ? `${title} — ${kind} prompt` : ''
+  newPromptForm.content = ''
+  newPromptError.value = null
+  newPromptOpen.value = true
+}
+
+async function createPrompt() {
+  newPromptError.value = null
+  creatingPrompt.value = true
+  try {
+    const created = await promptsApi.create({
+      name: newPromptForm.name,
+      content: newPromptForm.content,
+      // Fixed by the slot it was opened from: a prompt's kind decides which
+      // channel its text goes out on, and this dialog knows the answer.
+      kind: newPromptKind.value,
+    })
+    prompts.value = [...prompts.value, created]
+    if (created.kind === 'system') form.systemPromptId = created.id
+    else form.taskPromptId = created.id
+    newPromptOpen.value = false
+    toast.add({ severity: 'success', summary: `Prompt "${created.name}" created`, life: 3000 })
+  } catch (err) {
+    newPromptError.value = err instanceof ApiError ? err.message : 'Failed to create the prompt.'
+  } finally {
+    creatingPrompt.value = false
+  }
+}
 
 // --- tool config preview + validation (mirrors backend assert_tool_config) --
 
@@ -247,11 +348,10 @@ function buildInput() {
   return {
     group_id: form.groupId as number,
     title: form.title,
-    content: form.content,
+    content: form.content || null,
     expected_output: form.expectedOutput || null,
-    prompt_id: form.promptId,
-    mode: form.mode,
-    custom_text: form.customText || null,
+    system_prompt_id: form.systemPromptId,
+    task_prompt_id: form.taskPromptId,
     tool_mode: form.toolMode,
     toolset_ids: form.toolsetIds,
     tool_choice: form.toolChoice || null,
@@ -259,8 +359,12 @@ function buildInput() {
   }
 }
 
+const saveBlocked = computed(
+  () => toolError.value !== null || userMessageError.value !== null || form.groupId === null,
+)
+
 async function save() {
-  if (toolError.value !== null || form.groupId === null) return
+  if (saveBlocked.value) return
   saveError.value = null
   saving.value = true
   try {
@@ -346,8 +450,12 @@ async function removeTestCase() {
             </div>
 
             <div class="field">
-              <label for="tc-content">Prompt (user message) *</label>
-              <Textarea id="tc-content" v-model="form.content" required rows="6" auto-resize class="mono-input" />
+              <label for="tc-content">Content</label>
+              <Textarea id="tc-content" v-model="form.content" rows="6" auto-resize class="mono-input" />
+              <p class="hint">
+                The data this case varies — sent after the task prompt, at the end of the user
+                message. Optional only when a task prompt supplies the whole user message.
+              </p>
             </div>
 
             <div class="field">
@@ -365,46 +473,46 @@ async function removeTestCase() {
 
           <div class="column">
             <div class="field">
-              <label for="tc-prompt">Base prompt</label>
+              <label for="tc-system-prompt">System prompt</label>
               <Select
-                id="tc-prompt"
-                v-model="form.promptId"
-                :options="prompts"
+                id="tc-system-prompt"
+                :model-value="form.systemPromptId"
+                :options="systemPromptOptions"
                 option-label="name"
                 option-value="id"
                 placeholder="(none)"
                 show-clear
+                @update:model-value="(value) => selectSlot('system', value)"
               />
+              <p class="hint">Frames the model. Sent as the system message.</p>
             </div>
 
             <div class="field">
-              <span class="label">Mode</span>
-              <div class="radio-row">
-                <label class="radio-option">
-                  <RadioButton v-model="form.mode" value="append" name="tc-mode" />
-                  Append
-                </label>
-                <label class="radio-option">
-                  <RadioButton v-model="form.mode" value="override" name="tc-mode" />
-                  Override
-                </label>
-              </div>
+              <label for="tc-task-prompt">Task prompt</label>
+              <Select
+                id="tc-task-prompt"
+                :model-value="form.taskPromptId"
+                :options="taskPromptOptions"
+                option-label="name"
+                option-value="id"
+                placeholder="(none)"
+                show-clear
+                @update:model-value="(value) => selectSlot('task', value)"
+              />
+              <p class="hint">The instruction for this call. Sent before the content above.</p>
             </div>
 
             <div class="field">
-              <label for="tc-custom-text">
-                {{
-                  form.mode === 'override'
-                    ? 'Custom system text (replaces base)'
-                    : 'Custom system text (appended after base)'
-                }}
-              </label>
-              <Textarea id="tc-custom-text" v-model="form.customText" rows="4" auto-resize class="mono-input" />
+              <span class="label">System message as it will be sent</span>
+              <pre class="preview">{{ systemMessagePreview ?? '(no system message)' }}</pre>
             </div>
 
             <div class="field">
-              <span class="label">Effective system prompt preview</span>
-              <pre class="preview">{{ effectivePreview ?? '(no system message)' }}</pre>
+              <span class="label">User message as it will be sent</span>
+              <pre class="preview">{{ userMessagePreview || '(nothing to send)' }}</pre>
+              <Message v-if="userMessageError" severity="error" :closable="false">
+                {{ userMessageError }}
+              </Message>
             </div>
           </div>
         </div>
@@ -497,7 +605,7 @@ async function removeTestCase() {
             type="submit"
             :label="isNew ? 'Create test case' : 'Save changes'"
             :loading="saving"
-            :disabled="toolError !== null || form.groupId === null"
+            :disabled="saveBlocked"
           />
           <Button type="button" label="Cancel" text @click="router.back()" />
         </div>
@@ -507,6 +615,44 @@ async function removeTestCase() {
         </div>
       </form>
     </template>
+
+    <!--
+      Create-in-place: a prompt is a versioned asset now, so a one-off prompt is
+      a row in /prompts rather than a textarea here — but it is still authored
+      without leaving the page. The kind is fixed by the slot this was opened
+      from and is therefore stated, not chosen.
+    -->
+    <Dialog
+      v-model:visible="newPromptOpen"
+      modal
+      :header="newPromptKind === 'system' ? 'New system prompt' : 'New task prompt'"
+      class="form-dialog"
+    >
+      <form class="dialog-form" @submit.prevent="createPrompt">
+        <p class="hint">
+          {{ PROMPT_KINDS.find((kind) => kind.value === newPromptKind)?.hint }}
+        </p>
+        <div class="field">
+          <label for="np-name">Name *</label>
+          <InputText id="np-name" v-model="newPromptForm.name" required autofocus />
+        </div>
+        <div class="field">
+          <label for="np-content">Draft content</label>
+          <Textarea
+            id="np-content"
+            v-model="newPromptForm.content"
+            rows="8"
+            auto-resize
+            class="mono-input"
+          />
+        </div>
+        <Message v-if="newPromptError" severity="error" :closable="false">{{ newPromptError }}</Message>
+        <div class="dialog-actions">
+          <Button type="button" label="Cancel" text @click="newPromptOpen = false" />
+          <Button type="submit" label="Create and select" :loading="creatingPrompt" />
+        </div>
+      </form>
+    </Dialog>
   </div>
 </template>
 
@@ -591,12 +737,6 @@ async function removeTestCase() {
   padding: 0.75rem;
 }
 
-.radio-row {
-  display: flex;
-  gap: 1.25rem;
-  font-size: 0.875rem;
-}
-
 .radio-column {
   display: flex;
   flex-direction: column;
@@ -664,5 +804,22 @@ async function removeTestCase() {
 .danger-zone {
   border-top: 1px solid var(--p-content-border-color);
   padding-top: 1rem;
+}
+
+.form-dialog {
+  width: 34rem;
+  max-width: 90vw;
+}
+
+.dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 </style>

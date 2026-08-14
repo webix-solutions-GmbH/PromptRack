@@ -28,6 +28,7 @@ from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt
 from app.repos.runs import create_run as create_run_row
 from app.repos.runs import insert_run_results
+from app.repos.test_cases import create_test_case, create_test_group
 from app.scope import Scope
 
 CreateWorkspace = Callable[[str], Awaitable[tuple[int, Scope]]]
@@ -223,6 +224,203 @@ class TestPromptCrud:
 
         assert (await client.get(f"/api/prompts/{prompt_a.id}")).status_code == 404
         assert (await client.delete(f"/api/prompts/{prompt_a.id}")).status_code == 404
+
+
+class TestPromptKind:
+    """`kind` is a property of the asset — which channel every version of it is
+    sent on. It defaults to `system`, it is reported on every read, and it can
+    only change while nothing references the prompt.
+    """
+
+    async def test_a_new_prompt_defaults_to_the_system_channel(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, _ = await create_workspace("Acme")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        created = await client.post(
+            "/api/prompts", json={"name": "Greeting", "content": "Say hi."}
+        )
+        assert created.status_code == 201, created.text
+        # Everything authored before the pivot went out as a system message;
+        # defaulting anywhere else would move text between channels.
+        assert created.json()["kind"] == "system"
+        assert created.json()["used_by_test_case_count"] == 0
+
+    async def test_a_task_prompt_can_be_created_and_read_back(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, _ = await create_workspace("Acme")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        created = await client.post(
+            "/api/prompts",
+            json={"name": "Judge", "content": "Pick the PO.", "kind": "task"},
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["kind"] == "task"
+
+        assert (await client.get(f"/api/prompts/{created.json()['id']}")).json()["kind"] == (
+            "task"
+        )
+        assert (await client.get("/api/prompts")).json()[0]["kind"] == "task"
+
+    async def test_an_unrecognised_kind_is_refused_never_coerced(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, _ = await create_workspace("Acme")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        response = await client.post(
+            "/api/prompts", json={"name": "x", "content": "y", "kind": "user"}
+        )
+        assert response.status_code == 422, response.text
+
+    async def test_kind_changes_freely_while_nothing_references_the_prompt(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        prompt = await create_prompt(
+            scope, session, name="Greeting", content="Say hi.", kind="system"
+        )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        patched = await client.patch(f"/api/prompts/{prompt.id}", json={"kind": "task"})
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["kind"] == "task"
+        assert patched.json()["used_by_test_case_count"] == 0
+
+    async def test_kind_change_is_refused_while_a_test_case_references_it(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """409, and **nothing is written** — the refusal fires before the
+        UPDATE, so a client must not read it as "the draft failed to save".
+
+        The alternative would silently relocate this prompt's text from the
+        system message to the head of the user message for every case that
+        uses it: exactly the invisible wire-format change the pivot exists to
+        eliminate.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        prompt = await create_prompt(
+            scope, session, name="Greeting", content="Say hi.", kind="system"
+        )
+        group = await create_test_group(scope, session, name="Group A")
+        await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="t",
+            content="hi",
+            system_prompt_id=prompt.id,
+        )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        response = await client.patch(f"/api/prompts/{prompt.id}", json={"kind": "task"})
+        assert response.status_code == 409, response.text
+        message = response.json()["message"]
+        assert "Greeting" in message
+        assert "1 test case" in message
+
+        got = await client.get(f"/api/prompts/{prompt.id}")
+        assert got.json()["kind"] == "system"
+        assert got.json()["used_by_test_case_count"] == 1
+
+    async def test_the_refusal_counts_the_task_slot_too(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # Both slots are references; a prompt is not free to move just because
+        # the cases that use it happen to use the other one.
+        customer_id, scope = await create_workspace("Acme")
+        prompt = await create_prompt(
+            scope, session, name="Judge", content="Pick the PO.", kind="task"
+        )
+        group = await create_test_group(scope, session, name="Group A")
+        for index in range(2):
+            await create_test_case(
+                scope,
+                session,
+                group_id=group.id,
+                title=f"case {index}",
+                content="hi",
+                task_prompt_id=prompt.id,
+            )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        response = await client.patch(f"/api/prompts/{prompt.id}", json={"kind": "system"})
+        assert response.status_code == 409, response.text
+        assert "2 test cases" in response.json()["message"]
+
+        assert (await client.get("/api/prompts")).json()[0]["used_by_test_case_count"] == 2
+
+    async def test_patching_kind_to_its_current_value_is_a_no_op_not_a_refusal(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # Only a real *change* is refused; a form that always sends every field
+        # must not be blocked from saving the draft.
+        customer_id, scope = await create_workspace("Acme")
+        prompt = await create_prompt(
+            scope, session, name="Greeting", content="Say hi.", kind="system"
+        )
+        group = await create_test_group(scope, session, name="Group A")
+        await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="t",
+            content="hi",
+            system_prompt_id=prompt.id,
+        )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        patched = await client.patch(
+            f"/api/prompts/{prompt.id}", json={"kind": "system", "content": "Say hello."}
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["content"] == "Say hello."
+        assert patched.json()["kind"] == "system"
+
+    async def test_a_referenced_prompts_draft_still_saves(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # The refusal is about the channel, never about the text: editing and
+        # committing a referenced prompt is the normal workflow.
+        customer_id, scope = await create_workspace("Acme")
+        prompt = await create_prompt(
+            scope, session, name="Greeting", content="Say hi.", kind="system"
+        )
+        group = await create_test_group(scope, session, name="Group A")
+        await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="t",
+            content="hi",
+            system_prompt_id=prompt.id,
+        )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        patched = await client.patch(
+            f"/api/prompts/{prompt.id}", json={"content": "Say hello."}
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["content"] == "Say hello."
 
 
 class TestVersioning:
@@ -472,7 +670,14 @@ class TestBaseline:
         machine_id: int,
         *,
         prompt_version_id: int | None,
+        slot: str = "system_prompt_version_id",
     ) -> int:
+        """`slot` names which of the two version columns carries the id; the
+        other stays null. `set_baseline` accepts either, and
+        `tests/integration/test_versioning.py` is where that is pinned per
+        column — here it only has to be nameable.
+        """
+        assert slot in ("system_prompt_version_id", "task_prompt_version_id")
         run = await create_run_row(
             scope,
             session,
@@ -487,7 +692,9 @@ class TestBaseline:
             run.id,
             [
                 {
-                    "prompt_version_id": prompt_version_id,
+                    "system_prompt_version_id": None,
+                    "task_prompt_version_id": None,
+                    slot: prompt_version_id,
                     "group_name": "General",
                     "test_case_title": "Hello",
                     "test_case_text": "Say hi.",

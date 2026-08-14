@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.guards import CurrentScope, CurrentUser, DbSession, Writer
 from app.auth.users import list_display_names
-from app.models import Prompt, PromptVersion
+from app.models import Prompt, PromptKind, PromptVersion
 from app.repos.prompt_versions import (
     NoChangesError,
     NotAttributedError,
@@ -38,10 +38,12 @@ from app.repos.prompt_versions import (
     set_deployed,
 )
 from app.repos.prompts import (
+    PromptKindChangeError,
     create_prompt,
     delete_prompt,
     get_prompt,
     list_prompts,
+    test_case_reference_counts,
     update_prompt,
 )
 from app.scope import CrossCustomerError, Scope
@@ -68,11 +70,20 @@ class VersionSummary(BaseModel):
 class PromptView(BaseModel):
     id: int
     name: str
+    #: Which channel this prompt is sent on: a `system` prompt becomes the
+    #: system message, a `task` prompt the head of the user message. A
+    #: property of the asset, not of a test case's reference to it.
+    kind: PromptKind
     #: The mutable draft — what the editor writes and what a run tests.
     content: str
     #: `True` when the draft differs from the head version (or nothing has
     #: ever been committed). Mirrors `app.services.attribution.is_dirty`.
     dirty: bool
+    #: How many live test cases reference this prompt, across **both** slots.
+    #: Server-computed (`app.repos.prompts.test_case_reference_counts`) so the
+    #: list and the editor can never disagree about whether a kind change is
+    #: still allowed — it is refused while this is non-zero.
+    used_by_test_case_count: int
     head_version: VersionSummary | None
     deployed_version: VersionSummary | None
     deployed_at: datetime | None
@@ -89,10 +100,17 @@ class PromptWriteRequest(BaseModel):
     #: An empty draft is legitimate: the asset can be created before its text
     #: is written (`is_dirty` calls a prompt with no versions dirty either way,
     #: so the first commit is still allowed), and
-    #: `resolve_effective_prompt` already reads a whitespace-only prompt as "no
-    #: system message". Only the *name* identifies the asset, so only the name
-    #: is required.
+    #: `app.services.message_assembly` already reads a whitespace-only prompt
+    #: as absent. Only the *name* identifies the asset, so only the name is
+    #: required.
     content: str = ""
+    #: Defaults to `system` — the channel everything authored before the
+    #: prompt-kinds pivot was sent on. An unrecognised value is **refused**
+    #: (Pydantic rejects the `Literal`, a 422), deliberately unlike
+    #: `app.auth.policy.parse_role`, which degrades an unknown role to the
+    #: least privileged one: there is no safe fallback channel, and silently
+    #: picking one would move text between the system and user messages.
+    kind: PromptKind = "system"
 
     @field_validator("name")
     @classmethod
@@ -114,10 +132,16 @@ class PromptPatchRequest(BaseModel):
     A present-but-empty `content` clears the draft, the same state a prompt is
     created in: an editor that can reach empty has to be able to get back
     there. A blank `name` is still refused — that is the asset's identity.
+
+    `kind` rides on the same PATCH, but it is the one field the server can
+    refuse for a reason unrelated to the draft (409 while test cases reference
+    the prompt), so a client that sends both must not read that refusal as
+    "the draft was not saved" — nothing is written when it fires.
     """
 
     name: str | None = None
     content: str | None = None
+    kind: PromptKind | None = None
 
     @field_validator("name")
     @classmethod
@@ -199,13 +223,20 @@ def _version_summary(version_id: int | None, refs: list[VersionRef]) -> VersionS
     return None
 
 
-def _prompt_view(prompt: Prompt, refs: list[VersionRef], names: dict[int, str]) -> PromptView:
+def _prompt_view(
+    prompt: Prompt,
+    refs: list[VersionRef],
+    names: dict[int, str],
+    used_by: int = 0,
+) -> PromptView:
     head = head_version(refs)
     return PromptView(
         id=prompt.id,
         name=prompt.name,
+        kind=prompt.kind,
         content=prompt.content,
         dirty=is_dirty(prompt.content, refs),
+        used_by_test_case_count=used_by,
         head_version=_version_summary(head.id, refs) if head is not None else None,
         deployed_version=_version_summary(prompt.deployed_version_id, refs),
         deployed_at=prompt.deployed_at,
@@ -246,7 +277,8 @@ async def _prompt_view_by_id(
     prompt = await _get_prompt_or_404(scope, session, prompt_id)
     refs = await _refs_for(scope, session, prompt_id)
     names = await list_display_names(session, [prompt.deployed_by])
-    return _prompt_view(prompt, refs, names)
+    counts = await test_case_reference_counts(scope, session, [prompt_id])
+    return _prompt_view(prompt, refs, names, counts.get(prompt_id, 0))
 
 
 async def _get_version_or_404(
@@ -290,9 +322,14 @@ async def list_prompts_endpoint(
 ) -> list[PromptView]:
     del actor
     prompts = await list_prompts(scope, session, order=order)
-    refs_by_prompt = await list_version_refs(scope, session, [p.id for p in prompts])
+    prompt_ids = [p.id for p in prompts]
+    refs_by_prompt = await list_version_refs(scope, session, prompt_ids)
     names = await list_display_names(session, [p.deployed_by for p in prompts])
-    return [_prompt_view(p, refs_by_prompt.get(p.id, []), names) for p in prompts]
+    counts = await test_case_reference_counts(scope, session, prompt_ids)
+    return [
+        _prompt_view(p, refs_by_prompt.get(p.id, []), names, counts.get(p.id, 0))
+        for p in prompts
+    ]
 
 
 @router.get("/{prompt_id}")
@@ -308,9 +345,12 @@ async def create_prompt_endpoint(
     body: PromptWriteRequest, actor: Writer, scope: CurrentScope, session: DbSession
 ) -> PromptView:
     del actor
-    prompt = await create_prompt(scope, session, name=body.name, content=body.content)
+    prompt = await create_prompt(
+        scope, session, name=body.name, content=body.content, kind=body.kind
+    )
     await session.commit()
-    return _prompt_view(prompt, [], {})
+    # Brand new: no versions, nobody deployed it, and nothing can reference it yet.
+    return _prompt_view(prompt, [], {}, 0)
 
 
 @router.patch("/{prompt_id}")
@@ -324,6 +364,10 @@ async def patch_prompt_endpoint(
     """Edits the draft — the field(s) actually present in the body change,
     the rest are left alone. This is how the editor's autosave works: it can
     send `{"content": "..."}` on every keystroke without re-sending the name.
+
+    `kind` is refused with a 409 while any test case references the prompt.
+    The check lives inside `app.repos.prompts.update_prompt`, so it holds for
+    every caller and nothing is written when it fires.
     """
     del actor
     await _get_prompt_or_404(scope, session, prompt_id)
@@ -335,9 +379,14 @@ async def patch_prompt_endpoint(
         # A JSON `null` says the same thing as `""` — no draft text — and the
         # column is NOT NULL. "Absent" is already carried by `model_fields_set`.
         values["content"] = body.content or ""
+    if "kind" in body.model_fields_set and body.kind is not None:
+        values["kind"] = body.kind
 
     if values:
-        await update_prompt(scope, session, prompt_id, values)
+        try:
+            await update_prompt(scope, session, prompt_id, values)
+        except PromptKindChangeError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         await session.commit()
     return await _prompt_view_by_id(scope, session, prompt_id)
 
@@ -347,8 +396,14 @@ async def delete_prompt_endpoint(
     prompt_id: int, actor: Writer, scope: CurrentScope, session: DbSession
 ) -> None:
     """Deletes the asset and, by cascade, its whole version history. Past
-    runs are unaffected — they carry their own frozen effective system
-    prompt, and `run_results.prompt_version_id` is `SET NULL`.
+    runs are unaffected — they carry their own frozen copies of both prompt
+    texts, and `run_results.system_prompt_version_id` /
+    `task_prompt_version_id` are `SET NULL`.
+
+    Live test cases *are* affected: the slot pointing here is `SET NULL` too,
+    which can leave a case with neither a task prompt nor content. Run
+    creation refuses that case (`assert_user_message`) rather than sending an
+    empty user message.
     """
     del actor
     await _get_prompt_or_404(scope, session, prompt_id)

@@ -1,10 +1,19 @@
 """Test groups, test cases, and which toolsets a test case pulls in.
 
 Both children inherit their workspace: a test case through its group, a link row
-through both ends at once. The three cross-root references a test case can hold
-— its group, its prompt, its toolsets — are checked with
-:func:`~app.repos.customers.assert_same_customer` from inside these functions,
-because the database cannot express them.
+through both ends at once. The four cross-root references a test case can hold
+— its group, its **system prompt**, its **task prompt**, its toolsets — are
+checked from inside these functions, because the database cannot express them:
+the group and the toolsets through
+:func:`~app.repos.customers.assert_same_customer`, the two prompt slots through
+:func:`~app.repos.prompts.assert_prompt_slot`, which adds the kind check to the
+same single read.
+
+One more rule lives here for the same reason: a test case must have a user
+message, i.e. at least one of its task prompt and its own ``content`` must be
+non-blank (:func:`~app.services.message_assembly.assert_user_message`). It is
+checked here on create and on the *merged* post-patch state, and again at run
+creation — one shared function, exactly like ``assert_tool_config``.
 """
 
 from collections.abc import Mapping, Sequence
@@ -13,9 +22,11 @@ from typing import Any
 
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models import Prompt, TestCase, TestCaseToolset, TestGroup, Tool, Toolset
 from app.repos.customers import assert_same_customer
+from app.repos.prompts import assert_prompt_slot
 from app.repos.scoped import apply_where, scope_through_parent
 from app.scope import (
     CrossCustomerError,
@@ -24,6 +35,7 @@ from app.scope import (
     scope_values,
     where_scoped,
 )
+from app.services.message_assembly import assert_user_message
 
 # ---------------------------------------------------------------------------
 # Test groups
@@ -187,11 +199,10 @@ async def create_test_case(
     *,
     group_id: int,
     title: str,
-    content: str,
+    content: str | None = None,
     expected_output: str | None = None,
-    prompt_id: int | None = None,
-    mode: str = "append",
-    custom_text: str | None = None,
+    system_prompt_id: int | None = None,
+    task_prompt_id: int | None = None,
     tool_mode: str = "none",
     tool_choice: str | None = None,
     max_turns: int = 6,
@@ -200,22 +211,31 @@ async def create_test_case(
     """Creates a test case under a group this scope can see.
 
     A guessed group id would otherwise file a case in someone else's workspace,
-    where every later read would then find it. The referenced prompt is the
-    second cross-root reference and gets the same treatment — it is what run
-    creation later resolves and freezes into every result row.
+    where every later read would then find it. The two prompt slots are the
+    other cross-root references and get the same treatment plus a kind check —
+    they are what run creation later resolves and freezes into every result row.
+
+    The task prompt's own text is what the user-message guard needs, and
+    :func:`~app.repos.prompts.assert_prompt_slot` has already read the row, so
+    that costs nothing extra.
     """
     await assert_same_customer(session, scope, TestGroup, group_id)
-    if prompt_id is not None:
-        await assert_same_customer(session, scope, Prompt, prompt_id)
+    await assert_prompt_slot(scope, session, system_prompt_id, "system")
+    task_prompt = await assert_prompt_slot(scope, session, task_prompt_id, "task")
+
+    assert_user_message(
+        None if task_prompt is None else task_prompt.content,
+        content,
+        subject=f'Test case "{title}"',
+    )
 
     test_case = TestCase(
         group_id=group_id,
         title=title,
         content=content,
         expected_output=expected_output,
-        prompt_id=prompt_id,
-        mode=mode,
-        custom_text=custom_text,
+        system_prompt_id=system_prompt_id,
+        task_prompt_id=task_prompt_id,
         tool_mode=tool_mode,
         tool_choice=tool_choice,
         max_turns=max_turns,
@@ -229,15 +249,45 @@ async def create_test_case(
 async def update_test_case(
     scope: Scope, session: AsyncSession, test_case_id: int, values: Mapping[str, Any]
 ) -> None:
-    """Patches the named columns only — the same two cross-root references are
-    checked, but only when the patch actually names them.
+    """Patches the named columns only.
+
+    The cross-root references are checked exactly when the patch names them —
+    on **presence of the key**, not on the value being non-null, because
+    ``{"task_prompt_id": None}`` deliberately clears a slot and must not be
+    mistaken for "not mentioned".
+
+    The user-message guard is different: it has to hold for the row as it will
+    be *after* the patch, so this reads the current row and merges. A patch that
+    only clears ``content`` would otherwise leave behind a case run creation
+    refuses — the same reasoning that makes MCP's ``update_test_case`` re-check
+    the tool configuration post-patch rather than on the request body alone.
     """
     if not values:
         return
     if values.get("group_id") is not None:
         await assert_same_customer(session, scope, TestGroup, values["group_id"])
-    if values.get("prompt_id") is not None:
-        await assert_same_customer(session, scope, Prompt, values["prompt_id"])
+
+    system_slot_named = "system_prompt_id" in values
+    task_slot_named = "task_prompt_id" in values
+    if system_slot_named:
+        await assert_prompt_slot(scope, session, values["system_prompt_id"], "system")
+
+    task_prompt: Prompt | None = None
+    if task_slot_named:
+        task_prompt = await assert_prompt_slot(scope, session, values["task_prompt_id"], "task")
+
+    if task_slot_named or "content" in values:
+        existing = await get_test_case(scope, session, test_case_id)
+        if existing is not None:
+            if not task_slot_named and existing.task_prompt_id is not None:
+                task_prompt = await assert_prompt_slot(
+                    scope, session, existing.task_prompt_id, "task"
+                )
+            assert_user_message(
+                None if task_prompt is None else task_prompt.content,
+                values["content"] if "content" in values else existing.content,
+                subject=f'Test case "{values.get("title") or existing.title}"',
+            )
 
     statement = apply_where(update(TestCase), _test_case_where(scope, test_case_id))
     await session.execute(statement.values(**values))
@@ -263,18 +313,36 @@ def _test_case_where(scope: Scope, test_case_id: int):
 class CompareTestCaseRow:
     """A live test case joined to its group — the rows of ``/results`` in model
     mode.
+
+    Carries the **live** halves of all three frozen texts, because model mode's
+    "edited since" comparison is three comparisons: a cell's frozen
+    ``test_case_text`` against ``text``, its ``system_prompt_text`` against the
+    system prompt's current draft, its ``task_prompt_text`` against the task
+    prompt's. Without the two draft texts the split drift report silently
+    degrades to the one comparison it used to make.
     """
 
     id: int
     group_id: int
     group_name: str
     title: str
-    text: str
+    text: str | None
+    system_prompt_text: str | None
+    task_prompt_text: str | None
 
 
 async def compare_test_case_rows(
     scope: Scope, session: AsyncSession
 ) -> list[CompareTestCaseRow]:
+    """Every live test case in scope, in matrix-row order.
+
+    The two ``prompts`` joins are ``LEFT`` and aliased per slot: an empty slot,
+    and a slot whose prompt was deleted out from under it, must still yield the
+    test case rather than dropping the row out of the matrix.
+    """
+    system_prompt = aliased(Prompt, name="system_prompt")
+    task_prompt = aliased(Prompt, name="task_prompt")
+
     statement = apply_where(
         select(
             TestCase.id,
@@ -282,7 +350,12 @@ async def compare_test_case_rows(
             TestGroup.name,
             TestCase.title,
             TestCase.content,
-        ).join(TestGroup, TestCase.group_id == TestGroup.id),
+            system_prompt.content,
+            task_prompt.content,
+        )
+        .join(TestGroup, TestCase.group_id == TestGroup.id)
+        .outerjoin(system_prompt, TestCase.system_prompt_id == system_prompt.id)
+        .outerjoin(task_prompt, TestCase.task_prompt_id == task_prompt.id),
         where_scoped(scope, TestGroup),
     ).order_by(
         TestGroup.sort_order.asc(),
@@ -293,7 +366,13 @@ async def compare_test_case_rows(
     rows = await session.execute(statement)
     return [
         CompareTestCaseRow(
-            id=row[0], group_id=row[1], group_name=row[2], title=row[3], text=row[4]
+            id=row[0],
+            group_id=row[1],
+            group_name=row[2],
+            title=row[3],
+            text=row[4],
+            system_prompt_text=row[5],
+            task_prompt_text=row[6],
         )
         for row in rows.all()
     ]

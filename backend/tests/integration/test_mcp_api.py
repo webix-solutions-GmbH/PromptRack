@@ -215,6 +215,42 @@ async def test_mcp_endpoint(
             # Nothing committed yet, so the draft is a dirty working tree.
             assert payload["prompt"]["dirty"] is True
             assert payload["prompt"]["head_version"] is None
+            # Omitting `kind` sends the prompt on the channel everything was
+            # authored on before the pivot.
+            assert payload["prompt"]["kind"] == "system"
+
+            # The other channel, named explicitly.
+            failed, payload = await call(
+                client,
+                token,
+                "create_prompt",
+                {
+                    "customer": "Acme",
+                    "name": "Judge",
+                    "content": "Pick the matching PO.",
+                    "kind": "task",
+                },
+            )
+            assert not failed
+            assert payload["prompt"]["kind"] == "task"
+
+            # An unrecognised kind is refused, never coerced: guessing a
+            # channel would silently move the text between messages.
+            failed, message = await call(
+                client,
+                token,
+                "create_prompt",
+                {"customer": "Acme", "name": "Nope", "content": "x", "kind": "user"},
+            )
+            assert failed
+            assert "kind" in message
+
+            failed, payload = await call(client, token, "list_prompts", {"customer": "Acme"})
+            assert not failed
+            assert {p["name"]: p["kind"] for p in payload["prompts"]} == {
+                "Agent": "system",
+                "Judge": "task",
+            }
 
             failed, payload = await call(
                 client,
@@ -237,8 +273,9 @@ async def test_mcp_endpoint(
 
             failed, payload = await call(client, token, "list_prompts", {"customer": "Acme"})
             assert not failed
-            assert payload["prompts"][0]["dirty"] is False
-            assert payload["prompts"][0]["head_version"] == {"id": version_id, "version": 1}
+            agent = next(p for p in payload["prompts"] if p["name"] == "Agent")
+            assert agent["dirty"] is False
+            assert agent["head_version"] == {"id": version_id, "version": 1}
 
             failed, payload = await call(
                 client, token, "get_prompt_version", {"customer": "Acme", "version_id": version_id}
@@ -280,6 +317,8 @@ async def test_mcp_endpoint(
             assert failed
 
             # --- test cases -------------------------------------------------
+            # Both slots by *name*: the two new `RowRef` arguments that
+            # replaced `prompt` / `mode` / `custom_text`.
             failed, payload = await call(
                 client,
                 token,
@@ -290,26 +329,122 @@ async def test_mcp_endpoint(
                     "title": "Reconcile",
                     "content": "Invoice 4711 has a quantity mismatch.",
                     "expected_output": "asks a question",
-                    "prompt": "Agent",
-                    "custom_text": "Be terse.",
+                    "system_prompt": "Agent",
+                    "task_prompt": "Judge",
                 },
             )
             assert not failed
             case = payload["test_case"]
-            # The *resolved* prompt, so a caller can check what a run would
-            # send without reimplementing append/override.
-            assert case["effective_prompt"] == "You are helpful.\n\nBe terse."
+            assert case["system_prompt"]["name"] == "Agent"
+            assert case["task_prompt"]["name"] == "Judge"
+            # The two texts each slot currently holds, under the same key names
+            # `get_run_result` uses for the frozen copies — one vocabulary for
+            # authoring a case and reading its result.
+            assert case["system_prompt_text"] == "You are helpful."
+            assert case["task_prompt_text"] == "Pick the matching PO."
 
-            # Patch semantics: an explicit null clears, an absent key does not.
+            # A slot only accepts its own kind, and the refusal says which.
+            failed, message = await call(
+                client,
+                token,
+                "create_test_case",
+                {
+                    "customer": "Acme",
+                    "group": "Invoices",
+                    "title": "Wrong slot",
+                    "content": "x",
+                    "system_prompt": "Judge",
+                },
+            )
+            assert failed
+            assert "task prompt" in message
+
+            # No task prompt and no content is no user message at all.
+            failed, message = await call(
+                client,
+                token,
+                "create_test_case",
+                {
+                    "customer": "Acme",
+                    "group": "Invoices",
+                    "title": "Empty",
+                    "system_prompt": "Agent",
+                },
+            )
+            assert failed
+            assert "no user message" in message
+
+            # A task prompt *is* a user message, so `content` may be omitted.
+            failed, payload = await call(
+                client,
+                token,
+                "create_test_case",
+                {
+                    "customer": "Acme",
+                    "group": "Invoices",
+                    "title": "No input",
+                    "task_prompt": "Judge",
+                },
+            )
+            assert not failed
+            no_input_id = payload["test_case"]["id"]
+            assert payload["test_case"]["content"] is None
+
+            # Patch semantics: an explicit null clears a slot, an absent key
+            # leaves it alone.
             failed, payload = await call(
                 client,
                 token,
                 "update_test_case",
-                {"customer": "Acme", "test_case_id": case["id"], "custom_text": None},
+                {"customer": "Acme", "test_case_id": case["id"], "task_prompt": None},
             )
             assert not failed
-            assert payload["test_case"]["custom_text"] is None
+            assert payload["test_case"]["task_prompt"] is None
+            assert payload["test_case"]["task_prompt_text"] is None
+            assert payload["test_case"]["system_prompt"]["name"] == "Agent"
             assert payload["test_case"]["expected_output"] == "asks a question"
+
+            # The merged post-patch state is what the guard reads: clearing the
+            # only user message this case has must not be saveable.
+            failed, message = await call(
+                client,
+                token,
+                "update_test_case",
+                {"customer": "Acme", "test_case_id": no_input_id, "task_prompt": None},
+            )
+            assert failed
+            assert "no user message" in message
+
+            # A prompt cannot change channel while a case references it: that
+            # would move its text to the other message behind those cases'
+            # backs. Nothing is written — the kind is still "system" below.
+            failed, message = await call(
+                client,
+                token,
+                "update_prompt",
+                {"customer": "Acme", "prompt": "Agent", "kind": "task"},
+            )
+            assert failed
+            assert "Agent" in message
+
+            failed, payload = await call(
+                client, token, "list_prompts", {"customer": "Acme"}
+            )
+            assert not failed
+            assert next(p for p in payload["prompts"] if p["name"] == "Agent")["kind"] == (
+                "system"
+            )
+
+            # Commit the task prompt too, so the run below can attribute a
+            # version through each of the two columns.
+            failed, payload = await call(
+                client,
+                token,
+                "commit_prompt",
+                {"customer": "Acme", "prompt": "Judge", "message": "first"},
+            )
+            assert not failed
+            task_version_id = payload["version"]["id"]
 
             # The test-case editor's own rule, through the same function.
             failed, message = await call(
@@ -346,7 +481,7 @@ async def test_mcp_endpoint(
             )
             assert not failed
             run_id = payload["run"]["id"]
-            assert payload["run"]["test_case_count"] == 1
+            assert payload["run"]["test_case_count"] == 2
             assert payload["executing"] is False
 
             failed, payload = await call(
@@ -354,15 +489,35 @@ async def test_mcp_endpoint(
             )
             assert not failed
             assert payload["run"]["status"] == "pending"
-            assert payload["run"]["results"]["pending"] == 1
-            result_id = payload["results"][0]["result_id"]
-            # A run of a committed draft records which version it tested.
-            assert payload["results"][0]["prompt_version_id"] == version_id
+            assert payload["run"]["results"]["pending"] == 2
+            reconcile, no_input = payload["results"]
+            result_id = reconcile["result_id"]
+            # A run of a committed draft records which version it tested, per
+            # slot: "Reconcile" has only a system prompt left, "No input" only
+            # a task prompt, and each fills exactly its own column.
+            assert reconcile["system_prompt_version_id"] == version_id
+            assert reconcile["task_prompt_version_id"] is None
+            assert no_input["system_prompt_version_id"] is None
+            assert no_input["task_prompt_version_id"] == task_version_id
+
+            # The frozen texts come back under the same two key names, and
+            # `test_case_text` is null for the case that carries no data.
+            failed, payload = await call(
+                client,
+                token,
+                "get_run_result",
+                {"customer": "Acme", "result_id": no_input["result_id"]},
+            )
+            assert not failed
+            assert payload["result"]["system_prompt_text"] is None
+            assert payload["result"]["task_prompt_text"] == "Pick the matching PO."
+            assert payload["result"]["test_case_text"] is None
+            assert "prompt_text" not in payload["result"]
 
             failed, payload = await call(client, token, "list_runs", {"customer": "Acme"})
             assert not failed
             assert [run["id"] for run in payload["runs"]] == [run_id]
-            assert payload["runs"][0]["results"]["total"] == 1
+            assert payload["runs"][0]["results"]["total"] == 2
 
             # A row that has not answered yet cannot be judged: `execute_run`
             # is fire-and-forget, so a grading loop can outrun it.

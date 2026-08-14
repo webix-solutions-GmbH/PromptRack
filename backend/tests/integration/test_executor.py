@@ -18,9 +18,11 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repos.machines import create_machine
+from app.repos.prompts import create_prompt
 from app.repos.runs import get_run, list_run_results
 from app.repos.test_cases import create_test_case, create_test_group
 from app.repos.toolsets import create_tool, create_toolset
@@ -180,6 +182,145 @@ class TestHappyPath:
             "status": "completed",
             "nothing_pending": True,
         }
+
+
+class TestMessageAssembly:
+    """Assembly happens **here**, at execution, from the three frozen columns.
+
+    Run creation freezes the parts separately so drift reporting can name them
+    separately; this is the other end of that decision — what the provider
+    actually receives. The pure rule is `tests/test_message_assembly.py`'s job;
+    what only the wired-up executor can show is that the right *column* feeds
+    each part of the request.
+    """
+
+    async def _run_with_slots(
+        self,
+        scope: Scope,
+        session: AsyncSession,
+        *,
+        system_text: str | None,
+        task_text: str | None,
+        content: str | None,
+    ) -> int:
+        machine = await create_machine(scope, session, name="Box", base_url="http://x/v1")
+        group = await create_test_group(scope, session, name="Group")
+        system_prompt = (
+            None
+            if system_text is None
+            else await create_prompt(
+                scope, session, name="framing", content=system_text, kind="system"
+            )
+        )
+        task_prompt = (
+            None
+            if task_text is None
+            else await create_prompt(
+                scope, session, name="instruction", content=task_text, kind="task"
+            )
+        )
+        await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="Case",
+            content=content,
+            system_prompt_id=None if system_prompt is None else system_prompt.id,
+            task_prompt_id=None if task_prompt is None else task_prompt.id,
+        )
+        await session.commit()
+
+        created = await create_run_record(
+            scope,
+            session,
+            machine_id=machine.id,
+            model_id="test-model",
+            group_ids=[group.id],
+            probe=_no_probe,
+        )
+        await session.commit()
+        return created.run_id
+
+    async def test_the_two_prompts_land_on_their_own_channels(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        run_id = await self._run_with_slots(
+            scope,
+            session,
+            system_text="You are terse.",
+            task_text="Extract the PO number.",
+            content="Invoice 4711, PO P00018",
+        )
+        stream, calls = scripted(_result())
+
+        await execute_run(run_id, lambda _event: None, stream=stream)
+
+        assert [message["role"] for message in calls[0]] == ["system", "user"]
+        assert calls[0][0]["content"] == "You are terse."
+        # Concatenation, not templating: instruction first, data last, one
+        # blank line between them. This is wire format, asserted byte for byte.
+        assert calls[0][1]["content"] == "Extract the PO number.\n\nInvoice 4711, PO P00018"
+
+    async def test_a_task_prompt_can_be_the_whole_user_message(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        run_id = await self._run_with_slots(
+            scope,
+            session,
+            system_text=None,
+            task_text="Summarise yesterday's tickets.",
+            content=None,
+        )
+        stream, calls = scripted(_result())
+
+        await execute_run(run_id, lambda _event: None, stream=stream)
+
+        assert [message["role"] for message in calls[0]] == ["user"]
+        # No trailing separator: a blank `content` is absent, not empty.
+        assert calls[0][0]["content"] == "Summarise yesterday's tickets."
+
+    async def test_a_blank_system_prompt_sends_no_system_message_at_all(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        # Several providers treat an empty system role as a real turn that
+        # behaves differently from having none, so it is omitted entirely.
+        run_id = await self._run_with_slots(
+            scope, session, system_text="   \n ", task_text=None, content="What is 2+2?"
+        )
+        stream, calls = scripted(_result())
+
+        await execute_run(run_id, lambda _event: None, stream=stream)
+
+        assert [message["role"] for message in calls[0]] == ["user"]
+
+    async def test_a_row_left_with_no_user_message_errors_instead_of_dispatching(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        """The third and last place the shared guard runs.
+
+        A prompt deleted *after* the run was created `SET NULL`s nothing on the
+        frozen row — but a row can still reach here empty when the case had no
+        content and its task prompt was deleted between creation and execution
+        of a *resumed* run. Blanking the frozen column directly is the smallest
+        way to reach that state, and what matters is the outcome: the row is
+        marked `error` with a readable message, and the model is never called.
+        """
+        run_id = await self._run_with_slots(
+            scope, session, system_text=None, task_text="Summarise.", content=None
+        )
+        await session.execute(
+            text("UPDATE run_results SET task_prompt_text = NULL WHERE run_id = :run_id"),
+            {"run_id": run_id},
+        )
+        await session.commit()
+
+        stream, calls = scripted(_result())
+        await execute_run(run_id, lambda _event: None, stream=stream)
+
+        assert calls == []
+        results = await reload_results(scope, session, run_id)
+        assert [r.status for r in results] == ["error"]
+        assert "no user message" in (results[0].error or "")
 
 
 class TestFailures:

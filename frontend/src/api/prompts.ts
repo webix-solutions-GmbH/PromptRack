@@ -39,11 +39,23 @@ export interface PromptVersionSummary {
   version: number
 }
 
+/** Which channel a prompt is sent on — a property of the asset, not of a test
+ * case's reference to it (prompt-kinds spec, decision 1). A `system` prompt
+ * becomes the system message; a `task` prompt is the head of the user message,
+ * with the test case's own `content` concatenated after it. */
+export type PromptKind = 'system' | 'task'
+
 export interface Prompt {
   id: number
   name: string
+  kind: PromptKind
   /** The mutable draft — what the editor writes and what a run always tests. */
   content: string
+  /** How many live test cases reference this prompt, across **both** slots.
+   * Computed server-side (`app.repos.prompts.test_case_reference_counts`) so
+   * the list and the editor can never disagree about whether a kind change is
+   * still allowed — it is refused with a 409 while this is non-zero. */
+  used_by_test_case_count: number
   /** When the pointer was moved. */
   deployed_at: string | null
   /** Who moved it — `prompts.deployed_by` resolved to a name server-side.
@@ -65,10 +77,21 @@ export interface PromptInput {
   /** Optional both here and server-side: an asset can exist before its text is
    * written, and an empty draft is a legitimate starting state. */
   content?: string
+  /** Omitted defaults to `'system'` server-side — the channel everything
+   * authored before the prompt-kinds pivot was sent on. */
+  kind?: PromptKind
 }
 
+/** `PATCH /api/prompts/{id}` — only the keys present change.
+ *
+ * `kind` rides on this same body, but it is the one field the server can refuse
+ * for a reason unrelated to the draft (409 while test cases reference the
+ * prompt), and nothing at all is written when that fires — so a caller sending
+ * both must not read the refusal as "the draft was not saved". */
 export interface PromptDraftInput {
-  content: string
+  name?: string
+  content?: string
+  kind?: PromptKind
 }
 
 export interface PromptVersion {
@@ -121,6 +144,18 @@ export const promptsApi = {
       `/prompts/${id}/diff?from=${encodeURIComponent(diffRefParam(from))}&to=${encodeURIComponent(diffRefParam(to))}`,
     ),
 }
+
+/** The two kinds with the sentence each one's channel is worth explaining
+ * with, so the list filter, the prompt editor and the test-case editor's "new
+ * prompt" dialog all say the identical thing about the identical state. */
+export const PROMPT_KINDS: { value: PromptKind; label: string; hint: string }[] = [
+  { value: 'system', label: 'System', hint: 'Frames the model. Sent as the system message.' },
+  {
+    value: 'task',
+    label: 'Task',
+    hint: "The instruction for this call. Sent at the head of the user message, before the test case's own content.",
+  },
+]
 
 /** The list/editor's one-glance "is what's live what we last verified"
  * signal (spec: "deployed v3, head is v5"). Pure so both `PromptsView` and

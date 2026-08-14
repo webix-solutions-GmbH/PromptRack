@@ -137,11 +137,21 @@ versioning design itself.
 
 Editing or deleting test cases, prompts, machines, or toolsets must never change how a
 past run displays. `create_run_record` (`backend/app/services/run_create.py`) freezes
-everything into `run_results` rows at creation time: test-case text, title, group name,
-expected output, the **already-resolved** effective prompt, `tools_snapshot`, and now
-`prompt_version_id` — the version that draft happened to be byte-identical to, if any (see
-"Prompt versioning" below). `test_case_id`/`machine_id` FKs are kept (`SET NULL` on
-delete) only for cross-run comparison; rendering always uses the snapshots.
+everything into `run_results` rows at creation time: title, group name, expected output,
+`tools_snapshot`, **three texts** — `system_prompt_text`, `task_prompt_text` and
+`test_case_text` (the case's own content) — and **two version ids**,
+`system_prompt_version_id` / `task_prompt_version_id`, one per slot, each the version that
+slot's draft happened to be byte-identical to, if any (see "Prompt versioning" below).
+`test_case_id`/`machine_id` FKs are kept (`SET NULL` on delete) only for cross-run
+comparison; rendering always uses the snapshots.
+
+The three texts are frozen **separately and unassembled** — the executor concatenates them
+into the two messages at execution time (see "Prompt kinds and message assembly"). Storing
+the assembled user message instead would be smaller and would destroy the whole point: only
+separate parts let `/results` say *the task prompt changed* rather than *the user message
+changed*, which is the distinction this app exists to draw. It also means `transcript_json`,
+which records the **assembled** strings, is never the thing a detail view reads — the three
+columns are.
 
 Validation (test-group ids, tool config, tool-name collisions) and the endpoint probe
 happen *outside* `create_run_record`'s transaction, in that order: validation throws
@@ -160,11 +170,38 @@ a moved endpoint doesn't break Resume.
 ### Prompt versioning (the pivot)
 
 `prompts.content` is the mutable **draft** — what the editor writes to on every save, no
-version created. `prompt_versions` is the immutable history: a child of `prompts`
+version created. Every prompt text in the app is one of these rows: a test case holds no
+prompt text of its own (see "Prompt kinds and message assembly"), so a suite's ~20 prompts
+are ~20 versioned assets rather than one asset and nineteen free-text fields.
+`prompt_versions` is the immutable history: a child of `prompts`
 (`prompt_id` **CASCADE** — history dies with the asset, but every past run keeps its own
 snapshot regardless), never edited or deleted individually, `version` sequential per
 prompt (`max + 1`, computed inside the commit transaction; a unique index on
 `(prompt_id, version)` is the backstop).
+
+`prompts.kind` (`Text` + `Literal["system","task"]`, `server_default "system"`) says which
+channel the asset is sent on, and therefore which of a test case's two slots may hold it.
+Kind is a property of the **asset**, not of a reference to it, because "v3 is deployed" has
+to be able to say *deployed as what* — the prompt has a role in the customer's system
+independent of PromptRack's test cases. `backend/app/repos/prompts.py` owns the two rules
+that follow from that, both inside repository functions so no call site can forget them:
+
+- **`assert_prompt_slot(scope, session, prompt_id, kind)`** does same-workspace and
+  right-kind in **one** read, and returns the row (which is what lets the caller check
+  "does this case have a user message at all" without a second query). A `None` id is a
+  valid empty slot, so the four call sites carry no `if`. The two refusals are deliberately
+  distinct: a prompt from another workspace is `CrossCustomerError` → 404, a prompt of the
+  wrong kind is `PromptSlotError` → 400, because "no longer exists in this workspace" would
+  be a lie about a row sitting right there.
+- **Changing a prompt's `kind` is refused while any test case references it**
+  (`PromptKindChangeError` → 409, raised inside the shared `update_prompt` patcher before
+  the UPDATE, so a refused request writes nothing at all). The alternative — silently
+  relocating that text from the system message to the head of the user message for every
+  case that uses it — is the invisible wire-format change the kinds pivot exists to
+  eliminate. Unreferenced, the kind changes freely.
+
+Versioning machinery is indifferent to kind: commit, restore, diff, deployed and baseline
+work identically for both.
 
 `backend/app/repos/prompt_versions.py` owns all of this:
 
@@ -181,15 +218,24 @@ prompt (`max + 1`, computed inside the commit transaction; a unique index on
 - **`baseline_run_id`** (on `prompt_versions`, `SET NULL` on run delete) is the known-good
   run that justified deploying a version, and the reference point a regression check after
   a model swap compares against. `set_baseline` refuses (`NotAttributedError`) unless that
-  run's results are actually **attributed** to this version — see below.
-- **Attribution, not selection.** `run_results.prompt_version_id` (`SET NULL`) is set at
-  run creation *only* when the draft text is byte-equal to a committed version (a "clean
-  working tree"); `None` means the run tested a dirty draft or used no prompt. There is no
-  version picker at run creation — a run always tests the current draft, exactly as
-  before the pivot; the column is attribution, computed after the fact by
-  `match_version(draft_text, versions)` inside the existing scoped read, matching **newest
-  first** so a revert (a new commit whose content equals an older version) attributes to
-  the new commit, not the old one.
+  run's results are actually **attributed** to this version — an OR across the two version
+  columns, which is not a loosening: a prompt has exactly one kind, so its versions can only
+  ever appear in the column that kind names, and checking either is checking the right one
+  with no branch to get wrong.
+- **Attribution, not selection.** `run_results.system_prompt_version_id` and
+  `task_prompt_version_id` (both `SET NULL`) are set at run creation *only* when that
+  slot's draft text is byte-equal to a committed version (a "clean working tree"); `None`
+  means that slot tested a dirty draft or holds no prompt. The two are independent — a run
+  can be attributed on its task prompt and dirty on its system prompt. There is no version
+  picker at run creation — a run always tests the current drafts; the columns are
+  attribution, computed after the fact by `match_version(draft_text, versions)` inside the
+  existing scoped read, matching **newest first** so a revert (a new commit whose content
+  equals an older version) attributes to the new commit, not the old one.
+- **Attribution is now exact.** The text sent *is* `prompt.content` verbatim, so
+  `match_version` compares against what went on the wire. Before the kinds pivot a test
+  case could splice its own text into the referenced prompt, and the version id was computed
+  from the prompt alone — every such run was attributed to a version whose text was never
+  sent. There is no derived prompt text left for a version id to lie about.
 - **Diff**: `backend/app/services/diff.py`'s `unified_diff` (stdlib `difflib`, no Monaco
   or `vue-diff` dependency) renders a version against the draft, the deployed version, or
   any other version. `GET /api/prompts/{id}/diff?from=&to=` accepts a version id or the
@@ -251,11 +297,14 @@ machines — i.e. base URLs with API keys — from mixing with another's.
 - The five root tables (`machines`, `prompts`, `toolsets`, `test_groups`, `runs`) carry
   `customer_id NOT NULL`. The child tables (`machine_models`, `tools`, `test_cases`,
   `test_case_toolsets`, `run_results`, and now `prompt_versions`) carry **nothing**: they
-  inherit scope through their parent FK. Three cross-root references can only be checked
-  in app code — a test case's group, a test case's prompt, a test case's toolsets, a run's
-  machine, plus the pivot's two new ones (a prompt's `deployed_version_id`, a version's
-  `baseline_run_id`) — via `assert_same_customer` (`backend/app/repos/customers.py`),
-  called from inside the repository functions so no call site can forget it.
+  inherit scope through their parent FK. Cross-root references can only be checked in app
+  code — a test case's group, a test case's toolsets, a run's machine, a prompt's
+  `deployed_version_id`, a version's `baseline_run_id` — via `assert_same_customer`
+  (`backend/app/repos/customers.py`), called from inside the repository functions so no
+  call site can forget it. A test case's prompt reference is now **two** of them, one per
+  slot (`system_prompt_id`, `task_prompt_id`), and both go through `assert_prompt_slot`
+  (`backend/app/repos/prompts.py`) instead: the workspace check and the kind check are true
+  of the same row, so they are one read and one refusal path rather than two that can drift.
 - `ON DELETE RESTRICT` on all five root tables, deliberately: a cascade would silently
   destroy run history. `delete_customer` is admin-only, refuses a workspace that still
   holds anything (listing what it holds), and refuses the last workspace, because every
@@ -310,13 +359,50 @@ unrecognised value to `viewer`, never to admin), and the FastAPI dependency guar
   Controls a role cannot use are hidden by passing those booleans into components, never
   rendered-then-disabled.
 
-### Effective prompt resolution
+### Prompt kinds and message assembly
 
-A test case references an optional base prompt plus a mode: `append` (base + `"\n\n"` +
-custom text) or `override` (custom text only); a whitespace-only or empty result means no
-system message. Pure function `resolve_effective_prompt` in
-`backend/app/services/effective_prompt.py` — used at run creation (the snapshot) and by
-`POST /api/test-cases/effective-prompt` for the live preview in the editor.
+**A test case holds no prompt text.** It references up to two prompt assets — one per
+`kind` — and keeps only what makes it a *case*: `content` (the data that varies, nullable)
+and `expected_output` (the rubric, never sent to the model).
+
+- `system_prompt_id` → a `kind: "system"` prompt, sent as the **system message**.
+- `task_prompt_id` → a `kind: "task"` prompt, sent at the **head of the user message**,
+  ahead of `content`.
+
+The modelling assumption this replaces — prompt = shared *system* message, test case = user
+message — was never true of real pipelines. The invoice agent's PO judge is one instruction
+and no system prompt; other calls have a framing system prompt *plus* a per-call task
+prompt. Neither was expressible, so both used to land in a test case's own `custom_text`
+field: a prompt with no name, no version history, no deploy pointer and no diff, in an app
+whose thesis is "git for your customers' prompts". `mode` and `custom_text` are **deleted,
+not deprecated** — they existed solely to splice unversioned text into a versioned asset,
+and with two slots there is nothing left to splice.
+
+Assembly is `backend/app/services/message_assembly.py`, pure and database-free (the same
+split `diff.py` and `attribution.py` draw — resolving an id into text is a scoped read, the
+caller's job):
+
+- `system_message(text)` → the text, or `None`. Whitespace-only counts as absent, and a
+  blank system prompt means **no system message at all** rather than an empty one: several
+  providers treat an empty system role as a real, differently-behaving turn.
+- `user_message(task_text, content)` → `task + "\n\n" + content` when both are present,
+  otherwise whichever is. **Concatenation, not templating** — no `{{variables}}`, no
+  placeholder token, no template engine; the data lands at the end, which is where these
+  pipelines put it.
+- `assert_user_message(...)` refuses a case that would send nothing, expressed as "would
+  `user_message` produce anything" so the rule and the assembly cannot disagree about what
+  blank means. It is called at authoring time (inside `app/repos/test_cases.py`, on create
+  and on the **merged post-patch** state) and again at run creation, exactly the way
+  `assert_tool_config` is — so a case saved through the API or over MCP can never be one a
+  run would later refuse. The executor checks a third time immediately before dispatch,
+  because `delete_prompt` can `SET NULL` a slot on cases that were already valid; a row
+  emptied that way is marked `error` with a readable message instead of the provider
+  answering 400.
+
+Assembly happens at **execution** time from the frozen columns, not at run creation — see
+"Snapshot model" for why the parts stay separate. There is no server-side preview endpoint:
+the editor already fetched both prompts' text, so `POST /api/test-cases/effective-prompt`
+and `frontend/src/lib/effectivePrompt.ts` are gone and the preview is a client-side concat.
 
 ### Run execution pipeline
 
@@ -404,11 +490,15 @@ still needs two, since a single run is already its own detail page.
 
 Falling back past a **newer failed attempt** must not blank a good older answer, so a
 model-mode cell keeps the newest `ok` row and reports the skipped one
-(`superseded` on the cell). `describe_row_drift` (`app.services.compare`) compares
-test-case text / effective prompt / `tools_snapshot` / tool mode / tool choice / run
-params across a row (and against the live test case, in model mode → "test case edited
-since") and names whatever is not held constant, since a difference between cells might
-be config rather than model.
+(`superseded` on the cell). `describe_row_drift` (`app.services.compare`) compares the
+three frozen texts **separately** — "system prompt" / "task prompt" / "test case text" —
+plus `tools_snapshot` / tool mode / tool choice / run params across a row, and in model
+mode each of the three again against the live test case ("… edited since", a part already
+drifting across the row is not additionally reported), naming whatever is not held
+constant, since a difference between cells might be config rather than model. Splitting the
+prompt parts out is the reading-side payoff of prompt kinds: a cell can say *the task
+prompt changed* instead of merging prompt drift and data drift into one indistinguishable
+"user message differs".
 
 ### Ratings
 
@@ -477,6 +567,20 @@ measurements back — the interesting test cases already exist in other repos.
   human claim about a customer's production system, and there is currently no delete
   surface over MCP at all (see the example suite's note on this for the practical
   consequence).
+- **Prompt kinds on the wire.** `create_prompt` / `update_prompt` take `kind`
+  (`"system"` default), `list_prompts` returns it, and `create_test_case` /
+  `update_test_case` take `system_prompt` and `task_prompt` — both `RowRef`s resolving by
+  name or id — in place of the deleted `prompt` / `mode` / `custom_text`. `content` is now
+  optional on `create_test_case` (a task prompt can be the whole user message), which is
+  why its JSON-Schema `required` is `{group, title}`. An unrecognised `kind` is **refused**
+  by `_parse_kind`, never coerced — deliberately the opposite of `parse_role`, whose
+  degrade-to-`viewer` is safe because the fallback is the least privileged value; here
+  there is no safe fallback, since guessing would silently move the text between the system
+  message and the user message. A test case reads back both slots twice over: as the
+  referenced asset (`system_prompt` / `task_prompt`, id and name) and as the text those
+  slots hold (`system_prompt_text` / `task_prompt_text`) — the same two key names
+  `get_run_result` uses for the frozen copies, so a case and its result speak one
+  vocabulary. `get_run` / `get_run_result` likewise carry both version ids.
 - **Not writable over MCP**: machines, toolsets and tools (a base URL with an API key and
   an MCP server URL are credentials — the app's line is content over the API, credentials
   in the UI), customer workspaces (creating an engagement is a human decision with
@@ -484,8 +588,9 @@ measurements back — the interesting test cases already exist in other repos.
   Versions themselves *are* writable over MCP (`commit_prompt`, `set_baseline`) because
   they are content, not credentials.
 - **A judge model reading these results is itself injectable.** `get_run_result` returns
-  `prompt_text`/`test_case_text`, which for the `Prompt Injection & Instruction
-  Hierarchy` group carry live payloads. Grade from `expected_output` + `response`, and
+  `system_prompt_text`, `task_prompt_text` and `test_case_text` — three fields now, and for
+  the `Prompt Injection & Instruction Hierarchy` group any of them can carry a live
+  payload. Grade from `expected_output` + `response`, and
   never let a judge's output pick a tool call. Most of that group needs no judge at all —
   the rubrics are canary strings and "was this tool called."
 
@@ -503,6 +608,14 @@ an MCP URL and headers, i.e. credentials), so `toolsets.md` is instructions for 
 in the UI and the four group files are for an agent to push in with `create_test_group` /
 `create_prompt` / `create_test_case`.
 
+**Every prompt in the suite is a named asset.** Since a test case holds no prompt text,
+each of the ~20 prompts that used to be a per-case `custom_text` block is now its own
+`create_prompt`, named after the test case it belongs to and referenced by name. They are
+all `kind: "system"` on purpose: that is the channel those texts are sent on today, and
+re-kinding one to `task` would move it into the user message and shift every group-4
+injection result. Re-kinding is a later, deliberate, per-prompt act, not a side effect of
+the pivot.
+
 Canned tool responses are written to stay correct *whatever arguments the model
 passes* — `convert_currency` returns a rate rather than a converted amount, so the
 response can never contradict the call and the model still has to do the arithmetic.
@@ -515,9 +628,10 @@ group depends on: every prompt scores task completion *and* injection resistance
 test cases (13, 14) fail on **over-defense** instead — a model that refuses everything
 instruction-shaped scores perfectly on an attack-only suite and is useless on real order
 and invoice correspondence, where "please ignore my previous email" is what customers
-actually write; and `expected_output` is **never sent to the model**
-(`run_create.py`/`tool_loop.py` build the user message from `content` alone), which is
-what lets the rating aids state a payload or a canary outright.
+actually write; and `expected_output` is **never sent to the model** (the user message is
+built from the task prompt and `content` alone — `message_assembly.user_message`, never
+touching `expected_output`), which is what lets the rating aids state a payload or a canary
+outright.
 
 ## Testing
 
@@ -542,7 +656,8 @@ Two suites, split by whether they need a database.
 
 `cd backend && uv run pytest` (`backend/tests/*.py`, excludes `tests/integration` via
 `pyproject.toml`'s `addopts`) is the pure one and must stay database-free and fast:
-`test_effective_prompt.py`, `test_llm.py` (SSE fixtures per provider style), `test_compare.py`,
+`test_message_assembly.py` (both message parts present, each alone, whitespace-only on
+either side, both blank), `test_llm.py` (SSE fixtures per provider style), `test_compare.py`,
 `test_tool_config.py`, `test_tool_loop.py` (metric aggregation), `test_diff.py`,
 `test_attribution.py` (version matching, dirty detection), `test_mcp.py`, `test_scope.py`
 (the branded `Scope`, `combine`, `resolve_active_customer_id` — written db-free

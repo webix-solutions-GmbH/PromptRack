@@ -14,6 +14,7 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
+import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useConfirm } from 'primevue/useconfirm'
@@ -21,8 +22,10 @@ import { useToast } from 'primevue/usetoast'
 import {
   promptsApi,
   describeVersionStatus,
+  PROMPT_KINDS,
   type DiffRef,
   type Prompt,
+  type PromptKind,
   type PromptVersion,
 } from '../api/prompts'
 import { ApiError } from '../api/client'
@@ -87,6 +90,38 @@ async function saveDraft() {
     saveError.value = err instanceof ApiError ? err.message : 'Failed to save the draft.'
   } finally {
     savingDraft.value = false
+  }
+}
+
+// --- kind ---------------------------------------------------------------
+
+// The channel this prompt's text goes out on. Changing it is refused by the
+// server (409) while any test case references the prompt, because relocating
+// text between the system and the user message for every case that uses it is
+// exactly the invisible wire-format change the pivot exists to eliminate — so
+// the control is disabled with that reason rather than left to fail on click.
+// It rides on the same PATCH as the draft, but nothing is written when the
+// refusal fires, so an unsaved draft is never lost by trying.
+const kindLocked = computed(() => (prompt.value?.used_by_test_case_count ?? 0) > 0)
+
+const kindHint = computed(
+  () => PROMPT_KINDS.find((option) => option.value === prompt.value?.kind)?.hint ?? '',
+)
+
+const savingKind = ref(false)
+const kindError = ref<string | null>(null)
+
+async function changeKind(kind: PromptKind) {
+  if (prompt.value === null || kind === prompt.value.kind) return
+  kindError.value = null
+  savingKind.value = true
+  try {
+    prompt.value = await promptsApi.updateDraft(promptId.value, { kind })
+    toast.add({ severity: 'success', summary: `Kind set to ${kind}`, life: 2500 })
+  } catch (err) {
+    kindError.value = err instanceof ApiError ? err.message : 'Failed to change the kind.'
+  } finally {
+    savingKind.value = false
   }
 }
 
@@ -266,6 +301,7 @@ async function removePrompt() {
       <div class="page-heading">
         <h1>
           {{ prompt.name }}
+          <Tag :value="prompt.kind" :severity="prompt.kind === 'system' ? 'info' : 'secondary'" />
           <Tag v-if="prompt.dirty" value="dirty" severity="warn" />
         </h1>
         <p class="status-line">{{ describeVersionStatus(prompt) }}</p>
@@ -274,6 +310,30 @@ async function removePrompt() {
           <template v-if="prompt.deployed_by_name">by {{ prompt.deployed_by_name }}</template>
         </p>
       </div>
+
+      <section v-if="auth.canWrite" class="panel">
+        <div class="panel-header">
+          <h2>Kind</h2>
+          <SelectButton
+            :model-value="prompt.kind"
+            :options="PROMPT_KINDS"
+            option-label="label"
+            option-value="value"
+            :allow-empty="false"
+            :disabled="kindLocked || savingKind"
+            @update:model-value="changeKind"
+          />
+        </div>
+        <p class="hint">{{ kindHint }}</p>
+        <p v-if="kindLocked" class="hint">
+          Locked: {{ prompt.used_by_test_case_count }} test case{{
+            prompt.used_by_test_case_count === 1 ? '' : 's'
+          }}
+          reference this prompt. Changing the kind would move its text between the system and the
+          user message for every one of them — detach it from those test cases first.
+        </p>
+        <Message v-if="kindError" severity="error" :closable="false">{{ kindError }}</Message>
+      </section>
 
       <section class="panel">
         <div class="panel-header">

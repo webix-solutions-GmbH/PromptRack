@@ -96,16 +96,26 @@ export interface RunResultView {
   id: number
   run_id: number
   test_case_id: number | null
-  /** The committed version the tested draft matched, if any — attribution,
-   * not selection. Null means the run tested a dirty draft (or no prompt). */
-  prompt_version_id: number | null
+  /** The committed version each slot's draft matched, if any — attribution,
+   * not selection. Null means that slot tested a dirty draft, or is empty.
+   * One per slot: the two prompts are versioned independently. */
+  system_prompt_version_id: number | null
+  task_prompt_version_id: number | null
   sort_order: number
 
   group_name: string
   test_case_title: string
-  test_case_text: string
+  /** The test case's own `content` — the data half of the user message, frozen
+   * on its own. The task prompt is the other half; the executor joins them
+   * (`app.services.message_assembly.user_message`). */
+  test_case_text: string | null
   expected_output: string | null
-  effective_prompt_text: string | null
+  /** The system prompt's draft text, verbatim, as it was at run creation. */
+  system_prompt_text: string | null
+  /** The task prompt's draft text, verbatim. Kept apart from `test_case_text`
+   * so `/results` can say *the task prompt changed* rather than *the user
+   * message changed*. */
+  task_prompt_text: string | null
   tools_snapshot: SnapshotTool[] | null
   tool_mode: ToolMode
   tool_choice: ToolChoice | null

@@ -72,10 +72,12 @@ let abortController: AbortController | null = null
 let autoStarted = false
 
 async function loadVersionLabels(rows: RunResultView[]) {
+  // Both slots at once: a row can be attributed to one committed version in
+  // each, and the two prompts are versioned independently.
   const ids = [
     ...new Set(
       rows
-        .map((row) => row.prompt_version_id)
+        .flatMap((row) => [row.system_prompt_version_id, row.task_prompt_version_id])
         .filter((id): id is number => id !== null),
     ),
   ]
@@ -92,12 +94,15 @@ async function loadVersionLabels(rows: RunResultView[]) {
   versionLabels.value = new Map(entries)
 }
 
-/** `null` for a version-tested result means "draft" (a dirty draft, or a
- * test case with no prompt) — spec §"Attribution surfaced" only names the
- * two states, so this component does not try to distinguish them further. */
-function versionLabelFor(row: RunResultView): string {
-  if (row.prompt_version_id === null) return 'draft'
-  return versionLabels.value.get(row.prompt_version_id) ?? `v#${row.prompt_version_id}`
+/** One slot's badge: `"v4"` when that prompt's draft was byte-identical to a
+ * committed version at run creation, `"dirty"` when it was not, and `null`
+ * when the slot held no prompt at all — the frozen text is the only thing that
+ * can tell an empty slot from an unattributed one, since both carry a null
+ * version id. */
+function slotVersionLabel(text: string | null, versionId: number | null): string | null {
+  if (text === null || text.trim().length === 0) return null
+  if (versionId === null) return 'dirty'
+  return versionLabels.value.get(versionId) ?? `v#${versionId}`
 }
 
 async function load() {
@@ -516,7 +521,12 @@ const totalDuration = computed(() =>
           :result="result"
           :index="index + 1"
           :can-write="auth.canWrite"
-          :version-label="versionLabelFor(result)"
+          :system-version-label="
+            slotVersionLabel(result.system_prompt_text, result.system_prompt_version_id)
+          "
+          :task-version-label="
+            slotVersionLabel(result.task_prompt_text, result.task_prompt_version_id)
+          "
           @rating-change="(patch) => handleRatingChange(result.id, patch)"
         />
       </section>

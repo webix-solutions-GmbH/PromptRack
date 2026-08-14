@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repos.customers import count_customer_content, delete_customer
 from app.repos.machines import create_machine, delete_machine
+from app.repos.prompts import PromptSlotError, create_prompt, delete_prompt
 from app.repos.runs import create_run, scope_for_run
 from app.repos.test_cases import (
     compare_test_case_rows,
@@ -32,6 +33,7 @@ from app.repos.test_cases import (
     create_test_group,
     delete_test_group,
     replace_toolset_links,
+    update_test_case,
 )
 from app.repos.toolsets import create_toolset, delete_toolset, list_mcp_servers
 from app.scope import CrossCustomerError, Scope
@@ -54,6 +56,14 @@ async def _build_workspace(
         scope, session, name=f"{name} box", base_url=f"http://127.0.0.1:9/{name}/v1"
     )
     toolset = await create_toolset(scope, session, name=f"{name} tools", kind="manual")
+    # Byte-identical *names* in both workspaces, like the test case below: a
+    # slot or a join resolved by name rather than by id would cross here.
+    system_prompt = await create_prompt(
+        scope, session, name="Framing", content=f"{name} system draft", kind="system"
+    )
+    task_prompt = await create_prompt(
+        scope, session, name="Instruction", content=f"{name} task draft", kind="task"
+    )
     group = await create_test_group(scope, session, name="General")
     test_case = await create_test_case(
         scope, session, group_id=group.id, title=TEST_CASE_TITLE, content=TEST_CASE_TEXT
@@ -64,6 +74,8 @@ async def _build_workspace(
         "scope": scope,
         "machine_id": machine.id,
         "toolset_id": toolset.id,
+        "system_prompt_id": system_prompt.id,
+        "task_prompt_id": task_prompt.id,
         "group_id": group.id,
         "test_case_id": test_case.id,
     }
@@ -90,6 +102,91 @@ async def test_refuses_a_test_case_pointed_at_another_workspaces_group(
 
     with pytest.raises(CrossCustomerError):
         await create_test_case(a["scope"], session, group_id=b["group_id"], title="x", content="y")
+
+
+async def test_refuses_a_test_case_pointed_at_another_workspaces_prompt(
+    session: AsyncSession, create_workspace: CreateWorkspace
+):
+    """Both slots, both directions.
+
+    `assert_prompt_slot` answers with the *same* refusal a missing row gets
+    (`CrossCustomerError`, "no longer exists in this workspace") rather than
+    the wrong-kind one — as far as this workspace is concerned that prompt does
+    not exist, and saying anything else would leak that it does.
+    """
+    a = await _build_workspace(session, create_workspace, "A")
+    b = await _build_workspace(session, create_workspace, "B")
+
+    with pytest.raises(CrossCustomerError):
+        await create_test_case(
+            a["scope"],
+            session,
+            group_id=a["group_id"],
+            title="x",
+            content="y",
+            system_prompt_id=b["system_prompt_id"],
+        )
+
+    with pytest.raises(CrossCustomerError):
+        await create_test_case(
+            a["scope"],
+            session,
+            group_id=a["group_id"],
+            title="x",
+            content="y",
+            task_prompt_id=b["task_prompt_id"],
+        )
+
+
+async def test_a_wrong_kind_prompt_is_a_different_refusal_from_a_foreign_one(
+    session: AsyncSession, create_workspace: CreateWorkspace
+):
+    # Inside one workspace the row really is there, so the refusal says so —
+    # which is what makes the two exception types worth keeping apart.
+    a = await _build_workspace(session, create_workspace, "A")
+
+    with pytest.raises(PromptSlotError):
+        await create_test_case(
+            a["scope"],
+            session,
+            group_id=a["group_id"],
+            title="x",
+            content="y",
+            system_prompt_id=a["task_prompt_id"],
+        )
+
+
+async def test_model_mode_rows_never_carry_another_workspaces_prompt_draft(
+    session: AsyncSession, create_workspace: CreateWorkspace
+):
+    """`compare_test_case_rows` joins each slot's live draft for the "edited
+    since" comparison, and both joins are scoped through the same group.
+
+    Byte-identical prompt names in both workspaces is the shape that would
+    expose a join written on name rather than on id.
+    """
+    a = await _build_workspace(session, create_workspace, "A")
+    b = await _build_workspace(session, create_workspace, "B")
+
+    for workspace in (a, b):
+        await update_test_case(
+            workspace["scope"],
+            session,
+            workspace["test_case_id"],
+            {
+                "system_prompt_id": workspace["system_prompt_id"],
+                "task_prompt_id": workspace["task_prompt_id"],
+            },
+        )
+    session.expire_all()
+
+    [row_a] = await compare_test_case_rows(a["scope"], session)
+    assert row_a.system_prompt_text == "A system draft"
+    assert row_a.task_prompt_text == "A task draft"
+
+    [row_b] = await compare_test_case_rows(b["scope"], session)
+    assert row_b.system_prompt_text == "B system draft"
+    assert row_b.task_prompt_text == "B task draft"
 
 
 async def test_refuses_a_run_pointed_at_another_workspaces_machine(
@@ -165,7 +262,10 @@ async def test_delete_guard_the_restrict_constraint_it_will_sit_in_front_of(
     assert counts.machines == 1
     assert counts.toolsets == 1
     assert counts.test_groups == 1
-    assert counts.total == 3
+    # One prompt per kind — both are root rows this workspace holds, and the
+    # future refusal message has to name them.
+    assert counts.prompts == 2
+    assert counts.total == 5
 
     with pytest.raises(IntegrityError):
         # A SAVEPOINT so the expected failure rolls back only itself, not the
@@ -174,13 +274,16 @@ async def test_delete_guard_the_restrict_constraint_it_will_sit_in_front_of(
             await delete_customer(session, a["customer_id"])
 
     still_there = await count_customer_content(session, a["customer_id"])
-    assert still_there.total == 3
+    assert still_there.total == 5
 
     # Emptying it in FK order lets the delete through — `delete_test_group`
-    # cascades the test case and its toolset link.
+    # cascades the test case and its toolset link, and `delete_prompt`
+    # cascades each prompt's version history.
     await delete_machine(a["scope"], session, a["machine_id"])
     await delete_toolset(a["scope"], session, a["toolset_id"])
     await delete_test_group(a["scope"], session, a["group_id"])
+    await delete_prompt(a["scope"], session, a["system_prompt_id"])
+    await delete_prompt(a["scope"], session, a["task_prompt_id"])
 
     emptied = await count_customer_content(session, a["customer_id"])
     assert emptied.total == 0

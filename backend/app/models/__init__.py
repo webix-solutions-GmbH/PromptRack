@@ -9,7 +9,7 @@ from app.models.auth import ApiToken, Session, User, UserRole
 from app.models.base import Base
 from app.models.customers import Customer
 from app.models.machines import Machine, MachineModel, MachineModelSource
-from app.models.prompts import Prompt, PromptVersion
+from app.models.prompts import Prompt, PromptKind, PromptVersion
 from app.models.runs import (
     Rating,
     ResultStatus,
@@ -18,7 +18,7 @@ from app.models.runs import (
     RunStatus,
     StoppedReason,
 )
-from app.models.test_cases import PromptMode, TestCase, TestCaseToolset, TestGroup
+from app.models.test_cases import TestCase, TestCaseToolset, TestGroup
 from app.models.toolsets import (
     Tool,
     ToolChoice,
@@ -36,7 +36,7 @@ __all__ = [
     "MachineModel",
     "MachineModelSource",
     "Prompt",
-    "PromptMode",
+    "PromptKind",
     "PromptVersion",
     "Rating",
     "ResultStatus",

@@ -21,6 +21,8 @@ from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.main import app
 from app.repos.machines import create_machine
+from app.repos.prompt_versions import commit_version
+from app.repos.prompts import create_prompt, delete_prompt
 from app.repos.runs import list_run_results
 from app.repos.test_cases import create_test_case, create_test_group
 from app.scope import Scope
@@ -141,6 +143,64 @@ class TestRunCrud:
         assert [r["test_case_title"] for r in results] == ["First", "Second"]
         assert [r["status"] for r in results] == ["pending", "pending"]
         assert results[0]["test_case_text"] == "Say First."
+        # No prompts referenced: the two prompt slots read as empty rather
+        # than absent from the payload.
+        assert results[0]["system_prompt_text"] is None
+        assert results[0]["task_prompt_text"] is None
+        assert results[0]["system_prompt_version_id"] is None
+        assert results[0]["task_prompt_version_id"] is None
+
+    async def test_a_result_row_reports_all_three_frozen_texts(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """The `RunResultView` half of the contract seam with `runs.ts`.
+
+        The detail view renders the system prompt and the task prompt as two
+        separate labelled blocks with their own version badges, so all four
+        fields have to survive the wire — asserted here rather than inferred
+        from a rendered string.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        machine = await create_machine(scope, session, name="Box", base_url=DEAD_ENDPOINT)
+        group = await create_test_group(scope, session, name="Group")
+        system_prompt = await create_prompt(
+            scope, session, name="framing", content="You are terse.", kind="system"
+        )
+        system_version = await commit_version(scope, session, system_prompt.id, message="s1")
+        task_prompt = await create_prompt(
+            scope, session, name="instruction", content="Extract the PO.", kind="task"
+        )
+        await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="First",
+            content="Invoice 4711",
+            system_prompt_id=system_prompt.id,
+            task_prompt_id=task_prompt.id,
+        )
+        await session.commit()
+        created = await create_run_record(
+            scope,
+            session,
+            machine_id=machine.id,
+            model_id="test-model",
+            group_ids=[group.id],
+            probe=_no_probe,
+        )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        detail = await client.get(f"/api/runs/{created.run_id}")
+        assert detail.status_code == 200, detail.text
+        [result] = detail.json()["results"]
+        assert result["system_prompt_text"] == "You are terse."
+        assert result["task_prompt_text"] == "Extract the PO."
+        assert result["test_case_text"] == "Invoice 4711"
+        assert result["system_prompt_version_id"] == system_version.id
+        # Never committed, so the badge reads "dirty" rather than a version.
+        assert result["task_prompt_version_id"] is None
 
     async def test_creating_a_run_with_no_groups_is_refused(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
@@ -155,6 +215,42 @@ class TestRunCrud:
             json={"machine_id": machine_id, "model_id": "m", "group_ids": []},
         )
         assert refused.status_code == 422, refused.text
+
+    async def test_a_case_with_no_user_message_is_refused_as_a_400(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """The guard's sentence has to survive the HTTP seam.
+
+        A case whose task prompt *was* its user message loses it when that
+        prompt is deleted (`SET NULL`). Run creation refuses — and the refusal
+        names the case to fix, so it must arrive as a 400 in the `message`
+        envelope rather than as an unhandled 500.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        machine = await create_machine(scope, session, name="Box", base_url=DEAD_ENDPOINT)
+        group = await create_test_group(scope, session, name="Group")
+        task_prompt = await create_prompt(
+            scope, session, name="instruction", content="Extract the PO.", kind="task"
+        )
+        await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="Task only",
+            task_prompt_id=task_prompt.id,
+        )
+        await session.commit()
+        await delete_prompt(scope, session, task_prompt.id)
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        refused = await client.post(
+            "/api/runs",
+            json={"machine_id": machine.id, "model_id": "m", "group_ids": [group.id]},
+        )
+        assert refused.status_code == 400, refused.text
+        assert 'Test case "Task only"' in refused.json()["message"]
 
     async def test_a_viewer_cannot_create_a_run(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace

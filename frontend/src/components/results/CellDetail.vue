@@ -9,7 +9,7 @@
 // (`app/services/compare.py` never freights the full transcript into a cell),
 // so "transcript" here is the same turn/tool-call summary the old compare
 // page showed, not a message-by-message replay.
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import Dialog from 'primevue/dialog'
 import Tag from 'primevue/tag'
@@ -17,6 +17,7 @@ import RatingButtons from '../runs/RatingButtons.vue'
 import { formatDateTime, formatDuration, formatRate } from '../../lib/format'
 import { splitThinking } from '../../lib/thinking'
 import type { Rating } from '../../lib/rating'
+import { promptsApi } from '../../api/prompts'
 import type { CompareCellView } from '../../api/results'
 
 const props = defineProps<{
@@ -57,6 +58,66 @@ const readonly = computed(
     props.cell.status === 'pending' ||
     props.cell.status === 'running',
 )
+
+// --- version attribution per slot ---------------------------------------
+
+// The matrix ships version *ids*, not numbers — resolving every id in a whole
+// matrix up front would be one request per distinct version for cells nobody
+// opens, so the two ids of the cell actually on screen are fetched when the
+// dialog opens. A failed lookup degrades to `v#<id>`, never to a blank badge.
+const versionNumbers = ref<Map<number, number>>(new Map())
+
+watch(
+  () => [props.visible, props.cell?.id] as const,
+  async ([visible]) => {
+    const cell = props.cell
+    if (!visible || cell === null) return
+    const ids = [cell.system_prompt_version_id, cell.task_prompt_version_id].filter(
+      (id): id is number => id !== null && !versionNumbers.value.has(id),
+    )
+    if (ids.length === 0) return
+    const resolved = await Promise.all(
+      ids.map(async (id): Promise<[number, number] | null> => {
+        try {
+          return [id, (await promptsApi.getVersion(id)).version]
+        } catch {
+          return null
+        }
+      }),
+    )
+    const next = new Map(versionNumbers.value)
+    for (const entry of resolved) if (entry !== null) next.set(entry[0], entry[1])
+    versionNumbers.value = next
+  },
+  { immediate: true },
+)
+
+/** `"v4"` / `"dirty"` / `null` (empty slot) — the same three states run detail
+ * shows, told apart by the frozen text since both of the latter two carry a
+ * null version id. */
+function slotVersionLabel(text: string | null, versionId: number | null): string | null {
+  if (text === null || text.trim().length === 0) return null
+  if (versionId === null) return 'dirty'
+  const version = versionNumbers.value.get(versionId)
+  return version === undefined ? `v#${versionId}` : `v${version}`
+}
+
+const systemVersionLabel = computed(() =>
+  props.cell === null
+    ? null
+    : slotVersionLabel(props.cell.system_prompt_text, props.cell.system_prompt_version_id),
+)
+const taskVersionLabel = computed(() =>
+  props.cell === null
+    ? null
+    : slotVersionLabel(props.cell.task_prompt_text, props.cell.task_prompt_version_id),
+)
+
+/** Drift entries split by voice: "<part> edited since" is about this row
+ * against the live test case, everything else is about the cells against each
+ * other, and merging them into one sentence made both harder to read. */
+const editedSince = computed(() => props.drift.filter((entry) => entry.endsWith('edited since')))
+const differsAcross = computed(() => props.drift.filter((entry) => !entry.endsWith('edited since')))
 </script>
 
 <template>
@@ -75,7 +136,8 @@ const readonly = computed(
       </div>
 
       <p v-if="drift.length > 0" class="drift-note">
-        {{ drift.length === 1 && drift[0] === 'test case edited since' ? drift[0] : `differs across cells: ${drift.join(', ')}` }}
+        <span v-if="differsAcross.length > 0">differs across cells: {{ differsAcross.join(', ') }}</span>
+        <span v-if="editedSince.length > 0">{{ editedSince.join(', ') }}</span>
       </p>
 
       <RatingButtons
@@ -86,16 +148,31 @@ const readonly = computed(
         @change="(patch) => emit('ratingChange', patch)"
       />
 
+      <!--
+        The three frozen texts apart, never the assembled messages: keeping them
+        separate is what lets a drift note say *the task prompt changed* rather
+        than *the user message changed*.
+      -->
       <details class="prompt-details">
-        <summary>Test case &amp; effective prompt</summary>
+        <summary>Prompts &amp; test case</summary>
         <div class="prompt-body">
           <div class="field">
-            <span class="field-label">User message</span>
-            <pre class="pre">{{ cell.test_case_text }}</pre>
+            <span class="field-label">
+              System prompt
+              <Tag v-if="systemVersionLabel" severity="secondary" :value="systemVersionLabel" />
+            </span>
+            <pre class="pre">{{ cell.system_prompt_text ?? '(no system message)' }}</pre>
           </div>
           <div class="field">
-            <span class="field-label">Effective system prompt</span>
-            <pre class="pre">{{ cell.effective_prompt_text ?? '(no system message)' }}</pre>
+            <span class="field-label">
+              Task prompt
+              <Tag v-if="taskVersionLabel" severity="secondary" :value="taskVersionLabel" />
+            </span>
+            <pre class="pre">{{ cell.task_prompt_text ?? '(none)' }}</pre>
+          </div>
+          <div class="field">
+            <span class="field-label">Content</span>
+            <pre class="pre">{{ cell.test_case_text ?? '(none)' }}</pre>
           </div>
         </div>
       </details>
@@ -172,6 +249,9 @@ const readonly = computed(
 }
 
 .drift-note {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
   margin: 0;
   padding: 0.5rem 0.625rem;
   border: 1px solid var(--p-yellow-300, var(--p-yellow-500));
@@ -203,6 +283,9 @@ const readonly = computed(
 }
 
 .field-label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
   font-size: 0.75rem;
   font-weight: 500;
   color: var(--p-text-muted-color);

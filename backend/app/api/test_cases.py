@@ -1,20 +1,27 @@
 """`/api/test-cases` — the regression suite: one input, its rubric, and the
 tool configuration to run it with.
 
+A test case holds no prompt text of its own. It references up to two prompt
+assets by slot — `system_prompt_id` (sent as the system message) and
+`task_prompt_id` (sent at the head of the user message) — plus its own
+`content`, the data half of the user message. Both slots are checked by
+`app.repos.prompts.assert_prompt_slot` from inside the repository functions:
+same workspace **and** matching `kind`, in one read.
+
 Test cases hold no credentials, so — like prompts and test groups — mutation
 sits at `Writer` and reads at `CurrentUser`. `assert_tool_config`
 (`app.services.tool_config`) runs on every create and on any patch that
 touches `tool_mode` or `toolset_ids`, re-checked against the *effective*
 configuration (existing values merged with the patch) exactly the way the old
 MCP `update_prompt` re-checked after a patch — so a test case saved through
-this API can never be one run creation (Task 4.3, which shares the same
+this API can never be one run creation (which shares the same
 `assert_tool_config`) would later refuse.
 
-`POST /effective-prompt` is a stateless preview: given a prompt id, a mode and
-some custom text, it returns what a test case would actually send as its
-system message. It needs no test case to exist yet — the editor calls it on
-every keystroke while a case is still being drafted — and is `CurrentUser`,
-not `Writer`, since it writes nothing.
+The second shared guard works the same way:
+`app.services.message_assembly.assert_user_message` refuses a case with
+neither a task prompt nor non-blank `content`, because that request has no
+user message at all. It lives inside the repository functions too, evaluated
+on the *merged* post-patch state, and runs again at run creation.
 """
 
 from collections.abc import Sequence
@@ -25,8 +32,8 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.guards import CurrentScope, CurrentUser, DbSession, Writer
-from app.models import PromptMode, TestCase, ToolChoice, ToolMode
-from app.repos.prompts import get_prompt, list_prompts_by_ids
+from app.models import TestCase, ToolChoice, ToolMode
+from app.repos.prompts import PromptSlotError, list_prompts_by_ids
 from app.repos.test_cases import (
     create_test_case,
     delete_test_case,
@@ -37,7 +44,7 @@ from app.repos.test_cases import (
     update_test_case,
 )
 from app.scope import CrossCustomerError, Scope
-from app.services.effective_prompt import resolve_effective_prompt
+from app.services.message_assembly import NoUserMessageError
 from app.services.tool_config import (
     DEFAULT_MAX_TURNS,
     ToolConfigError,
@@ -57,15 +64,18 @@ class TestCaseView(BaseModel):
     id: int
     group_id: int
     title: str
-    content: str
+    #: The data half of the user message. Nullable: a task prompt can be the
+    #: whole user message on its own ("this prompt takes no input").
+    content: str | None
     expected_output: str | None
-    prompt_id: int | None
+    system_prompt_id: int | None
     #: The referenced prompt's current name, resolved server-side so the list
-    #: never renders a bare id. `None` when `prompt_id` is `None`, or when
-    #: that prompt has since been deleted (`SET NULL`).
-    prompt_name: str | None
-    mode: PromptMode
-    custom_text: str | None
+    #: never renders a bare id. `None` when the slot is empty, or when that
+    #: prompt has since been deleted (`SET NULL`).
+    system_prompt_name: str | None
+    task_prompt_id: int | None
+    #: Same as `system_prompt_name`, for the task slot.
+    task_prompt_name: str | None
     tool_mode: ToolMode
     tool_choice: ToolChoice | None
     max_turns: int
@@ -76,20 +86,25 @@ class TestCaseView(BaseModel):
 
 
 class TestCaseWriteRequest(BaseModel):
+    """`content` is optional here, but not free: the server refuses a case
+    where **both** `task_prompt_id` and `content` resolve to blank, since that
+    request would carry no user message at all. Only the title is required
+    unconditionally.
+    """
+
     group_id: int
     title: str = Field(min_length=1)
-    content: str = Field(min_length=1)
+    content: str | None = None
     expected_output: str | None = None
-    prompt_id: int | None = None
-    mode: PromptMode = "append"
-    custom_text: str | None = None
+    system_prompt_id: int | None = None
+    task_prompt_id: int | None = None
     tool_mode: ToolMode = "none"
     tool_choice: ToolChoice | None = None
     max_turns: int = DEFAULT_MAX_TURNS
     toolset_ids: list[int] = Field(default_factory=list)
     sort_order: int = 0
 
-    @field_validator("title", "content")
+    @field_validator("title")
     @classmethod
     def _not_blank(cls, value: str) -> str:
         cleaned = value.strip()
@@ -97,7 +112,7 @@ class TestCaseWriteRequest(BaseModel):
             raise ValueError("This field is required.")
         return cleaned
 
-    @field_validator("expected_output", "custom_text")
+    @field_validator("content", "expected_output")
     @classmethod
     def _blank_to_none(cls, value: str | None) -> str | None:
         if value is None:
@@ -131,16 +146,15 @@ class TestCasePatchRequest(BaseModel):
     title: str | None = None
     content: str | None = None
     expected_output: str | None = None
-    prompt_id: int | None = None
-    mode: PromptMode | None = None
-    custom_text: str | None = None
+    system_prompt_id: int | None = None
+    task_prompt_id: int | None = None
     tool_mode: ToolMode | None = None
     tool_choice: ToolChoice | None = None
     max_turns: int | None = None
     toolset_ids: list[int] | None = None
     sort_order: int | None = None
 
-    @field_validator("title", "content")
+    @field_validator("title")
     @classmethod
     def _not_blank_if_present(cls, value: str | None) -> str | None:
         if value is None:
@@ -150,7 +164,11 @@ class TestCasePatchRequest(BaseModel):
             raise ValueError("This field cannot be blank.")
         return cleaned
 
-    @field_validator("expected_output", "custom_text")
+    #: Blank `content` is legal now — a task prompt may supply the whole user
+    #: message — so a present-but-empty value clears the column rather than
+    #: being refused. `assert_user_message` is what catches the case where
+    #: clearing it leaves nothing to send.
+    @field_validator("content", "expected_output")
     @classmethod
     def _blank_to_none(cls, value: str | None) -> str | None:
         if value is None:
@@ -175,32 +193,27 @@ class TestCasePatchRequest(BaseModel):
         return deduped
 
 
-class EffectivePromptRequest(BaseModel):
-    prompt_id: int | None = None
-    mode: PromptMode = "append"
-    custom_text: str | None = None
-
-
-class EffectivePromptView(BaseModel):
-    content: str | None
-
-
 # --------------------------------------------------------------------------
 # View builders / lookups
 # --------------------------------------------------------------------------
 
 
-def _view(test_case: TestCase, toolset_ids: list[int], prompt_name: str | None) -> TestCaseView:
+def _view(
+    test_case: TestCase,
+    toolset_ids: list[int],
+    system_prompt_name: str | None,
+    task_prompt_name: str | None,
+) -> TestCaseView:
     return TestCaseView(
         id=test_case.id,
         group_id=test_case.group_id,
         title=test_case.title,
         content=test_case.content,
         expected_output=test_case.expected_output,
-        prompt_id=test_case.prompt_id,
-        prompt_name=prompt_name,
-        mode=test_case.mode,
-        custom_text=test_case.custom_text,
+        system_prompt_id=test_case.system_prompt_id,
+        system_prompt_name=system_prompt_name,
+        task_prompt_id=test_case.task_prompt_id,
+        task_prompt_name=task_prompt_name,
         tool_mode=test_case.tool_mode,
         tool_choice=test_case.tool_choice,
         max_turns=test_case.max_turns,
@@ -231,13 +244,18 @@ async def _toolset_ids_by_case(
 async def _prompt_names_by_case(
     scope: Scope, session: AsyncSession, test_cases: Sequence[TestCase]
 ) -> dict[int, str]:
-    """The referenced prompt's current name for a batch of test cases, keyed
-    by prompt id — one query for a whole list rather than one per row. A
-    `test_case.prompt_id` absent from this dict (including `None` itself)
-    means "no name to show": no prompt, or the prompt was deleted since
-    (`SET NULL`).
+    """The referenced prompts' current names for a batch of test cases, keyed
+    by prompt **id** — both slots collected into one query for a whole list
+    rather than one per row and per slot. A slot id absent from this dict
+    (including `None` itself) means "no name to show": an empty slot, or a
+    prompt deleted since (`SET NULL`).
     """
-    prompt_ids = {tc.prompt_id for tc in test_cases if tc.prompt_id is not None}
+    prompt_ids = {
+        prompt_id
+        for tc in test_cases
+        for prompt_id in (tc.system_prompt_id, tc.task_prompt_id)
+        if prompt_id is not None
+    }
     if not prompt_ids:
         return {}
     prompts = await list_prompts_by_ids(scope, session, list(prompt_ids))
@@ -250,27 +268,11 @@ async def _view_by_id(scope: Scope, session: AsyncSession, test_case_id: int) ->
         test_case_id, []
     )
     prompt_names = await _prompt_names_by_case(scope, session, [test_case])
-    return _view(test_case, toolset_ids, prompt_names.get(test_case.prompt_id))
-
-
-# --------------------------------------------------------------------------
-# Effective system prompt preview
-# --------------------------------------------------------------------------
-
-
-@router.post("/effective-prompt")
-async def effective_prompt_endpoint(
-    body: EffectivePromptRequest, actor: CurrentUser, scope: CurrentScope, session: DbSession
-) -> EffectivePromptView:
-    del actor
-    base_content: str | None = None
-    if body.prompt_id is not None:
-        prompt = await get_prompt(scope, session, body.prompt_id)
-        if prompt is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such prompt.")
-        base_content = prompt.content
-    return EffectivePromptView(
-        content=resolve_effective_prompt(base_content, body.mode, body.custom_text)
+    return _view(
+        test_case,
+        toolset_ids,
+        prompt_names.get(test_case.system_prompt_id),
+        prompt_names.get(test_case.task_prompt_id),
     )
 
 
@@ -291,7 +293,13 @@ async def list_test_cases_endpoint(
     toolset_ids = await _toolset_ids_by_case(scope, session, [tc.id for tc in test_cases])
     prompt_names = await _prompt_names_by_case(scope, session, test_cases)
     return [
-        _view(tc, toolset_ids.get(tc.id, []), prompt_names.get(tc.prompt_id)) for tc in test_cases
+        _view(
+            tc,
+            toolset_ids.get(tc.id, []),
+            prompt_names.get(tc.system_prompt_id),
+            prompt_names.get(tc.task_prompt_id),
+        )
+        for tc in test_cases
     ]
 
 
@@ -323,9 +331,8 @@ async def create_test_case_endpoint(
             title=body.title,
             content=body.content,
             expected_output=body.expected_output,
-            prompt_id=body.prompt_id,
-            mode=body.mode,
-            custom_text=body.custom_text,
+            system_prompt_id=body.system_prompt_id,
+            task_prompt_id=body.task_prompt_id,
             tool_mode=body.tool_mode,
             tool_choice=body.tool_choice,
             max_turns=body.max_turns,
@@ -333,13 +340,22 @@ async def create_test_case_endpoint(
         )
         await replace_toolset_links(scope, session, test_case.id, body.toolset_ids)
     except CrossCustomerError as exc:
+        # A prompt (or group, or toolset) that is not in this workspace reads
+        # as "no such row" — a 404, not a hint that it exists elsewhere.
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except ToolConfigError as exc:
+    except (ToolConfigError, PromptSlotError, NoUserMessageError) as exc:
+        # A wrong-kind prompt and a case with no user message are both bad
+        # requests about rows that do exist here.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     await session.commit()
     prompt_names = await _prompt_names_by_case(scope, session, [test_case])
-    return _view(test_case, body.toolset_ids, prompt_names.get(test_case.prompt_id))
+    return _view(
+        test_case,
+        body.toolset_ids,
+        prompt_names.get(test_case.system_prompt_id),
+        prompt_names.get(test_case.task_prompt_id),
+    )
 
 
 @router.patch("/{test_case_id}")
@@ -359,9 +375,8 @@ async def patch_test_case_endpoint(
         "title",
         "content",
         "expected_output",
-        "prompt_id",
-        "mode",
-        "custom_text",
+        "system_prompt_id",
+        "task_prompt_id",
         "tool_mode",
         "tool_choice",
         "max_turns",
@@ -394,7 +409,11 @@ async def patch_test_case_endpoint(
             await replace_toolset_links(scope, session, test_case_id, body.toolset_ids)
     except CrossCustomerError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except ToolConfigError as exc:
+    except (ToolConfigError, PromptSlotError, NoUserMessageError) as exc:
+        # `update_test_case` evaluates the user-message guard on the *merged*
+        # post-patch row, so a patch that only clears `content` on a case with
+        # no task prompt is refused here rather than surviving as a case run
+        # creation would later reject.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     await session.commit()

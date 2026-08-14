@@ -4,12 +4,21 @@ Ported from `git show master:src/lib/run-create.ts` with the pivot's renames
 (prompt group -> test group, prompt -> test case, system prompt -> prompt) and
 one addition: version **attribution**.
 
-The **snapshot invariant** lives here — freeze the test case's text, the
-resolved effective prompt and the tool definitions into `run_results` at
-creation time — so the new-run endpoint and the MCP `create_run` tool cannot
-drift apart: one parses a request body, the other JSON-RPC arguments, and both
-end up in this one function. Editing or deleting a test case, a prompt or a
-toolset afterwards can therefore never rewrite history.
+The **snapshot invariant** lives here — freeze the **three texts** (the system
+prompt's draft, the task prompt's draft, the test case's own content), the
+**two version ids** attributing them, and the tool definitions into
+`run_results` at creation time — so the new-run endpoint and the MCP
+`create_run` tool cannot drift apart: one parses a request body, the other
+JSON-RPC arguments, and both end up in this one function. Editing or deleting a
+test case, a prompt or a toolset afterwards can therefore never rewrite history.
+
+The three texts are frozen *separately* and assembly is deliberately deferred
+to execution (`app.services.message_assembly`, called from the executor). Two
+things fall out of that. Drift reporting can say "the task prompt changed"
+rather than "the user message changed"; and each text frozen here is byte-for-
+byte what goes on the wire, so `match_version` compares against the sent text
+instead of a derived one — which is what makes the attribution below exact
+rather than a plausible guess.
 
 The line between frozen and live is **content vs. credentials**: text, tool
 definitions and a manual tool's canned response travel with the run; a
@@ -51,8 +60,8 @@ from app.repos.test_cases import (
 )
 from app.scope import Scope
 from app.services.attribution import VersionRef, match_version
-from app.services.effective_prompt import resolve_effective_prompt
 from app.services.llm_info import LlmInfo, probe_llm_info, serialize_llm_info
+from app.services.message_assembly import assert_user_message
 from app.services.tool_config import assert_tool_config
 from app.services.tool_loop import SnapshotTool, ToolDefinition, serialize_tools_snapshot
 
@@ -65,10 +74,11 @@ LlmInfoProbe = Callable[[str, str | None, str], Awaitable[LlmInfo | None]]
 class RunCreateError(Exception):
     """A run that cannot be created, with the sentence a caller can show.
 
-    Tool-configuration problems raise `app.services.tool_config.ToolConfigError`
-    and a reference into another workspace raises
-    `app.scope.CrossCustomerError` — both are refusals in their own right, and
-    the distinction is worth keeping at the API boundary.
+    Tool-configuration problems raise `app.services.tool_config.ToolConfigError`,
+    a case with no user message raises
+    `app.services.message_assembly.NoUserMessageError`, and a reference into
+    another workspace raises `app.scope.CrossCustomerError` — each is a refusal
+    in its own right, and the distinction is worth keeping at the API boundary.
     """
 
 
@@ -114,6 +124,7 @@ async def create_run_record(
 
     prompts_by_id, version_refs = await _resolve_prompts(scope, session, cases)
     tool_snapshots = await _resolve_tool_snapshots(scope, session, cases)
+    _assert_user_messages(cases, prompts_by_id)
     await _assert_tool_config(scope, session, cases)
 
     # Ask the endpoint about itself (server software, model metadata) and
@@ -175,16 +186,56 @@ async def _resolve_prompts(
 ) -> tuple[dict[int, Prompt], dict[int, list[VersionRef]]]:
     """The prompt assets these test cases reference, plus their committed text.
 
+    Both slots at once: the ids are collected from ``system_prompt_id`` and
+    ``task_prompt_id`` into one deduplicated list, so this stays one
+    ``list_prompts_by_ids`` and one ``list_version_refs`` however many slots a
+    suite fills. Keying the results by prompt id serves both slots without any
+    per-slot bookkeeping — and a prompt can never occupy both slots of one case,
+    because a prompt has exactly one kind and
+    :func:`~app.repos.prompts.assert_prompt_slot` enforces it, so no
+    disambiguation is needed here.
+
     Only the prompts actually referenced are read, and only the three columns
     the attribution comparison needs — a suite's whole version history would
     otherwise be pulled through for one equality check per row.
     """
     prompt_ids = list(
-        dict.fromkeys(case.prompt_id for case in cases if case.prompt_id is not None)
+        dict.fromkeys(
+            prompt_id
+            for case in cases
+            for prompt_id in (case.system_prompt_id, case.task_prompt_id)
+            if prompt_id is not None
+        )
     )
     prompts = await list_prompts_by_ids(scope, session, prompt_ids)
     refs = await list_version_refs(scope, session, prompt_ids)
     return {prompt.id: prompt for prompt in prompts}, refs
+
+
+def _assert_user_messages(
+    cases: Sequence[TestCase], prompts_by_id: Mapping[int, Prompt]
+) -> None:
+    """Refuses, before anything is written, a case that would send no user
+    message at all.
+
+    The authoring-time guard already ran when the case was saved, but a prompt
+    deleted since then ``SET NULL``s the slot on every case that referenced it,
+    which can leave a case with neither a task prompt nor content. This is the
+    only thing standing between that deletion and an empty user message reaching
+    the provider, so it is the same shared function checked again here — exactly
+    the way ``assert_tool_config`` is — and the refusal names the case.
+    """
+    for case in cases:
+        task_prompt = (
+            prompts_by_id.get(case.task_prompt_id)
+            if case.task_prompt_id is not None
+            else None
+        )
+        assert_user_message(
+            None if task_prompt is None else task_prompt.content,
+            case.content,
+            subject=f'Test case "{case.title}"',
+        )
 
 
 async def _resolve_tool_snapshots(
@@ -309,38 +360,50 @@ def _result_rows(
     version_refs: Mapping[int, list[VersionRef]],
     tool_snapshots: Mapping[int, list[SnapshotTool]],
 ) -> list[dict[str, Any]]:
-    """One frozen row per test case, in execution order (group by group)."""
+    """One frozen row per test case, in execution order (group by group).
+
+    Each slot freezes its prompt's draft **verbatim** and attributes it against
+    that prompt's own version list. Nothing is derived, so a version id here can
+    only ever name text that was really sent — the misattribution the old
+    `mode`/`custom_text` splice produced is gone by construction, not by a
+    correction.
+    """
     rows: list[dict[str, Any]] = []
     sort_order = 0
 
+    def slot(prompt_id: int | None) -> tuple[str | None, int | None]:
+        """One slot's frozen text and its attribution, or `(None, None)`."""
+        prompt = prompts_by_id.get(prompt_id) if prompt_id is not None else None
+        if prompt is None:
+            return None, None
+        # Attribution, not selection: a run always tests the current draft, and
+        # this records which commit that draft happened to be. Null = a dirty
+        # draft. The two slots are independent — one being dirty must not cost
+        # the other its attribution.
+        return prompt.content, match_version(
+            prompt.content, version_refs.get(prompt.id, [])
+        )
+
     for group in groups:
         for case in (case for case in cases if case.group_id == group.id):
-            prompt = (
-                prompts_by_id.get(case.prompt_id) if case.prompt_id is not None else None
-            )
+            system_prompt_text, system_prompt_version_id = slot(case.system_prompt_id)
+            task_prompt_text, task_prompt_version_id = slot(case.task_prompt_id)
             snapshot = [] if case.tool_mode == "none" else tool_snapshots.get(case.id, [])
 
             rows.append(
                 {
                     "test_case_id": case.id,
-                    # Attribution, not selection: a run always tests the current
-                    # draft, and this records which commit that draft happened
-                    # to be. Null = a dirty draft, or no prompt at all.
-                    "prompt_version_id": (
-                        None
-                        if prompt is None
-                        else match_version(prompt.content, version_refs.get(prompt.id, []))
-                    ),
+                    "system_prompt_version_id": system_prompt_version_id,
+                    "task_prompt_version_id": task_prompt_version_id,
                     "sort_order": sort_order,
                     "group_name": group.name,
                     "test_case_title": case.title,
+                    # The data half of the user message only; the task prompt's
+                    # half is the column beside it, and the executor joins them.
                     "test_case_text": case.content,
                     "expected_output": case.expected_output,
-                    "effective_prompt_text": resolve_effective_prompt(
-                        None if prompt is None else prompt.content,
-                        case.mode,
-                        case.custom_text,
-                    ),
+                    "system_prompt_text": system_prompt_text,
+                    "task_prompt_text": task_prompt_text,
                     "tools_snapshot": (
                         serialize_tools_snapshot(snapshot) if snapshot else None
                     ),

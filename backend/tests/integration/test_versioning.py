@@ -47,16 +47,29 @@ from app.services.attribution import match_version
 CreateWorkspace = Callable[[str], Awaitable[tuple[int, Scope]]]
 
 
+#: The two columns a version id can be attributed through — one per prompt
+#: kind. `set_baseline` checks them with an `OR`, which is safe because a
+#: prompt's kind decides which of the two its versions can ever land in; these
+#: tests are what pin "either column counts as evidence".
+SLOT_COLUMNS = ("system_prompt_version_id", "task_prompt_version_id")
+
+
 async def _run_with_attributed_result(
     session: AsyncSession,
     scope: Scope,
     machine_id: int,
     *,
     prompt_version_id: int | None,
+    slot: str = "system_prompt_version_id",
 ) -> tuple[int, int]:
     """A minimal run whose one result is attributed (or not) to a version —
     what `set_baseline` demands as evidence.
+
+    `slot` names which of the two version columns the id lands in; the other
+    one stays null, so a test that passes for both slots really did exercise
+    each column on its own.
     """
+    assert slot in SLOT_COLUMNS
     run = await create_run_row(
         scope,
         session,
@@ -72,7 +85,8 @@ async def _run_with_attributed_result(
         run_id,
         [
             {
-                "prompt_version_id": prompt_version_id,
+                **{column: None for column in SLOT_COLUMNS},
+                slot: prompt_version_id,
                 "group_name": "General",
                 "test_case_title": "Hello",
                 "test_case_text": "Say hi.",
@@ -225,16 +239,27 @@ async def test_set_baseline_refuses_a_run_that_never_tested_this_version(
         await set_baseline(scope, session, version_id, run_id)
 
 
-async def test_set_baseline_succeeds_when_the_run_actually_tested_this_version(
-    session: AsyncSession, scope: Scope
+@pytest.mark.parametrize("slot", SLOT_COLUMNS)
+async def test_set_baseline_accepts_a_run_attributed_through_either_column(
+    session: AsyncSession, scope: Scope, slot: str
 ):
-    prompt = await create_prompt(scope, session, name="Greeting", content="Say hi.")
+    """Evidence is evidence whichever channel the prompt is sent on.
+
+    A `system` prompt's versions can only ever appear in
+    `system_prompt_version_id` and a `task` prompt's only in
+    `task_prompt_version_id`, so `set_baseline` checks both with an `OR` — and
+    each column has to work on its own, which is what parametrizing this pins.
+    """
+    kind = "system" if slot == "system_prompt_version_id" else "task"
+    prompt = await create_prompt(
+        scope, session, name="Greeting", content="Say hi.", kind=kind
+    )
     version = await commit_version(scope, session, prompt.id, message="v1")
     version_id = version.id
 
     machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
     run_id, _ = await _run_with_attributed_result(
-        session, scope, machine.id, prompt_version_id=version_id
+        session, scope, machine.id, prompt_version_id=version_id, slot=slot
     )
 
     await set_baseline(scope, session, version_id, run_id)
@@ -243,6 +268,85 @@ async def test_set_baseline_succeeds_when_the_run_actually_tested_this_version(
     baselined = await get_version(scope, session, version_id)
     assert baselined is not None
     assert baselined.baseline_run_id == run_id
+
+
+async def test_one_run_can_be_the_baseline_of_a_version_in_each_slot(
+    session: AsyncSession, scope: Scope
+):
+    """A run of a two-slot test case really did test both prompts, so it can
+    justify a version of each — one row, two attributions, two baselines.
+    """
+    system_prompt = await create_prompt(
+        scope, session, name="framing", content="SYSTEM", kind="system"
+    )
+    system_version_id = (
+        await commit_version(scope, session, system_prompt.id, message="s1")
+    ).id
+    task_prompt = await create_prompt(
+        scope, session, name="instruction", content="TASK", kind="task"
+    )
+    task_version_id = (await commit_version(scope, session, task_prompt.id, message="t1")).id
+
+    machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+    run = await create_run_row(
+        scope,
+        session,
+        machine_id=machine.id,
+        machine_snapshot="{}",
+        model_id="qwen3-32b",
+        group_names="[]",
+    )
+    run_id = run.id
+    await insert_run_results(
+        scope,
+        session,
+        run_id,
+        [
+            {
+                "system_prompt_version_id": system_version_id,
+                "task_prompt_version_id": task_version_id,
+                "group_name": "General",
+                "test_case_title": "Hello",
+                "test_case_text": "Say hi.",
+                "status": "ok",
+            }
+        ],
+    )
+
+    await set_baseline(scope, session, system_version_id, run_id)
+    await set_baseline(scope, session, task_version_id, run_id)
+    session.expire_all()
+
+    for version_id in (system_version_id, task_version_id):
+        baselined = await get_version(scope, session, version_id)
+        assert baselined is not None
+        assert baselined.baseline_run_id == run_id
+
+
+async def test_set_baseline_still_refuses_a_run_attributed_to_a_different_version(
+    session: AsyncSession, scope: Scope
+):
+    """The `OR` widens *which column* counts, never *which version*.
+
+    A run attributed to some other prompt's version in the other slot is not
+    evidence about this one.
+    """
+    wanted = await create_prompt(scope, session, name="wanted", content="A", kind="system")
+    wanted_version_id = (await commit_version(scope, session, wanted.id, message="v1")).id
+    other = await create_prompt(scope, session, name="other", content="B", kind="task")
+    other_version_id = (await commit_version(scope, session, other.id, message="v1")).id
+
+    machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+    run_id, _ = await _run_with_attributed_result(
+        session,
+        scope,
+        machine.id,
+        prompt_version_id=other_version_id,
+        slot="task_prompt_version_id",
+    )
+
+    with pytest.raises(NotAttributedError):
+        await set_baseline(scope, session, wanted_version_id, run_id)
 
 
 async def test_baseline_run_id_is_nulled_when_the_run_is_deleted(
@@ -286,7 +390,7 @@ async def test_deleting_a_prompt_cascades_its_versions_and_nulls_result_attribut
 
     result = await get_run_result(scope, session, result_id)
     assert result is not None
-    assert result.prompt_version_id is None
+    assert result.system_prompt_version_id is None
     # The snapshot text survives regardless — that is the whole point of a
     # snapshot.
     assert result.test_case_text == "Say hi."

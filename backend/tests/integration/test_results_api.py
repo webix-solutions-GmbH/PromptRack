@@ -18,8 +18,15 @@ from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.main import app
 from app.repos.machines import create_machine
+from app.repos.prompt_versions import commit_version
+from app.repos.prompts import create_prompt, update_prompt
 from app.repos.runs import list_run_results, update_run_result
-from app.repos.test_cases import create_test_case, create_test_group
+from app.repos.test_cases import (
+    create_test_case,
+    create_test_group,
+    list_test_cases,
+    update_test_case,
+)
 from app.scope import Scope
 from app.services.run_create import create_run_record
 
@@ -277,6 +284,137 @@ class TestModelMode:
         assert filtered["rows"] == []
         assert filtered["uncovered_test_cases"] == 1
 
+class TestThreeTextsOnTheWire:
+    """The four new cell fields, and drift naming each text part separately.
+
+    `tests/test_compare.py` pins the naming rule without a database. What only
+    the wired-up route can show is that the two reads actually *feed* it three
+    separate texts — a matrix that silently stopped selecting the prompt columns
+    would report no drift at all and look perfectly healthy.
+    """
+
+    async def _suite_with_prompts(
+        self, scope: Scope, session: AsyncSession
+    ) -> tuple[int, int, int, int]:
+        """`(machine_id, group_id, system_prompt_id, task_prompt_id)`."""
+        machine = await create_machine(scope, session, name="Box", base_url="http://box/v1")
+        group = await create_test_group(scope, session, name="Group")
+        system_prompt = await create_prompt(
+            scope, session, name="framing", content="You are terse.", kind="system"
+        )
+        task_prompt = await create_prompt(
+            scope, session, name="instruction", content="Extract the PO.", kind="task"
+        )
+        await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="First",
+            content="Invoice 4711",
+            system_prompt_id=system_prompt.id,
+            task_prompt_id=task_prompt.id,
+        )
+        await session.commit()
+        return machine.id, group.id, system_prompt.id, task_prompt.id
+
+    async def test_a_cell_carries_both_prompt_texts_and_both_version_ids(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        machine_id, group_id, system_id, task_id = await self._suite_with_prompts(
+            scope, session
+        )
+        system_version = await commit_version(scope, session, system_id, message="s1")
+        await session.commit()
+        first = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+        second = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, mode="runs", runs=f"{first},{second}")
+
+        cell = body["rows"][0]["cells"][0]
+        assert cell["system_prompt_text"] == "You are terse."
+        assert cell["task_prompt_text"] == "Extract the PO."
+        assert cell["test_case_text"] == "Invoice 4711"
+        assert cell["system_prompt_version_id"] == system_version.id
+        # The task prompt was never committed, so its draft is dirty.
+        assert cell["task_prompt_version_id"] is None
+        assert body["rows"][0]["drift"] == []
+
+    async def test_only_the_edited_prompt_is_named_across_a_row(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """Two runs of the same case with the task prompt rewritten between
+        them: the data never moved, so nothing may say it did.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        machine_id, group_id, _, task_id = await self._suite_with_prompts(scope, session)
+        first = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+
+        await update_prompt(scope, session, task_id, {"content": "Extract the PO number."})
+        await session.commit()
+        session.expire_all()
+        second = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, mode="runs", runs=f"{first},{second}")
+        assert body["rows"][0]["drift"] == ["task prompt"]
+
+    async def test_the_system_prompt_drifts_under_its_own_name(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        machine_id, group_id, system_id, _ = await self._suite_with_prompts(scope, session)
+        first = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+
+        await update_prompt(scope, session, system_id, {"content": "You are verbose."})
+        await session.commit()
+        session.expire_all()
+        second = await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, mode="runs", runs=f"{first},{second}")
+        assert body["rows"][0]["drift"] == ["system prompt"]
+
+    async def test_model_mode_reports_a_prompt_edited_since_the_run(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """Model mode's second comparison, wired to the live prompt drafts.
+
+        Without the two aliased joins feeding the live texts, this degrades to
+        comparing the case text alone and reports nothing — which is exactly
+        the silent failure this test exists to catch.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        machine_id, group_id, _, task_id = await self._suite_with_prompts(scope, session)
+        await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+
+        await update_prompt(scope, session, task_id, {"content": "Extract the PO number."})
+        await session.commit()
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, models=[f"{machine_id}|test-model"])
+        assert body["rows"][0]["drift"] == ["task prompt edited since"]
+
+    async def test_the_test_case_text_still_drifts_under_its_own_name(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # The part that existed before the split has to keep its own sentence
+        # rather than being absorbed into a prompt one.
+        customer_id, scope = await create_workspace("Acme")
+        machine_id, group_id, _, _ = await self._suite_with_prompts(scope, session)
+        await make_run(scope, session, machine_id, group_id, outcomes=("ok",))
+
+        [case] = await list_test_cases(scope, session, group_id=group_id)
+        await update_test_case(scope, session, case.id, {"content": "Invoice 4712"})
+        await session.commit()
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, models=[f"{machine_id}|test-model"])
+        assert body["rows"][0]["drift"] == ["test case text edited since"]
+
+
+class TestRouting:
     async def test_the_matrix_route_is_not_shadowed_by_a_result_id(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:

@@ -12,14 +12,14 @@ Broad capability tests: reasoning, extraction, formatting, code. Language: Engli
 
 Reasoning, extraction, formatting, code, and three tool-calling tests. English. The three tool test cases need **Demo Utilities (mock)** to exist first.
 
-Eight test cases are plain one-shot tests (`tool_mode: none`, no prompt) — for those, `create_test_case` needs only `group`, `title`, `content`, `expected_output`.
+Eight test cases are plain one-shot tests (`tool_mode: none`, neither prompt slot filled) — for those, `create_test_case` needs only `group`, `title`, `content`, `expected_output`. The `content` alone is the whole user message.
 
 ---
 
 ## 1. Three-bullet summary
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -45,7 +45,7 @@ Check: exactly 3 bullets, no intro/outro text, each bullet has at most 15 words.
 ## 2. JSON extraction
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -78,7 +78,7 @@ Check: valid JSON, no code fences, exact key names, numbers as numbers (not stri
 ## 3. Multi-step logic
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -105,7 +105,7 @@ Ben sits in seat 1, Anna in seat 2, Clara in seat 3, David in seat 4.
 ## 4. Arithmetic word problem
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -125,7 +125,7 @@ $991.44
 ## 5. Strict instruction following
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -145,7 +145,7 @@ Example of a valid answer: "the capital city is paris"
 ## 6. Code generation
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -178,7 +178,7 @@ Behavioral contract to check:
 ## 7. Bug finding
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -206,7 +206,7 @@ Corrected line: for i in range(len(values) - window + 1):
 ## 8. Long-form generation
 
 - `tool_mode`: `none`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -216,7 +216,7 @@ Explain how DNS (the Domain Name System) works to a junior developer in about 30
 
 `expected_output`:
 
-_none — this prompt is rated by reading the answer._
+_none — this test case is rated by reading the answer._
 
 ---
 
@@ -224,7 +224,7 @@ _none — this prompt is rated by reading the answer._
 
 - `tool_mode`: `definitions`
 - `toolsets`: `Demo Utilities (mock)`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -239,7 +239,7 @@ Exactly one tool call: get_weather with city="Berlin".
 Passing "unit": "celsius" is fine (and slightly better); omitting unit is also correct since celsius is the documented default.
 
 Fail: calling search_products / convert_currency / get_stock_level, calling more than one tool, inventing a tool that was not offered, a wrong or empty city, or answering from memory with a made-up temperature instead of calling anything.
-Note: this prompt runs in "definitions" mode — nothing is executed, so judge the call itself, not any answer.
+Note: this test case runs in "definitions" mode — nothing is executed, so judge the call itself, not any answer.
 ```
 
 ---
@@ -249,7 +249,7 @@ Note: this prompt runs in "definitions" mode — nothing is executed, so judge t
 - `tool_mode`: `execute`
 - `toolsets`: `Demo Utilities (mock)`
 - `max_turns`: 6
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 
@@ -276,7 +276,7 @@ Fail: picking the 1049.00 or 979.00 item, only calling one of the two tools, inv
 
 - `tool_mode`: `definitions`
 - `toolsets`: `Demo Utilities (mock)`
-- prompt: none
+- prompts: none — leave `system_prompt` and `task_prompt` out
 
 `content`:
 

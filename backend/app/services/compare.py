@@ -13,12 +13,17 @@ selection that picks between them:
 
 Everything here is a function of its arguments: no database, no session, no
 request. The scoped reads live in `app.repos.results` and the wire shape in
-`app.api.results`, the same split `app.services.effective_prompt` and
+`app.api.results`, the same split `app.services.message_assembly` and
 `app.services.attribution` draw.
 
+A result row freezes **three texts** — `system_prompt_text`,
+`task_prompt_text`, `test_case_text` — and this module compares them
+separately, which is the whole point of keeping them apart: a cell that differs
+can say *the task prompt changed* instead of merging prompt drift and data
+drift into one indistinguishable "user message differs".
+
 Two things carry over from the old implementation unchanged in substance and
-renamed in the obvious way (`prompts` are now `test_cases`; the frozen system
-message is now the *effective prompt*):
+renamed in the obvious way (`prompts` are now `test_cases`):
 
 * the deleted-test-case text fallback is keyed on `scope_key + normalized
   text`, so two workspaces' byte-identical test cases can never collapse into
@@ -32,7 +37,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Literal
@@ -119,9 +124,13 @@ def serialize_run_ids(ids: Sequence[int]) -> str:
 _WHITESPACE = re.compile(r"\s+")
 
 
-def _text_key(text: str) -> str:
-    """Normalizes test-case text so trivial whitespace differences still match."""
-    return _WHITESPACE.sub(" ", text).strip()
+def _text_key(text: str | None) -> str:
+    """Normalizes a frozen text so trivial whitespace differences still match.
+
+    `None` and blank normalize to the same empty string on purpose: an absent
+    prompt and a whitespace-only one send the same thing, so they are not drift.
+    """
+    return _WHITESPACE.sub(" ", text or "").strip()
 
 
 def snapshot_machine_name(raw: str | None) -> str:
@@ -194,15 +203,22 @@ class CompareCellView:
     #: fallback only matches within one key.
     scope_key: str
     test_case_id: int | None
-    #: The committed prompt version this result tested, when the draft was
-    #: clean at run creation. Null = a dirty draft, or no prompt at all.
-    prompt_version_id: int | None
+    #: The committed version each slot's prompt was at, when that draft was
+    #: clean at run creation. Null = a dirty draft, or an empty slot. One per
+    #: slot: the two drafts are independent.
+    system_prompt_version_id: int | None
+    task_prompt_version_id: int | None
     sort_order: int
     group_name: str
     test_case_title: str
-    test_case_text: str
-    #: Effective prompt frozen into the row; part of the drift check.
-    effective_prompt_text: str | None
+    #: The test case's own `content` — the data half of the user message.
+    test_case_text: str | None
+    #: The system prompt's text as frozen into the row; compared on its own.
+    system_prompt_text: str | None
+    #: The task prompt's text as frozen into the row; compared on its own,
+    #: which is what lets "the instruction changed" and "the data changed" be
+    #: two different sentences.
+    task_prompt_text: str | None
     #: Raw `tools_snapshot` JSON, compared key-insensitively for drift.
     tools_snapshot: str | None
     tool_mode: ToolMode
@@ -241,7 +257,7 @@ class CompareRowView:
     test_case_id: int | None
     group_name: str
     test_case_title: str
-    test_case_text: str
+    test_case_text: str | None
     #: Same length and order as the selected columns; `None` = no result.
     cells: list[CompareCellView | None]
     #: Conditions that are *not* held constant across the row; see
@@ -250,14 +266,44 @@ class CompareRowView:
 
 
 @dataclass(frozen=True)
+class LiveTexts:
+    """What a live test case would send *today*, in three separate parts.
+
+    Model mode anchors its rows to live test cases, so it can additionally
+    report that one of the three was edited after every compared run. Three
+    values rather than one, because "the task prompt was rewritten" and "the
+    data was corrected" are different findings.
+    """
+
+    test_case_text: str | None = None
+    system_prompt_text: str | None = None
+    task_prompt_text: str | None = None
+
+
+@dataclass(frozen=True)
 class CompareTestCaseView:
-    """A live test case, which is what a model-mode row is anchored to."""
+    """A live test case, which is what a model-mode row is anchored to.
+
+    The two prompt texts are the *current drafts* of the prompts its slots
+    reference — null for an empty slot. Defaulted so a caller that has not
+    resolved them yet degrades to comparing the case text alone rather than
+    reporting drift it did not measure.
+    """
 
     id: int
     group_id: int
     group_name: str
     title: str
-    text: str
+    text: str | None
+    system_prompt_text: str | None = None
+    task_prompt_text: str | None = None
+
+    def live_texts(self) -> LiveTexts:
+        return LiveTexts(
+            test_case_text=self.text,
+            system_prompt_text=self.system_prompt_text,
+            task_prompt_text=self.task_prompt_text,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +319,7 @@ class _RowBuilder:
     test_case_id: int | None
     group_name: str
     test_case_title: str
-    test_case_text: str
+    test_case_text: str | None
     cells: list[CompareCellView | None]
     #: Column the row was first seen in — drives row ordering.
     first_column: int
@@ -301,6 +347,12 @@ def build_compare_matrix(
     normalized text *within one workspace*, which lets them line up with rows
     that still carry an id.
 
+    That fallback is **skipped entirely when the text is blank**: `content` is
+    nullable now (a case whose task prompt is the whole user message has no data
+    of its own), and "these two rows are both empty" is not evidence that they
+    are the same test case. Without the skip, one blank deleted case would adopt
+    every other blank row in the run.
+
     Rows are ordered by first appearance: every test case of the first column in
     its run order, then those only present in the second column, and so on. If a
     single run maps two results onto the same row, the first one wins.
@@ -318,18 +370,20 @@ def build_compare_matrix(
 
     for result in ordered:
         column = column_of[result.run_id]
-        # Ids are global, so only the text fallback needs the scope key.
-        key = f"{result.scope_key} {_text_key(result.test_case_text)}"
+        normalized = _text_key(result.test_case_text)
+        # Ids are global, so only the text fallback needs the scope key. A blank
+        # text is no key at all — see the docstring.
+        key = f"{result.scope_key} {normalized}" if normalized else None
 
         row: _RowBuilder | None
         if result.test_case_id is None:
             # Deleted test case: the text is all we have to go on.
-            row = by_text.get(key)
+            row = by_text.get(key) if key is not None else None
         else:
             row = by_test_case.get(result.test_case_id)
             # Adopt a row created by a deleted-test-case result with the same
             # text, so both halves of the pair land in one row.
-            text_row = by_text.get(key)
+            text_row = by_text.get(key) if key is not None else None
             if row is None and text_row is not None and text_row.test_case_id is None:
                 row = text_row
 
@@ -354,7 +408,8 @@ def build_compare_matrix(
             by_test_case[result.test_case_id] = row
             if row.test_case_id is None:
                 row.test_case_id = result.test_case_id
-        by_text.setdefault(key, row)
+        if key is not None:
+            by_text.setdefault(key, row)
 
         if row.cells[column] is None:
             row.cells[column] = result
@@ -678,8 +733,20 @@ def _stable_json(raw: str | None) -> str:
         return raw
 
 
+#: The three frozen texts, each compared on its own and named on its own. The
+#: labels are user-visible, and the split is the payoff of freezing the parts
+#: separately: "task prompt" and "test case text" are different findings, where
+#: the pre-pivot single "effective prompt" could only ever say that *something*
+#: in the message changed.
+_TEXT_ASPECTS: tuple[tuple[str, Callable[[CompareCellView], str | None]], ...] = (
+    ("system prompt", lambda cell: cell.system_prompt_text),
+    ("task prompt", lambda cell: cell.task_prompt_text),
+    ("test case text", lambda cell: cell.test_case_text),
+)
+
+
 def describe_row_drift(
-    cells: Sequence[CompareCellView | None], live_test_case_text: str | None = None
+    cells: Sequence[CompareCellView | None], live: LiveTexts | None = None
 ) -> list[str]:
     """Names the conditions that are *not* held constant across a row.
 
@@ -688,16 +755,20 @@ def describe_row_drift(
     runs with different prompts, tools or temperatures — and a difference in the
     answers would then be config, not model. Rather than hide that, say it.
 
-    `live_test_case_text` (model mode, where the row is anchored to a live test
-    case) additionally catches a test case edited after every compared run.
+    `live` (model mode, where the row is anchored to a live test case)
+    additionally catches a part edited after every compared run — three
+    comparisons, one per text, each with its own message, so "the task prompt
+    was rewritten since" is not reported as "the test case was edited".
     """
     present = [cell for cell in cells if cell is not None]
     if not present:
         return []
 
     aspects: list[tuple[str, Callable[[CompareCellView], str]]] = [
-        ("test case text", lambda cell: _text_key(cell.test_case_text)),
-        ("effective prompt", lambda cell: _text_key(cell.effective_prompt_text or "")),
+        *(
+            (label, lambda cell, of=of: _text_key(of(cell)))
+            for label, of in _TEXT_ASPECTS
+        ),
         ("tools", lambda cell: _stable_json(cell.tools_snapshot)),
         ("tool mode", lambda cell: cell.tool_mode),
         ("tool choice", lambda cell: cell.tool_choice or "(unset)"),
@@ -712,26 +783,56 @@ def describe_row_drift(
         label for label, of in aspects if len({of(cell) for cell in present}) > 1
     ]
 
-    if (
-        live_test_case_text is not None
-        and "test case text" not in drift
-        and _text_key(present[0].test_case_text) != _text_key(live_test_case_text)
-    ):
-        drift.append("test case edited since")
+    if live is not None:
+        first = present[0]
+        for label, of in _TEXT_ASPECTS:
+            # Already drifting across the row: saying it also drifted from live
+            # adds nothing a reader can act on.
+            if label in drift:
+                continue
+            live_text = getattr(live, _LIVE_FIELD[label])
+            if _text_key(of(first)) != _text_key(live_text):
+                drift.append(f"{label} edited since")
 
     return drift
 
 
+#: Which :class:`LiveTexts` field each aspect compares against.
+_LIVE_FIELD: dict[str, str] = {
+    "system prompt": "system_prompt_text",
+    "task prompt": "task_prompt_text",
+    "test case text": "test_case_text",
+}
+
+
 def annotate_drift(
-    rows: Sequence[CompareRowView], *, anchored_to_live_test_case: bool
+    rows: Sequence[CompareRowView],
+    *,
+    live_by_test_case: Mapping[int, LiveTexts] | None = None,
 ) -> list[CompareRowView]:
-    """Fills every row's `drift`, which is what the matrix renders under its title."""
+    """Fills every row's `drift`, which is what the matrix renders under its title.
+
+    `live_by_test_case` is model mode's anchor: the live texts keyed by test
+    case id. Run mode passes nothing — its rows are a set of runs, not a claim
+    about what the suite says today, so "edited since" would be meaningless
+    there.
+    """
     return [
         replace(
             row,
             drift=describe_row_drift(
-                row.cells, row.test_case_text if anchored_to_live_test_case else None
+                row.cells,
+                None
+                if live_by_test_case is None or row.test_case_id is None
+                else live_by_test_case.get(row.test_case_id),
             ),
         )
         for row in rows
     ]
+
+
+def live_texts_by_test_case(
+    test_case_rows: Sequence[CompareTestCaseView],
+) -> dict[int, LiveTexts]:
+    """The map :func:`annotate_drift` takes in model mode."""
+    return {row.id: row.live_texts() for row in test_case_rows}

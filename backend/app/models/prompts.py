@@ -7,11 +7,20 @@ version.
 """
 
 from datetime import datetime
+from typing import Literal
 
-from sqlalchemy import ForeignKey, Index, UniqueConstraint, func
+from sqlalchemy import ForeignKey, Index, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
+
+#: Which channel a prompt is sent on. `system` frames the model and becomes the
+#: system message; `task` is the instruction for this call and is sent at the
+#: head of the user message, ahead of the test case's own data.
+#:
+#: `Text` + a `Literal` rather than a Postgres enum, the same reasoning as every
+#: other enum-ish column here: adding a kind must not need a migration.
+PromptKind = Literal["system", "task"]
 
 
 class Prompt(Base):
@@ -19,6 +28,12 @@ class Prompt(Base):
 
     `content` **is the draft** — the editor writes it directly, and it is what
     a run always tests. Freezing it is an explicit commit, git-style.
+
+    `kind` is a property of the **asset**, not of its history or of any one
+    test case's reference to it: a prompt has a role in the customer's system
+    ("v3 is deployed" has to be able to say *deployed as what*), and every
+    version of it is sent on that same channel. Changing it is refused while
+    any test case references the prompt — see `app.repos.prompts`.
     """
 
     __tablename__ = "prompts"
@@ -26,6 +41,8 @@ class Prompt(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id", ondelete="RESTRICT"))
     name: Mapped[str]
+    #: Which slot of a test case this prompt is eligible for.
+    kind: Mapped[PromptKind] = mapped_column(Text, server_default="system")
     #: The mutable draft. `dirty` = this differs from the head version.
     content: Mapped[str]
     # The bookkeeping claim "this version is live at the customer", set by a

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 // One test case's result inside a run: its frozen inputs, its outcome, its
 // manual verdict. Port of `git show master:src/components/runs/result-card.tsx`,
-// renamed for the pivot's terminology (prompt -> test case, system prompt ->
-// effective prompt) and carrying one field the old app never had: which
-// committed prompt version (if any) the tested draft matched
-// (`versionLabel`, spec §"Attribution surfaced").
+// renamed for the pivot's terminology (prompt -> test case) and carrying what
+// the old app never had: the run's **three** frozen texts shown apart — the
+// system prompt, the task prompt and the case's own content — each prompt with
+// its own attribution badge (spec §"Attribution surfaced"). Reading the three
+// columns and never the transcript is deliberate: `transcript_json` records the
+// *assembled* messages, which cannot say which half came from where.
 import { computed } from 'vue'
 import Tag from 'primevue/tag'
 import { formatDuration, formatRate, formatTokenLabel } from '../../lib/format'
@@ -19,9 +21,11 @@ const props = defineProps<{
   index: number
   /** A viewer still sees the verdict, just not the buttons to change it. */
   canWrite: boolean
-  /** `"v4"` when the run tested a committed version, `"draft"` when it
-   * tested a dirty draft, `null` when the test case has no prompt at all. */
-  versionLabel: string | null
+  /** `"v4"` when that slot's draft matched a committed version at run
+   * creation, `"dirty"` when it did not, `null` when the slot was empty. One
+   * per slot: the two prompts are versioned independently. */
+  systemVersionLabel: string | null
+  taskVersionLabel: string | null
 }>()
 
 const emit = defineEmits<{
@@ -62,7 +66,8 @@ const ratingResponse = computed(() => splitThinking(props.result.response_text ?
       </div>
       <div class="result-badges">
         <Tag v-if="isToolRun" severity="info" :value="`tools: ${result.tool_mode}`" />
-        <Tag v-if="versionLabel" severity="secondary" :value="versionLabel" />
+        <Tag v-if="systemVersionLabel" severity="secondary" :value="`system ${systemVersionLabel}`" />
+        <Tag v-if="taskVersionLabel" severity="secondary" :value="`task ${taskVersionLabel}`" />
         <Tag :severity="statusSeverity[result.status] ?? 'secondary'" :value="result.status" />
       </div>
     </header>
@@ -76,15 +81,25 @@ const ratingResponse = computed(() => splitThinking(props.result.response_text ?
     />
 
     <details class="prompt-details">
-      <summary>Test case &amp; effective prompt{{ isToolRun ? ' & tools' : '' }}</summary>
+      <summary>Prompts &amp; test case{{ isToolRun ? ' & tools' : '' }}</summary>
       <div class="prompt-body">
         <div class="prompt-field">
-          <span class="field-label">User message</span>
-          <pre class="pre">{{ result.test_case_text }}</pre>
+          <span class="field-label">
+            System prompt
+            <Tag v-if="systemVersionLabel" severity="secondary" :value="systemVersionLabel" />
+          </span>
+          <pre class="pre">{{ result.system_prompt_text ?? '(no system message)' }}</pre>
         </div>
         <div class="prompt-field">
-          <span class="field-label">Effective system prompt</span>
-          <pre class="pre">{{ result.effective_prompt_text ?? '(no system message)' }}</pre>
+          <span class="field-label">
+            Task prompt
+            <Tag v-if="taskVersionLabel" severity="secondary" :value="taskVersionLabel" />
+          </span>
+          <pre class="pre">{{ result.task_prompt_text ?? '(none)' }}</pre>
+        </div>
+        <div class="prompt-field">
+          <span class="field-label">Content</span>
+          <pre class="pre">{{ result.test_case_text ?? '(none)' }}</pre>
         </div>
         <div v-if="isToolRun" class="prompt-field">
           <span class="field-label">
@@ -243,6 +258,9 @@ const ratingResponse = computed(() => splitThinking(props.result.response_text ?
 }
 
 .field-label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
   font-size: 0.75rem;
   font-weight: 500;
   color: var(--p-text-muted-color);

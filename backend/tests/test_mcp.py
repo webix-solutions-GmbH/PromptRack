@@ -33,12 +33,20 @@ from app.mcp.refs import (
     McpToolError,
     RowRef,
     has_key,
+    optional_row_ref,
     parse_row_ref,
     parse_row_refs,
     resolve_row_ref,
     truncate,
 )
-from app.mcp.server import _WRITES, _call, mcp_server, raw_arguments
+from app.mcp.server import (
+    _WRITES,
+    KIND_VALUES,
+    _call,
+    _parse_kind,
+    mcp_server,
+    raw_arguments,
+)
 
 
 @dataclass(frozen=True)
@@ -282,10 +290,11 @@ class TestRegistry:
 
     async def test_required_arguments_are_the_ones_without_defaults(self) -> None:
         tools = await _tools()
+        # `content` is *not* required any more: a task prompt can be the whole
+        # user message, so "this prompt takes no input" has to be expressible.
         assert set(tools["create_test_case"].input_schema["required"]) == {
             "group",
             "title",
-            "content",
         }
         assert set(tools["set_rating"].input_schema["required"]) == {"result_id", "rating"}
         assert set(tools["create_run"].input_schema["required"]) == {"machine", "groups"}
@@ -294,6 +303,104 @@ class TestRegistry:
         schema = (await _tools())["create_test_case"].input_schema
         types = {entry.get("type") for entry in schema["properties"]["group"]["anyOf"]}
         assert types == {"string", "integer"}
+
+
+# ---------------------------------------------------------------------------
+# Prompt kinds
+# ---------------------------------------------------------------------------
+
+
+class TestPromptKindArgument:
+    """`kind` on the two prompt writes: advertised as an enum, and re-checked.
+
+    The schema and the runtime check are two independent defences on purpose —
+    a client that skips schema validation still has to get a readable refusal
+    rather than an unknown value reaching the column.
+    """
+
+    async def test_create_advertises_the_two_kinds_and_defaults_to_system(self) -> None:
+        schema = (await _tools())["create_prompt"].input_schema["properties"]["kind"]
+        assert schema["enum"] == list(KIND_VALUES)
+        # "system" is the channel everything authored before the pivot was sent
+        # on; defaulting anywhere else would move text between channels.
+        assert schema["default"] == "system"
+        assert "kind" not in (await _tools())["create_prompt"].input_schema["required"]
+
+    async def test_update_advertises_the_two_kinds_and_defaults_to_leaving_it(self) -> None:
+        schema = (await _tools())["update_prompt"].input_schema["properties"]["kind"]
+        enums = [entry["enum"] for entry in schema["anyOf"] if "enum" in entry]
+        assert enums == [list(KIND_VALUES)]
+        # `null` = "say nothing about kind", which is what keeps a plain draft
+        # edit from moving the prompt's channel.
+        assert schema["default"] is None
+        assert {"type": "null"} in schema["anyOf"]
+
+
+class TestParseKind:
+    def test_accepts_each_known_kind_unchanged(self) -> None:
+        assert _parse_kind("system") == "system"
+        assert _parse_kind("task") == "task"
+
+    def test_refuses_an_unrecognised_kind_never_coercing_it(self) -> None:
+        # Deliberately the opposite of `parse_role`, which degrades an unknown
+        # role to `viewer`: there the fallback is the least privileged value,
+        # here guessing a channel would silently move the text.
+        with pytest.raises(McpToolError, match='"kind" must be "system" or "task"'):
+            _parse_kind("user")
+
+    def test_the_refusal_quotes_what_was_actually_sent(self) -> None:
+        with pytest.raises(McpToolError, match="'assistant'"):
+            _parse_kind("assistant")
+
+    def test_case_and_whitespace_are_not_guessed_at_either(self) -> None:
+        for value in ("System", "SYSTEM", " system ", "system\n"):
+            with pytest.raises(McpToolError):
+                _parse_kind(value)
+
+    def test_refuses_a_non_string_and_an_absent_value(self) -> None:
+        for value in (None, 0, 1, True, ["system"], {"kind": "system"}):
+            with pytest.raises(McpToolError):
+                _parse_kind(value)
+
+
+class TestPromptSlotArguments:
+    """The two new `RowRef` arguments that replaced `prompt`/`mode`/`custom_text`."""
+
+    async def test_both_slots_take_a_name_or_an_id_on_both_write_tools(self) -> None:
+        tools = await _tools()
+        for name in ("create_test_case", "update_test_case"):
+            properties = tools[name].input_schema["properties"]
+            for slot in ("system_prompt", "task_prompt"):
+                types = {entry.get("type") for entry in properties[slot]["anyOf"]}
+                # `null` is in there so a slot can be left empty (create) and
+                # explicitly cleared (update).
+                assert types == {"string", "integer", "null"}, (name, slot)
+                assert properties[slot]["default"] is None
+
+    async def test_the_removed_arguments_are_gone_from_both_write_tools(self) -> None:
+        # `mode` and `custom_text` existed only to splice unversioned text into
+        # a versioned asset; with two slots there is nothing left to splice.
+        tools = await _tools()
+        for name in ("create_test_case", "update_test_case"):
+            properties = tools[name].input_schema["properties"]
+            assert "mode" not in properties, name
+            assert "custom_text" not in properties, name
+            assert "prompt" not in properties, name
+
+    def test_a_slot_argument_parses_by_name_and_by_id(self) -> None:
+        assert parse_row_ref("PO judge", '"task_prompt"') == RowRef.by_name("PO judge")
+        assert parse_row_ref(4, '"system_prompt"') == RowRef.by_id(4)
+        assert parse_row_ref("4", '"system_prompt"') == RowRef.by_id(4)
+
+    def test_an_empty_slot_is_absent_rather_than_a_ref(self) -> None:
+        assert optional_row_ref(None, '"task_prompt"') is None
+
+    def test_a_refusal_names_the_slot_that_was_wrong(self) -> None:
+        # Two slots now, so "which one did I get wrong" has to be in the text.
+        with pytest.raises(McpToolError, match='"task_prompt"'):
+            parse_row_ref({}, '"task_prompt"')
+        with pytest.raises(McpToolError, match='"system_prompt"'):
+            parse_row_ref("   ", '"system_prompt"')
 
 
 # ---------------------------------------------------------------------------

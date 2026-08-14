@@ -22,6 +22,13 @@ credentials: the machine's `base_url`/`api_key` and an MCP toolset's URL and
 headers. A moved endpoint must not break Resume. The frozen half — text, tool
 definitions, a manual tool's canned response — travels with the run.
 
+This is also where the two messages are **assembled**
+(`app.services.message_assembly`): the run's three frozen texts become a system
+message and a user message here, at dispatch, rather than at run creation. The
+frozen columns therefore keep the task prompt and the case's own data as
+separate, comparable things, which is what `/results` reports drift from — the
+transcript only ever records the assembled strings.
+
 Cancellation is an explicit :class:`asyncio.Event` rather than task
 cancellation, and that is deliberate: Starlette cancels a streaming response's
 task group when the client disconnects, and inside a cancelled scope every
@@ -60,6 +67,7 @@ from app.repos.toolsets import list_mcp_servers
 from app.scope import Scope
 from app.services.llm import LlmError, ToolCall, stream_chat
 from app.services.mcp_client import call_mcp_tool
+from app.services.message_assembly import assert_user_message, system_message, user_message
 from app.services.run_events import (
     Aborted,
     Delta,
@@ -415,13 +423,27 @@ async def _execute(
             )
 
         try:
+            # Assembly happens here, from the three frozen columns, not at run
+            # creation — which is what keeps the parts separately recoverable
+            # for drift reporting. A row can only arrive with both halves of the
+            # user message blank if a prompt was deleted after the two guards
+            # ran (`SET NULL` on `task_prompt_id`), so refuse it here rather
+            # than let an empty user turn reach the provider and come back as a
+            # 400 nobody can read.
+            assert_user_message(
+                result.task_prompt_text,
+                result.test_case_text,
+                subject=f'Test case "{result.test_case_title}"',
+            )
             outcome = await _unless_cancelled(
                 run_tool_loop(
                     base_url=endpoint.base_url,
                     api_key=endpoint.api_key,
                     model=run.model_id,
-                    user_message=result.test_case_text,
-                    system_prompt=result.effective_prompt_text,
+                    user_message=user_message(
+                        result.task_prompt_text, result.test_case_text
+                    ),
+                    system_prompt=system_message(result.system_prompt_text),
                     params=params,
                     snapshot=snapshot,
                     tool_mode=result.tool_mode,
