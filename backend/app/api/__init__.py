@@ -13,6 +13,7 @@ from app.api.test_cases import router as test_cases_router
 from app.api.test_groups import router as test_groups_router
 from app.api.tokens import router as tokens_router
 from app.api.toolsets import router as toolsets_router
+from app.api.version import router as version_router
 from app.auth.oidc import oidc_configured
 from app.auth.oidc import router as oidc_router
 from app.auth.router import router as auth_router
@@ -25,6 +26,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+router.include_router(version_router)
 router.include_router(auth_router)
 router.include_router(tokens_router)
 router.include_router(customers_router)

@@ -1,17 +1,22 @@
 <script setup lang="ts">
 // App shell: a top bar naming the product and a side nav grouped the way the
-// work happens (configure it, run it, read it). Every item below has a route
-// as of Task 5.2 (Results was the last inert label); `NavItem.to` stays
-// optional so a future addition can still land ahead of its view.
+// work happens — Suite is the versioned content (prompts, test cases),
+// Environment is the credentials that run it (machines, toolsets; both
+// admin-gated for the same reason the backend draws that line — see
+// CLAUDE.md's "content vs. credentials"), then Evaluate, then Settings.
+// Every item below has a route as of Task 5.2 (Results was the last inert
+// label); `NavItem.to` stays optional so a future addition can still land
+// ahead of its view.
 //
 // The shell itself is auth-gated: /login and /setup render with no nav at
 // all (there is nothing scoped to a workspace to show yet), everything else
 // gets the full chrome plus the workspace switcher and account controls.
-import { computed, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Select from 'primevue/select'
 import Button from 'primevue/button'
 import { useAuthStore } from '../stores/auth'
+import { versionApi, type Version } from '../api/version'
 
 type NavItem = { label: string; to?: string }
 type NavSection = { label: string | null; items: NavItem[] }
@@ -19,12 +24,17 @@ type NavSection = { label: string | null; items: NavItem[] }
 const sections: NavSection[] = [
   { label: null, items: [{ label: 'Dashboard', to: '/' }] },
   {
-    label: 'Setup',
+    label: 'Suite',
     items: [
       { label: 'Prompts', to: '/prompts' },
       { label: 'Test Cases', to: '/test-cases' },
-      { label: 'Toolsets', to: '/toolsets' },
+    ],
+  },
+  {
+    label: 'Environment',
+    items: [
       { label: 'Machines', to: '/machines' },
+      { label: 'Toolsets', to: '/toolsets' },
     ],
   },
   {
@@ -42,6 +52,17 @@ const sections: NavSection[] = [
 
 const auth = useAuthStore()
 const router = useRouter()
+
+// Fetched once on mount; a failure renders nothing rather than an error,
+// since a missing build identity is not worth interrupting the shell over.
+const version = ref<Version | null>(null)
+onMounted(async () => {
+  try {
+    version.value = await versionApi.get()
+  } catch {
+    version.value = null
+  }
+})
 
 // Workspaces are a label, not a tenant: every signed-in user may switch
 // into any of them, so the list is fetched as soon as a session exists
@@ -82,6 +103,10 @@ async function signOut() {
   </div>
   <div v-else class="app-shell">
     <header class="app-topbar">
+      <!-- The 1254px master carries a wide transparent margin that shrinks the
+           glyph to a smudge at this size; this copy is trimmed to the artwork
+           and resized to 128px tall (2x), 15 KB against the master's 565 KB. -->
+      <img src="/brand/promptrack-mark-128.png" alt="" class="app-logo" />
       <span class="app-title">PromptRack</span>
     </header>
     <div class="app-body">
@@ -123,9 +148,25 @@ async function signOut() {
           </Select>
         </div>
         <div class="nav-section account-section">
-          <span class="account-email">{{ auth.user.email }}</span>
-          <span class="account-role">{{ auth.user.role }}</span>
-          <Button label="Sign out" text size="small" class="sign-out-button" @click="signOut" />
+          <span class="account-email" :title="auth.user.email">{{ auth.user.email }}</span>
+          <div class="account-row">
+            <span class="account-role">{{ auth.user.role }}</span>
+            <Button label="Sign out" text size="small" class="sign-out-button" @click="signOut" />
+          </div>
+        </div>
+        <div v-if="version" class="build-row">
+          <span class="build-version"
+            >v{{ version.version }}<template v-if="version.commit"> · {{ version.commit }}</template></span
+          >
+          <a
+            href="https://github.com/philphilphil/promptrack"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="PromptRack on GitHub"
+            class="build-github-link"
+          >
+            <i class="pi pi-github" />
+          </a>
         </div>
       </nav>
       <main class="app-content">
@@ -142,13 +183,27 @@ async function signOut() {
   min-height: 100vh;
 }
 
+/* Topbar and sidenav are both pinned: the account block, workspace switcher
+ * and build row live at the bottom of the nav, and a long page (Test Cases
+ * renders every group at once) would otherwise push them thousands of pixels
+ * down. Only the content column scrolls. */
 .app-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
+  gap: 0.5rem;
   padding: 0 1.25rem;
   height: 3.5rem;
   border-bottom: 1px solid var(--p-content-border-color);
   background: var(--p-content-background);
+}
+
+.app-logo {
+  height: 2rem;
+  width: auto;
+  display: block;
 }
 
 .app-title {
@@ -163,6 +218,11 @@ async function signOut() {
 }
 
 .app-sidenav {
+  position: sticky;
+  top: 3.5rem;
+  align-self: flex-start;
+  height: calc(100vh - 3.5rem);
+  overflow-y: auto;
   width: 15rem;
   flex-shrink: 0;
   padding: 1rem 0.75rem;
@@ -231,21 +291,26 @@ async function signOut() {
 }
 
 .account-section {
-  padding: 0.75rem 0.75rem 0;
+  padding: 0.75rem 0.75rem;
   border-top: 1px solid var(--p-content-border-color);
-  flex-direction: row;
-  align-items: center;
-  gap: 0.5rem;
+  gap: 0.375rem;
   margin-bottom: 0;
 }
 
 .account-email {
-  flex: 1;
-  min-width: 0;
   font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .account-role {
@@ -258,5 +323,32 @@ async function signOut() {
 
 .sign-out-button {
   flex-shrink: 0;
+}
+
+.build-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem 0;
+  font-size: 0.6875rem;
+  color: var(--p-text-muted-color);
+}
+
+.build-version {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-github-link {
+  display: inline-flex;
+  align-items: center;
+  color: var(--p-text-muted-color);
+  flex-shrink: 0;
+}
+
+.build-github-link:hover {
+  color: var(--p-text-color);
 }
 </style>

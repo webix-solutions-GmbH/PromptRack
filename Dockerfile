@@ -20,6 +20,12 @@ RUN npm run build
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS backend
 WORKDIR /app
 
+# Baked in at build time (e.g. `--build-arg PROMPTRACK_COMMIT=$(git rev-parse
+# --short HEAD)`) so `GET /api/version` can report what's actually running;
+# empty by default, which the endpoint reports as a null commit.
+ARG PROMPTRACK_COMMIT=""
+ENV PROMPTRACK_COMMIT=$PROMPTRACK_COMMIT
+
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
