@@ -49,10 +49,11 @@ terminal for the equivalent case in the old stack.
 
 Git: branch is `rewrite`, built on top of `master` (the retired Next.js/TypeScript
 implementation, kept for reference — see "This is a rewrite" below). Two remotes:
-`origin` is GitHub (`philphilphil/promptrack`, renamed from `modelfit` — the remote URL
-still carries the old name and resolves through GitHub's redirect) and `azure` is Azure
-DevOps (`webixsolutionsgmbh/Development/Webix.AI.Agent-Model-Eval`, the work remote, whose
-project name predates the PromptRack rename). Both currently hold only `master`.
+`origin` is GitHub (`philphilphil/PromptRack`, private, renamed from `modelfit`; note the
+capitalisation — the lowercase URL only resolves through GitHub's redirect) and `azure` is
+Azure DevOps (`webixsolutionsgmbh/Development/Webix.AI.Agent-Model-Eval`, the work remote,
+whose project name predates the PromptRack rename). `rewrite` tracks `origin/rewrite`;
+`azure` holds only `master`.
 
 ## What this is
 
