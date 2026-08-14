@@ -1,82 +1,99 @@
 # PromptRack
 
-PromptRack answers two questions for a consultancy that sells AI solutions to businesses:
-**which model is good enough** for a customer's actual job, and **what hardware** that
-takes. Not a leaderboard score — the customer's real work, loaded in as test suites: an
-invoice-processing agent, document and data extraction, structured extraction from
-business correspondence, MCP tool calls against the company's own RAG. Every result names
-the machine that produced it, because the second question is sizing: if a small model does
-the job, a Mac Mini is enough — but that has to be measured, and TTFT/duration/tok-s per
-machine is the evidence.
+Git for your customers' prompts, plus the evidence that they still work. Keep the system
+prompts behind the AI solutions you sold in one versioned library, then prove which model
+runs them well enough — invoice intake, document extraction, an agent over a company's
+RAG — and on what hardware. Any OpenAI-compatible endpoint, local or hosted, in one matrix.
 
-It is also **"git for your customers' prompts"**: the system prompts behind an agentic
-tool are versioned assets, not just text fields. A prompt has a mutable draft and an
-immutable commit history; one version is marked `deployed` (a claim about what runs at
-the customer today); one run per version can be its `baseline` — the known-good measurement
-that a Verify run compares a model swap against. Prompt content lives here so it survives
-model upgrades and can be diffed, restored, and proven to still work.
+## Features
 
-PromptRack is also an **MCP server**: an agent can push prompts, test cases and runs in
-from outside, start a run, and read the measurements back — because the interesting test
-cases already exist in whatever repository defines the job. See `docs/example-suite/` for
-a worked suite built entirely over MCP.
+| | |
+| --- | --- |
+| **Prompt library** | Every customer's system prompts in one place, one library per engagement. A prompt is a mutable draft plus an immutable commit history — commit with a message, diff any two versions, restore an old one. |
+| **Deployed marker** | One version per prompt is flagged as live at the customer. When it is no longer the newest, the app says so — "deployed v3, head is v5" is the one-glance answer to whether production is what you last verified. |
+| **Regression checks** | A version can name a `baseline` run: the measurement that justified deploying it. Verify replays those test cases against a new model and puts the two runs side by side. That is the model-upgrade decision, made on evidence. |
+| **Model fitness** | Test cases are the customer's real work, not a leaderboard. Rate each answer good / meh / bad against the expected output; the verdict is per job, not in general. |
+| **Hardware sizing** | Every result names the machine that produced it, with TTFT, duration, tokens and tok/s. If a small model does the job, a Mac Mini may be enough — but it has to be measured. |
+| **Agents, not just chat** | A test case can offer tools and really execute them, looping until the model answers, so an invoice agent is evaluated as the agent it will be. |
+| **MCP server** | `POST /api/mcp` — an agent pushes prompts, test cases and runs in from outside and reads the measurements back. The interesting test cases already exist in the repo that defines the job. |
 
-## Architecture
+## What it can test
 
-FastAPI + async SQLAlchemy 2.0 + Alembic on Postgres, a Vue 3 + PrimeVue SPA against that
-API, and an MCP server (the official Python SDK, streamable HTTP, stateless) mounted at
-`/api/mcp` in the same process. Every repository function takes a `Scope` — one customer
-workspace — as its first argument, which is what keeps one engagement's machines, prompts
-and runs out of another's. Run execution streams NDJSON so a live transcript (including
-tool calls, for an agent under test) renders as the model answers.
+Each step adds one thing to the one above it.
 
-See `docs/superpowers/plans/2026-08-13-rewrite-fastapi-vue.md` for the implementation plan
-and `docs/superpowers/specs/2026-08-13-prompt-versioning-pivot-design.md` for the
-versioning design this app is built around.
+| | |
+| --- | --- |
+| **Test case** | Can the model do the task at all? |
+| **+ expected output** | Graded against a rubric instead of a vibe. |
+| **+ tool definitions** | Does it pick the right tool, with the right arguments? Nothing executes. |
+| **+ mocked tools** | The full multi-turn loop. Canned responses, identical for every model, so no ERP or RAG index has to exist. |
+| **+ live MCP tools** | The same loop against the customer's real stack. |
+
+**Example.** A supplier invoice says 10 units; the purchase order says 8. The model gets
+one tool, `lookup_purchase_order`.
+
+The test case alone tells you whether it reconciles the two numbers at all. Add the mocked
+tool and you see whether it looks the PO up *before* deciding, and whether it stops and asks
+rather than booking a wrong amount — with the same canned response for every model, so the
+difference you measure is the model. Point that toolset at the customer's MCP server and
+the identical test runs against their ERP.
+
+A worked suite of 38 test cases is written up in
+[docs/example-suite](docs/example-suite/) — invoice intake, an invoice agent, general
+capability, and prompt injection through the tool-result and tool-description channels.
+Point your agent at it and tell it to set the same thing up for your customer.
 
 ## Quick start
 
 ```bash
-cp .env.example .env    # dev defaults work as-is; see the file for what to change
-
-docker compose -f docker-compose.dev.yml up -d   # postgres:17-alpine on :5433
-cd backend && uv run alembic upgrade head && uv run uvicorn app.main:app --reload
+cp .env.example .env    # dev defaults work as-is
+make run                # postgres in docker, migrations, backend on :8000, frontend on :5173
 ```
 
-In a second terminal:
+`make` on its own lists the other targets (`test`, `lint`, `typecheck`, `check`).
+
+The first account created becomes the administrator, and sign-up closes behind it; there
+are no seeded users and no default password. Create a customer workspace next — everything
+else belongs to one. Settings: [`.env.example`](.env.example). Production:
+`docker compose up -d --build`, one container serving the API, the SPA and MCP.
+
+## Concepts
+
+| | |
+| --- | --- |
+| **Workspace** | One per customer engagement. Nothing crosses between them. |
+| **Prompt** | The versioned asset: a draft, a history of committed versions, a deployed marker. |
+| **Test case** | One job to be done, optionally with tools. Expected output is the rubric, never sent to the model. |
+| **Machine** | An endpoint plus hardware notes. |
+| **Run** | One test-group selection × one model × one machine. Everything it used is snapshotted, so later edits cannot rewrite history. |
+| **Result** | Response, rating, TTFT, tok/s, duration, tokens, and the prompt version it tested. |
+| **`/results`** | The matrix — by model (latest result per test case) or by run (two runs of one model side by side). |
+
+tok/s measures decode only: TTFT and tool waits are excluded. A `~` means the endpoint sent
+no usage data.
+
+## MCP API
 
 ```bash
-cd frontend && npm install && npm run dev
+claude mcp add --transport http promptrack https://promptrack.example.com/api/mcp \
+  --header "x-api-key: prk_…" --header "x-customer: Acme GmbH"
 ```
 
-Or bring the database, migrations and both dev servers up together with `make run`
-(`make` on its own lists the other targets: `test`, `lint`, `typecheck`, `check`).
+Per-user token, carrying its owner's role. Prompts, versions, test cases, runs and ratings
+are writable. Machines, toolsets, workspaces and the deployed marker stay UI-only — they
+are credentials, or a human's claim about a customer's production system.
 
-- Backend: `http://localhost:8000` (`/api/health`, `/api/mcp`)
-- Frontend: `http://localhost:5173` (vite dev server, proxies `/api` to the backend)
+## Roles
 
-Open the frontend and create the first account — it becomes the administrator. Sign-up
-closes once one account exists.
+| | |
+| --- | --- |
+| **Admin** | Members' rights plus machines, toolset credentials, workspace deletion. |
+| **Member** | Prompts, versions, test cases, tools, runs, ratings. |
+| **Viewer** | Read-only. |
 
-## Testing
+Accounts beyond the first come from OIDC (`OIDC_ISSUER` and friends); there is no
+user-management UI yet. Endpoint keys and MCP headers are stored in plaintext — treat the
+database accordingly, and keep `ENABLE_MOCKS` unset in production.
 
-```bash
-cd backend && uv run pytest && uv run ruff check .
-cd frontend && npm run build && npm run typecheck
-```
-
-Integration tests (`backend/tests/integration/`) run against a throwaway Postgres in
-Docker (tmpfs data, port 55432) via `scripts/test-integration.sh` — nothing there depends
-on the dev database above.
-
-## Production
-
-```bash
-cp .env.example .env    # set POSTGRES_PASSWORD at minimum
-docker compose up -d --build
-```
-
-A multi-stage `Dockerfile` builds the frontend and bakes it as static files into the
-backend image, so one container on one port serves the API, the SPA and the MCP
-endpoint; `docker-entrypoint.sh` applies migrations before the app starts. See
-`CLAUDE.md`'s Deployment section for the compose service naming and network setup.
+[CLAUDE.md](CLAUDE.md) has the architecture: FastAPI + async SQLAlchemy on Postgres, a
+Vue 3 + PrimeVue SPA, and the MCP server mounted in the same process.
