@@ -79,7 +79,8 @@ export interface PromptVersion {
 }
 
 export interface DiffResult {
-  diff: string
+  /** One unified-diff line per entry, without trailing newlines. */
+  diff: string[]
 }
 
 /** A version id or the literal `"draft"`, as the diff endpoint's `from`/`to`

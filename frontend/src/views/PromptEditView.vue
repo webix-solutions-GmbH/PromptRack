@@ -188,7 +188,7 @@ function openView(version: PromptVersion) {
 const diffDialogOpen = ref(false)
 const diffTarget = ref<PromptVersion | null>(null)
 const diffAgainst = ref<DiffRef>('draft')
-const diffText = ref('')
+const diffText = ref<string[]>([])
 const diffLoading = ref(false)
 const diffError = ref<string | null>(null)
 

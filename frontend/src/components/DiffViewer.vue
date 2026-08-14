@@ -6,7 +6,7 @@
 // legible colour).
 import { computed } from 'vue'
 
-const props = defineProps<{ diff: string }>()
+const props = defineProps<{ diff: string[] }>()
 
 type DiffLineKind = 'file-header' | 'hunk' | 'add' | 'remove' | 'context'
 
@@ -23,11 +23,11 @@ function classify(line: string): DiffLineKind {
   return 'context'
 }
 
-const lines = computed<DiffLine[]>(() => {
-  const trimmed = props.diff.replace(/\n$/, '')
-  if (trimmed.length === 0) return []
-  return trimmed.split('\n').map((text) => ({ kind: classify(text), text }))
-})
+// One entry per diff line, already newline-free — see the endpoint's
+// `diff: list[str]`.
+const lines = computed<DiffLine[]>(() =>
+  props.diff.map((text) => ({ kind: classify(text), text })),
+)
 </script>
 
 <template>
