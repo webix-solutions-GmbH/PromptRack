@@ -274,6 +274,10 @@ interface PeekBlock {
   /** Verbatim-identifier labels (tool names) render mono and case-preserved
    * instead of the uppercase eyebrow the prose labels get. */
   mono?: boolean
+  /** Which channel this text belongs to, when it is one of the three the
+   * editor's assembled preview colour-codes. Absent for the rubric and for
+   * tools, which are not parts of a message. */
+  part?: Slot | 'case'
   text: string
 }
 
@@ -290,7 +294,7 @@ function caseTextPeek(row: CompareRowView): PeekContent {
     caseTitle: row.test_case_title,
     // `content` is nullable — a task prompt can be the whole user message —
     // and the button hides on a null, so this never renders a placeholder.
-    blocks: [{ key: 'case', label: null, badge: null, text: row.test_case_text ?? '' }],
+    blocks: [{ key: 'case', label: null, badge: null, part: 'case', text: row.test_case_text ?? '' }],
   }
 }
 
@@ -302,6 +306,7 @@ function promptsPeek(row: CompareRowView): PeekContent {
       key: block.key,
       label: block.label,
       badge: block.version,
+      part: block.key,
       text: block.text,
     })),
   }
@@ -517,6 +522,10 @@ function tokenLabel(cell: CompareCellView): string | null {
                 "
                 class="row-peeks"
               >
+                <!-- The dots carry the same part colours the peek content and
+                     the test-case editor's assembled preview use, so a row
+                     says which channels it holds before anything is opened:
+                     one per prompt slot actually present in the row. -->
                 <button
                   v-if="row.test_case_text"
                   type="button"
@@ -526,6 +535,7 @@ function tokenLabel(cell: CompareCellView): string | null {
                   @click="pin(caseTextPeek(row))"
                 >
                   <i class="pi pi-align-left" aria-hidden="true" />
+                  <span class="peek-dot dot-case" aria-hidden="true" />
                   Test case
                 </button>
                 <button
@@ -537,6 +547,14 @@ function tokenLabel(cell: CompareCellView): string | null {
                   @click="pin(promptsPeek(row))"
                 >
                   <i class="pi pi-comment" aria-hidden="true" />
+                  <span class="peek-dots" aria-hidden="true">
+                    <span
+                      v-for="block in rowPromptBlocks(row)"
+                      :key="block.key"
+                      class="peek-dot"
+                      :class="`dot-${block.key}`"
+                    />
+                  </span>
                   Prompts
                 </button>
                 <button
@@ -635,7 +653,12 @@ function tokenLabel(cell: CompareCellView): string | null {
         @mouseenter="peekHoverHold"
         @mouseleave="peekLeave"
       >
-        <div v-for="block in hovered.blocks" :key="block.key" class="peek-block">
+        <div
+          v-for="block in hovered.blocks"
+          :key="block.key"
+          class="peek-block"
+          :class="block.part ? `peek-part-${block.part}` : null"
+        >
           <span v-if="block.label" class="peek-block-label" :class="{ mono: block.mono }">
             {{ block.label }}
             <Tag v-if="block.badge" severity="secondary" :value="block.badge" />
@@ -654,7 +677,12 @@ function tokenLabel(cell: CompareCellView): string | null {
       :header="pinned ? `${pinned.source} — ${pinned.caseTitle}` : ''"
     >
       <div v-if="pinned" class="peek-content">
-        <div v-for="block in pinned.blocks" :key="block.key" class="peek-block">
+        <div
+          v-for="block in pinned.blocks"
+          :key="block.key"
+          class="peek-block"
+          :class="block.part ? `peek-part-${block.part}` : null"
+        >
           <span v-if="block.label" class="peek-block-label" :class="{ mono: block.mono }">
             {{ block.label }}
             <Tag v-if="block.badge" severity="secondary" :value="block.badge" />
@@ -873,6 +901,31 @@ thead .row-header-cell {
   outline-offset: 1px;
 }
 
+/* Same three part colours as the peek content below and the test-case
+   editor's assembled preview — the chip is the collapsed form of what the
+   peek opens onto, so it is coded identically. */
+.peek-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1875rem;
+}
+
+.peek-dot {
+  display: inline-block;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: var(--pr-case-accent);
+}
+
+.peek-dot.dot-system {
+  background: var(--pr-system-accent);
+}
+
+.peek-dot.dot-task {
+  background: var(--pr-task-accent);
+}
+
 .drift-note {
   margin: 0;
   padding: 0.25rem 0.5rem;
@@ -1015,6 +1068,29 @@ thead .row-header-cell {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+
+/* Which channel a text went out on, in the same colours the test-case
+   editor's assembled preview uses (tokens in `src/style.css`): system blue,
+   task violet, the case's own content neutral. The rubric and the tool list
+   are not parts of a message and stay uncoded. */
+.peek-part-system,
+.peek-part-task,
+.peek-part-case {
+  border-left: 3px solid var(--pr-case-accent);
+  border-radius: 0 var(--p-content-border-radius) var(--p-content-border-radius) 0;
+  background: var(--pr-case-bg);
+  padding: 0.5rem 0.625rem;
+}
+
+.peek-part-system {
+  border-left-color: var(--pr-system-accent);
+  background: var(--pr-system-bg);
+}
+
+.peek-part-task {
+  border-left-color: var(--pr-task-accent);
+  background: var(--pr-task-bg);
 }
 
 .peek-block-label {

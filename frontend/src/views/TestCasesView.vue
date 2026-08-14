@@ -350,9 +350,10 @@ async function removeCase(testCase: TestCase) {
           The regression suite: one input plus its rubric plus the tool config to run it with, each
           referencing a prompt asset rather than duplicating it.
         </p>
-      </div>
-      <div class="header-actions">
+        <!-- On the heading's side of the header row, not among the create
+             buttons: it changes how the page reads, it does not add anything. -->
         <SelectButton
+          class="view-toggle"
           :model-value="viewMode"
           :options="viewModeOptions"
           option-label="label"
@@ -360,6 +361,8 @@ async function removeCase(testCase: TestCase) {
           :allow-empty="false"
           @update:model-value="setViewMode"
         />
+      </div>
+      <div class="header-actions">
         <template v-if="auth.canWrite">
           <Button label="New group" icon="pi pi-plus" outlined @click="openCreateGroup" />
           <!-- Kept alongside each panel's own prefilled button: with no
@@ -585,6 +588,10 @@ async function removeCase(testCase: TestCase) {
   color: var(--p-text-muted-color);
   font-size: 0.875rem;
   margin: 0;
+}
+
+.view-toggle {
+  margin-top: 0.75rem;
 }
 
 .header-actions {

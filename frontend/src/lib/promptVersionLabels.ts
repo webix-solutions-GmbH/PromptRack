@@ -31,9 +31,9 @@ function resolveVersion(id: number): Promise<number | null> {
 }
 
 /**
- * `versionLabel(text, versionId)` → `"v4"` / `"dirty"` / `null` (empty slot) —
- * the same three states run detail shows, told apart by the frozen text since
- * both of the latter two carry a null version id.
+ * `versionLabel(text, versionId)` → `"v4"` / `"uncommitted"` / `null` (empty
+ * slot) — the same three states run detail shows, told apart by the frozen
+ * text since both of the latter two carry a null version id.
  *
  * `ids` is re-read whatever it depends on changes, so a caller passes the ids
  * of whatever it is currently displaying and nothing more.
@@ -62,7 +62,7 @@ export function usePromptVersionLabels(ids: () => (number | null)[]) {
 
   function versionLabel(text: string | null, versionId: number | null): string | null {
     if (text === null || text.trim().length === 0) return null
-    if (versionId === null) return 'dirty'
+    if (versionId === null) return 'uncommitted'
     const version = resolved.value.get(versionId)
     return version === undefined ? `v#${versionId}` : `v${version}`
   }

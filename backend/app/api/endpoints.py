@@ -172,6 +172,22 @@ class TestConnectionResponse(BaseModel):
     error: str | None = None
 
 
+class TestConnectionRequest(BaseModel):
+    base_url: str = Field(min_length=1)
+    api_key: str | None = None
+
+    # Same normalization `EndpointWriteRequest` applies on create, so a probe of
+    # "http://box/v1/" tests the URL the saved row would actually carry rather
+    # than reading `.../v1//models` and false-negativing in the dialog.
+    @field_validator("base_url")
+    @classmethod
+    def _normalize_base_url(cls, value: str) -> str:
+        cleaned = value.strip().rstrip("/")
+        if not cleaned:
+            raise ValueError("Base URL is required.")
+        return cleaned
+
+
 def _owns(scope: Scope, endpoint: Endpoint) -> bool:
     """Whether this scope owns the row, rather than merely seeing it.
 
@@ -244,6 +260,24 @@ async def _view(scope: Scope, session: AsyncSession, endpoint: Endpoint) -> Endp
 # --------------------------------------------------------------------------
 # CRUD
 # --------------------------------------------------------------------------
+
+
+@router.post("/test-connection")
+async def test_connection_route(
+    body: TestConnectionRequest, actor: Admin
+) -> TestConnectionResponse:
+    """Probes a base URL before any endpoint row exists for it — the "New
+    endpoint" dialog's Test connection button. `Admin`, same reasoning as
+    `POST /{endpoint_id}/test`: it exercises a raw API key. Registered ahead
+    of `/{endpoint_id}` (a literal segment vs. that route's int path param) so
+    "test-connection" is never swallowed by it and 422'd as an unparsable id.
+    DB-free like `probe_models` itself — no `Scope`/session needed.
+    """
+    del actor
+    probe = await probe_models(body.base_url, body.api_key or None, timeout=TEST_TIMEOUT_S)
+    return TestConnectionResponse(
+        ok=probe.ok, status=probe.status, latency_ms=probe.latency_ms, error=probe.error
+    )
 
 
 @router.get("")

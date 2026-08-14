@@ -20,35 +20,35 @@ import { useAuthStore } from '../stores/auth'
 import { useThemeStore, type ThemeMode } from '../stores/theme'
 import { versionApi, type Version } from '../api/version'
 
-type NavItem = { label: string; to?: string }
+type NavItem = { label: string; to?: string; icon: string }
 type NavSection = { label: string | null; items: NavItem[] }
 
 const sections: NavSection[] = [
-  { label: null, items: [{ label: 'Dashboard', to: '/' }] },
+  { label: null, items: [{ label: 'Dashboard', to: '/', icon: 'pi-home' }] },
   {
     label: 'Suite',
     items: [
-      { label: 'Prompts', to: '/prompts' },
-      { label: 'Test Cases', to: '/test-cases' },
+      { label: 'Prompts', to: '/prompts', icon: 'pi-file-edit' },
+      { label: 'Test Cases', to: '/test-cases', icon: 'pi-list-check' },
     ],
   },
   {
     label: 'Environment',
     items: [
-      { label: 'Endpoints', to: '/endpoints' },
-      { label: 'Toolsets', to: '/toolsets' },
+      { label: 'Endpoints', to: '/endpoints', icon: 'pi-server' },
+      { label: 'Toolsets', to: '/toolsets', icon: 'pi-wrench' },
     ],
   },
   {
     label: 'Evaluate',
     items: [
-      { label: 'Runs', to: '/runs' },
-      { label: 'Results', to: '/results' },
+      { label: 'Runs', to: '/runs', icon: 'pi-play-circle' },
+      { label: 'Results', to: '/results', icon: 'pi-table' },
     ],
   },
   {
     label: 'Settings',
-    items: [{ label: 'Workspaces', to: '/workspaces' }],
+    items: [{ label: 'Workspaces', to: '/workspaces', icon: 'pi-briefcase' }],
   },
 ]
 
@@ -126,6 +126,40 @@ const themeItems = computed(() =>
 function toggleThemeMenu(event: Event) {
   themeMenu.value?.toggle(event)
 }
+
+// The mark's strokes are drawn near-black; on a dark topbar they'd vanish,
+// so a second copy (scripts/make-dark-logo.py) remaps them toward white
+// while leaving the green accent and checkmark untouched.
+const logoSrc = computed(() =>
+  theme.resolved === 'dark' ? '/brand/promptrack-mark-dark-128.png' : '/brand/promptrack-mark-128.png',
+)
+
+// Collapsed to an icon rail, persisted per device (not per user — same
+// reasoning as the theme mode above) so there's no flash on load.
+const NAV_COLLAPSED_KEY = 'promptrack-nav-collapsed'
+function readNavCollapsed(): boolean {
+  try {
+    return localStorage.getItem(NAV_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+const navCollapsed = ref(readNavCollapsed())
+watch(navCollapsed, (collapsed) => {
+  try {
+    if (collapsed) localStorage.setItem(NAV_COLLAPSED_KEY, '1')
+    else localStorage.removeItem(NAV_COLLAPSED_KEY)
+  } catch {
+    // Same as the theme store: losing the preference is not worth crashing over.
+  }
+})
+function toggleNavCollapsed() {
+  navCollapsed.value = !navCollapsed.value
+}
+
+const currentThemeLabel = computed(
+  () => themeModeItems.find((item) => item.mode === theme.mode)?.label ?? 'Theme',
+)
 </script>
 
 <template>
@@ -137,8 +171,9 @@ function toggleThemeMenu(event: Event) {
       <!-- The 1254px master carries a wide transparent margin that shrinks the
            glyph to a smudge at this size; this copy is trimmed to the artwork
            and resized to 128px tall (2x), 15 KB against the master's 565 KB. -->
-      <img src="/brand/promptrack-mark-128.png" alt="" class="app-logo" />
+      <img :src="logoSrc" alt="" class="app-logo" />
       <span class="app-title">PromptRack</span>
+      <div class="topbar-spacer" />
       <Select
         :model-value="auth.activeCustomer?.id"
         :options="visibleCustomers"
@@ -154,56 +189,71 @@ function toggleThemeMenu(event: Event) {
           }}
         </template>
       </Select>
-      <div class="topbar-spacer" />
-      <Button
-        :icon="theme.resolved === 'dark' ? 'pi pi-moon' : 'pi pi-sun'"
-        text
-        rounded
-        aria-label="Change theme"
-        aria-haspopup="true"
-        aria-controls="theme-menu"
-        @click="toggleThemeMenu"
-      />
-      <Menu ref="themeMenu" id="theme-menu" :model="themeItems" :popup="true">
-        <template #item="{ item, props }">
-          <a class="theme-menu-item" v-bind="props.action">
-            <span :class="item.icon" />
-            <span class="theme-menu-label">{{ item.label }}</span>
-            <i v-if="item.mode === theme.mode" class="pi pi-check theme-menu-check" />
-          </a>
-        </template>
-      </Menu>
     </header>
     <div class="app-body">
-      <nav class="app-sidenav">
+      <nav class="app-sidenav" :class="{ 'app-sidenav-collapsed': navCollapsed }">
         <div v-for="section in sections" :key="section.label ?? 'main'" class="nav-section">
-          <h2 v-if="section.label" class="nav-section-label">{{ section.label }}</h2>
+          <h2 v-if="section.label && !navCollapsed" class="nav-section-label">{{ section.label }}</h2>
           <RouterLink
             v-for="item in section.items.filter((i) => i.to)"
             :key="item.label"
             :to="item.to!"
             class="nav-item"
             active-class="nav-item-active"
+            :title="navCollapsed ? item.label : undefined"
           >
-            {{ item.label }}
+            <i class="pi nav-item-icon" :class="item.icon" />
+            <span v-if="!navCollapsed" class="nav-item-label">{{ item.label }}</span>
           </RouterLink>
           <span
             v-for="item in section.items.filter((i) => !i.to)"
             :key="item.label"
             class="nav-item nav-item-disabled"
+            :title="navCollapsed ? item.label : undefined"
           >
-            {{ item.label }}
+            <i class="pi nav-item-icon" :class="item.icon" />
+            <span v-if="!navCollapsed" class="nav-item-label">{{ item.label }}</span>
           </span>
         </div>
         <div class="nav-spacer" />
+        <Button
+          :icon="theme.resolved === 'dark' ? 'pi pi-moon' : 'pi pi-sun'"
+          :label="navCollapsed ? undefined : currentThemeLabel"
+          text
+          :title="navCollapsed ? currentThemeLabel : undefined"
+          class="theme-toggle-button"
+          aria-label="Change theme"
+          aria-haspopup="true"
+          aria-controls="theme-menu"
+          @click="toggleThemeMenu"
+        />
+        <Menu ref="themeMenu" id="theme-menu" :model="themeItems" :popup="true">
+          <template #item="{ item, props }">
+            <a class="theme-menu-item" v-bind="props.action">
+              <span :class="item.icon" />
+              <span class="theme-menu-label">{{ item.label }}</span>
+              <i v-if="item.mode === theme.mode" class="pi pi-check theme-menu-check" />
+            </a>
+          </template>
+        </Menu>
         <div class="nav-section account-section">
-          <span class="account-email" :title="auth.user.email">{{ auth.user.email }}</span>
+          <span v-if="!navCollapsed" class="account-email" :title="auth.user.email">{{
+            auth.user.email
+          }}</span>
           <div class="account-row">
-            <span class="account-role">{{ auth.user.role }}</span>
-            <Button label="Sign out" text size="small" class="sign-out-button" @click="signOut" />
+            <span v-if="!navCollapsed" class="account-role">{{ auth.user.role }}</span>
+            <Button
+              :label="navCollapsed ? undefined : 'Sign out'"
+              icon="pi pi-sign-out"
+              text
+              size="small"
+              :title="navCollapsed ? 'Sign out' : undefined"
+              class="sign-out-button"
+              @click="signOut"
+            />
           </div>
         </div>
-        <div v-if="version" class="build-row">
+        <div v-if="version && !navCollapsed" class="build-row">
           <span class="build-version"
             >v{{ version.version }}<template v-if="version.commit"> · {{ version.commit }}</template></span
           >
@@ -217,6 +267,15 @@ function toggleThemeMenu(event: Event) {
             <i class="pi pi-github" />
           </a>
         </div>
+        <Button
+          :icon="navCollapsed ? 'pi pi-angle-double-right' : 'pi pi-angle-double-left'"
+          text
+          size="small"
+          class="nav-collapse-button"
+          :aria-label="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
+          :title="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
+          @click="toggleNavCollapsed"
+        />
       </nav>
       <main class="app-content">
         <RouterView />
@@ -272,12 +331,19 @@ function toggleThemeMenu(event: Event) {
   align-self: flex-start;
   height: calc(100vh - 3.5rem);
   overflow-y: auto;
+  overflow-x: hidden;
   width: 15rem;
   flex-shrink: 0;
   padding: 1rem 0.75rem;
   border-right: 1px solid var(--p-content-border-color);
   display: flex;
   flex-direction: column;
+  transition: width 150ms ease;
+}
+
+.app-sidenav-collapsed {
+  width: 3.5rem;
+  padding: 1rem 0.5rem;
 }
 
 .nav-section {
@@ -297,7 +363,9 @@ function toggleThemeMenu(event: Event) {
 }
 
 .nav-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
   padding: 0.5rem 0.75rem;
   border-radius: var(--p-content-border-radius);
   font-size: 0.875rem;
@@ -318,6 +386,26 @@ function toggleThemeMenu(event: Event) {
 .nav-item-disabled {
   color: var(--p-text-muted-color);
   cursor: default;
+}
+
+/* Fixed icon column so labels line up regardless of glyph width. */
+.nav-item-icon {
+  width: 1.1rem;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 0.95rem;
+}
+
+.nav-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-sidenav-collapsed .nav-item,
+.app-sidenav-collapsed .nav-item-disabled {
+  justify-content: center;
+  padding: 0.5rem;
 }
 
 .app-content {
@@ -344,8 +432,7 @@ function toggleThemeMenu(event: Event) {
   flex-shrink: 0;
 }
 
-/* Pushes the theme toggle to the far right, mirroring `.nav-spacer` doing
- * the same job vertically in the sidenav. */
+/* Pushes the workspace switcher to the far right. */
 .topbar-spacer {
   flex: 1;
 }
@@ -371,11 +458,35 @@ function toggleThemeMenu(event: Event) {
   color: var(--p-primary-color);
 }
 
+/* Sits directly above the account block, styled like a nav item so it reads
+ * as part of the same list rather than a floating control. */
+.theme-toggle-button {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+}
+
+.app-sidenav-collapsed .theme-toggle-button {
+  justify-content: center;
+  padding: 0.5rem;
+}
+
 .account-section {
   padding: 0.75rem 0.75rem;
   border-top: 1px solid var(--p-content-border-color);
   gap: 0.375rem;
   margin-bottom: 0;
+}
+
+.app-sidenav-collapsed .account-section {
+  padding: 0.75rem 0;
+}
+
+.app-sidenav-collapsed .account-row {
+  justify-content: center;
 }
 
 .account-email {
@@ -431,5 +542,11 @@ function toggleThemeMenu(event: Event) {
 
 .build-github-link:hover {
   color: var(--p-text-color);
+}
+
+.nav-collapse-button {
+  align-self: center;
+  margin-top: 0.5rem;
+  color: var(--p-text-muted-color);
 }
 </style>

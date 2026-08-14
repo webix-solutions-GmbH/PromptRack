@@ -718,3 +718,82 @@ class TestDiscoverAndTest:
 
         got = await client.get(f"/api/endpoints/{endpoint.id}")
         assert got.json()["model_count"] == 0
+
+
+class TestConnectionWithoutAnEndpoint:
+    """`POST /api/endpoints/test-connection` — the "New endpoint" dialog's
+    probe, run against a base URL before any row exists to attach it to."""
+
+    async def test_admin_gets_the_probe_result(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        create_workspace: CreateWorkspace,
+        monkeypatch,
+    ) -> None:
+        # A plain POST to this literal path also proves it is not swallowed by
+        # `GET/PUT/DELETE /{endpoint_id}` — a match there would 422 trying to
+        # convert "test-connection" to an int, never reaching `fake_probe`.
+        customer_id, _ = await create_workspace("Acme")
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_id)
+        await login(client, "admin@example.com")
+
+        async def fake_probe(base_url, api_key, *, timeout, transport=None):
+            assert base_url == "http://new-box/v1"
+            assert api_key == "s3cret"
+            return discovery.ProbeResult(
+                ok=True, status=200, latency_ms=7, model_ids=["qwen"], error=None
+            )
+
+        monkeypatch.setattr("app.api.endpoints.probe_models", fake_probe)
+
+        response = await client.post(
+            "/api/endpoints/test-connection",
+            json={"base_url": "http://new-box/v1", "api_key": "s3cret"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {"ok": True, "status": 200, "latency_ms": 7, "error": None}
+
+    async def test_a_failed_probe_still_answers_200(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        create_workspace: CreateWorkspace,
+        monkeypatch,
+    ) -> None:
+        customer_id, _ = await create_workspace("Acme")
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_id)
+        await login(client, "admin@example.com")
+
+        async def fake_probe(base_url, api_key, *, timeout, transport=None):
+            return discovery.ProbeResult(
+                ok=False, status=None, latency_ms=2, model_ids=None, error="Connection refused"
+            )
+
+        monkeypatch.setattr("app.api.endpoints.probe_models", fake_probe)
+
+        response = await client.post(
+            "/api/endpoints/test-connection", json={"base_url": "http://nope/v1"}
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "ok": False,
+            "status": None,
+            "latency_ms": 2,
+            "error": "Connection refused",
+        }
+
+    async def test_a_member_is_refused(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, _ = await create_workspace("Acme")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        response = await client.post(
+            "/api/endpoints/test-connection", json={"base_url": "http://x/v1"}
+        )
+        assert response.status_code == 403

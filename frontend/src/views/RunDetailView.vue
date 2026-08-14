@@ -27,10 +27,10 @@ import {
   type ToolCall,
   type TranscriptMessage,
 } from '../api/runs'
-import { promptsApi } from '../api/prompts'
 import { ApiError } from '../api/client'
 import { formatDateTime, formatDuration, formatParams, formatRate } from '../lib/format'
 import { countRatings, type Rating } from '../lib/rating'
+import { usePromptVersionLabels } from '../lib/promptVersionLabels'
 import ResultRow from '../components/runs/ResultRow.vue'
 import { useAuthStore } from '../stores/auth'
 
@@ -67,43 +67,17 @@ const streamError = ref<string | null>(null)
 const running = ref(false)
 const busy = ref(false)
 
-const versionLabels = ref<Map<number, string>>(new Map())
 let abortController: AbortController | null = null
 let autoStarted = false
 
-async function loadVersionLabels(rows: RunResultView[]) {
-  // Both slots at once: a row can be attributed to one committed version in
-  // each, and the two prompts are versioned independently.
-  const ids = [
-    ...new Set(
-      rows
-        .flatMap((row) => [row.system_prompt_version_id, row.task_prompt_version_id])
-        .filter((id): id is number => id !== null),
-    ),
-  ]
-  const entries = await Promise.all(
-    ids.map(async (id): Promise<[number, string]> => {
-      try {
-        const version = await promptsApi.getVersion(id)
-        return [id, `v${version.version}`]
-      } catch {
-        return [id, `v#${id}`]
-      }
-    }),
-  )
-  versionLabels.value = new Map(entries)
-}
-
-/** One slot's badge: `"v4"` when that prompt's draft was byte-identical to a
- * committed version at run creation, `"dirty"` when it was not, and `null`
- * when the slot held no prompt at all — the frozen text is the only thing that
- * can tell an empty slot from an unattributed one, since both carry a null
- * version id. */
-function slotVersionLabel(text: string | null, versionId: number | null): string | null {
-  if (text === null || text.trim().length === 0) return null
-  if (versionId === null) return 'dirty'
-  return versionLabels.value.get(versionId) ?? `v#${versionId}`
-}
+// Both slots of every loaded row: a row can be attributed to one committed
+// version in each, and the two prompts are versioned independently. Shared
+// with the matrix's `CellDetail`/`MatrixTable` via the same module-level
+// cache, and reactive to `results` so rows arriving mid-stream get resolved
+// too.
+const { versionLabel } = usePromptVersionLabels(() =>
+  results.value.flatMap((row) => [row.system_prompt_version_id, row.task_prompt_version_id]),
+)
 
 async function load() {
   loading.value = true
@@ -125,7 +99,6 @@ async function load() {
     results.value = run.results
     runStatus.value = run.status
     finishedAt.value = run.finished_at
-    await loadVersionLabels(run.results)
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : 'Failed to load the run.'
   } finally {
@@ -522,10 +495,10 @@ const totalDuration = computed(() =>
           :index="index + 1"
           :can-write="auth.canWrite"
           :system-version-label="
-            slotVersionLabel(result.system_prompt_text, result.system_prompt_version_id)
+            versionLabel(result.system_prompt_text, result.system_prompt_version_id)
           "
           :task-version-label="
-            slotVersionLabel(result.task_prompt_text, result.task_prompt_version_id)
+            versionLabel(result.task_prompt_text, result.task_prompt_version_id)
           "
           @rating-change="(patch) => handleRatingChange(result.id, patch)"
         />

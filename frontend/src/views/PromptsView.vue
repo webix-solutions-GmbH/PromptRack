@@ -146,7 +146,7 @@ async function submitForm() {
         <template #body="{ data }: { data: Prompt }">
           <div class="name-cell">
             <RouterLink :to="`/prompts/${data.id}`" class="name-link">{{ data.name }}</RouterLink>
-            <Tag v-if="data.dirty" value="dirty" severity="warn" />
+            <Tag v-if="data.dirty" value="uncommitted" severity="warn" />
           </div>
         </template>
       </Column>

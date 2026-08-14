@@ -199,6 +199,19 @@ const taskPrompt = computed<Prompt | null>(
   () => prompts.value.find((prompt) => prompt.id === form.taskPromptId) ?? null,
 )
 
+// The selected prompt's draft, read without leaving the editor. No fetch: both
+// slots' full text arrived with `promptsApi.list()` for the selects, so this is
+// the same row the preview below already renders from. One dialog serves both
+// slots — only its content swaps.
+const viewedPrompt = ref<Prompt | null>(null)
+const promptViewOpen = ref(false)
+
+function viewPrompt(prompt: Prompt | null) {
+  if (prompt === null) return
+  viewedPrompt.value = prompt
+  promptViewOpen.value = true
+}
+
 // --- assembled message preview -----------------------------------------
 
 // Mirrors `backend/app/services/message_assembly.py`: whitespace-only text is
@@ -215,9 +228,16 @@ function present(value: string | null | undefined): string | null {
 
 const systemMessagePreview = computed(() => present(systemPrompt.value?.content))
 
+// The user message's two halves kept apart for display — the preview shows
+// which part each line came from, the same distinction `/results` draws when
+// it reports drift. Assembled below, so the text on screen is still exactly
+// what goes on the wire.
+const taskMessagePreview = computed(() => present(taskPrompt.value?.content))
+const contentPreview = computed(() => present(form.content))
+
 const userMessagePreview = computed(() => {
-  const task = present(taskPrompt.value?.content)
-  const data = present(form.content)
+  const task = taskMessagePreview.value
+  const data = contentPreview.value
   if (task && data) return `${task}\n\n${data}`
   return task ?? data ?? ''
 })
@@ -428,9 +448,17 @@ async function removeTestCase() {
         <h1>{{ isNew ? 'New test case' : testCase?.title }}</h1>
       </div>
 
+      <!--
+        Sections in send order: what the case *is*, then what the model
+        receives, then the rubric it is judged against, then the tools it may
+        call. The old two-column split put the content the user message ends
+        with above the prompts it starts with, which is not the order anything
+        downstream reads them in.
+      -->
       <form class="editor" @submit.prevent="save">
-        <div class="columns">
-          <div class="column">
+        <section class="panel">
+          <div class="panel-header"><h2>Basics</h2></div>
+          <div class="field-row">
             <div class="field">
               <label for="tc-group">Group *</label>
               <Select
@@ -449,78 +477,145 @@ async function removeTestCase() {
               <label for="tc-title">Title *</label>
               <InputText id="tc-title" v-model="form.title" required />
             </div>
+          </div>
+        </section>
 
-            <div class="field">
-              <label for="tc-content">Content</label>
-              <Textarea id="tc-content" v-model="form.content" rows="6" auto-resize class="mono-input" />
-              <p class="hint">
-                The data this case varies — sent after the task prompt, at the end of the user
-                message. Optional only when a task prompt supplies the whole user message.
-              </p>
+        <section class="panel">
+          <div class="panel-header"><h2>Model input</h2></div>
+          <div class="columns">
+            <div class="column">
+              <div class="field">
+                <label for="tc-system-prompt">System prompt</label>
+                <div class="slot-row">
+                  <Select
+                    id="tc-system-prompt"
+                    class="slot-select"
+                    :model-value="form.systemPromptId"
+                    :options="systemPromptOptions"
+                    option-label="name"
+                    option-value="id"
+                    placeholder="(none)"
+                    show-clear
+                    @update:model-value="(value) => selectSlot('system', value)"
+                  />
+                  <Button
+                    type="button"
+                    icon="pi pi-search"
+                    text
+                    rounded
+                    severity="secondary"
+                    aria-label="View prompt"
+                    :disabled="systemPrompt === null"
+                    @click="viewPrompt(systemPrompt)"
+                  />
+                </div>
+                <p class="hint">Frames the model. Sent as the system message.</p>
+              </div>
+
+              <div class="field">
+                <label for="tc-task-prompt">Task prompt</label>
+                <div class="slot-row">
+                  <Select
+                    id="tc-task-prompt"
+                    class="slot-select"
+                    :model-value="form.taskPromptId"
+                    :options="taskPromptOptions"
+                    option-label="name"
+                    option-value="id"
+                    placeholder="(none)"
+                    show-clear
+                    @update:model-value="(value) => selectSlot('task', value)"
+                  />
+                  <Button
+                    type="button"
+                    icon="pi pi-search"
+                    text
+                    rounded
+                    severity="secondary"
+                    aria-label="View prompt"
+                    :disabled="taskPrompt === null"
+                    @click="viewPrompt(taskPrompt)"
+                  />
+                </div>
+                <p class="hint">The instruction for this call. Sent at the head of the user message.</p>
+              </div>
+
+              <div class="field">
+                <label for="tc-content">Content</label>
+                <Textarea id="tc-content" v-model="form.content" rows="6" auto-resize class="mono-input" />
+                <p class="hint">
+                  The data this case varies — sent after the task prompt, at the end of the user
+                  message. Optional only when a task prompt supplies the whole user message.
+                </p>
+              </div>
             </div>
 
-            <div class="field">
-              <label for="tc-expected">Expected output</label>
-              <Textarea
-                id="tc-expected"
-                v-model="form.expectedOutput"
-                rows="4"
-                auto-resize
-                placeholder="optional"
-                class="mono-input"
-              />
+            <!--
+              Sticky, and a plain block rather than a flex column: a flex item
+              is only as tall as its content, which leaves a sticky child no
+              box to slide inside. As a grid item this stretches to the row's
+              height instead, so the preview stays on screen while the fields
+              beside it scroll.
+            -->
+            <div class="preview-column">
+              <div class="preview-sticky">
+                <span class="label">As it will be sent</span>
+                <div class="assembled">
+                  <div class="segment segment-system">
+                    <span class="segment-label">System message</span>
+                    <pre v-if="systemMessagePreview" class="segment-text">{{ systemMessagePreview }}</pre>
+                    <p v-else class="segment-empty">(no system message)</p>
+                  </div>
+
+                  <!-- The task prompt and the content are one message, so they
+                       share a box and are separated only by a rule; the system
+                       message is a different channel and stands apart. -->
+                  <div class="user-group">
+                    <span class="group-caption">User message</span>
+                    <div class="user-message">
+                      <template v-if="userMessagePreview">
+                        <div v-if="taskMessagePreview" class="segment segment-task">
+                          <span class="segment-label">Task prompt</span>
+                          <pre class="segment-text">{{ taskMessagePreview }}</pre>
+                        </div>
+                        <div v-if="contentPreview" class="segment segment-case">
+                          <span class="segment-label">Content</span>
+                          <pre class="segment-text">{{ contentPreview }}</pre>
+                        </div>
+                      </template>
+                      <div v-else class="segment segment-case">
+                        <p class="segment-empty">(nothing to send)</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <Message v-if="userMessageError" severity="error" :closable="false">
+                  {{ userMessageError }}
+                </Message>
+              </div>
             </div>
           </div>
+        </section>
 
-          <div class="column">
-            <div class="field">
-              <label for="tc-system-prompt">System prompt</label>
-              <Select
-                id="tc-system-prompt"
-                :model-value="form.systemPromptId"
-                :options="systemPromptOptions"
-                option-label="name"
-                option-value="id"
-                placeholder="(none)"
-                show-clear
-                @update:model-value="(value) => selectSlot('system', value)"
-              />
-              <p class="hint">Frames the model. Sent as the system message.</p>
-            </div>
-
-            <div class="field">
-              <label for="tc-task-prompt">Task prompt</label>
-              <Select
-                id="tc-task-prompt"
-                :model-value="form.taskPromptId"
-                :options="taskPromptOptions"
-                option-label="name"
-                option-value="id"
-                placeholder="(none)"
-                show-clear
-                @update:model-value="(value) => selectSlot('task', value)"
-              />
-              <p class="hint">The instruction for this call. Sent before the content above.</p>
-            </div>
-
-            <div class="field">
-              <span class="label">System message as it will be sent</span>
-              <pre class="preview">{{ systemMessagePreview ?? '(no system message)' }}</pre>
-            </div>
-
-            <div class="field">
-              <span class="label">User message as it will be sent</span>
-              <pre class="preview">{{ userMessagePreview || '(nothing to send)' }}</pre>
-              <Message v-if="userMessageError" severity="error" :closable="false">
-                {{ userMessageError }}
-              </Message>
-            </div>
-          </div>
-        </div>
-
-        <div class="tools-section">
+        <section class="panel">
+          <div class="panel-header"><h2>Expected output</h2></div>
           <div class="field">
-            <span class="label">Tools</span>
+            <Textarea
+              id="tc-expected"
+              v-model="form.expectedOutput"
+              rows="4"
+              auto-resize
+              placeholder="optional"
+              class="mono-input"
+              aria-label="Expected output"
+            />
+            <p class="hint">Never sent to the model — used only when rating results.</p>
+          </div>
+        </section>
+
+        <section class="panel tools-section">
+          <div class="panel-header"><h2>Tools</h2></div>
+          <div class="field">
             <div class="radio-column">
               <label v-for="option in TOOL_MODES" :key="option.value" class="radio-option block">
                 <RadioButton v-model="form.toolMode" :value="option.value" name="tc-tool-mode" />
@@ -598,7 +693,7 @@ async function removeTestCase() {
               </div>
             </div>
           </div>
-        </div>
+        </section>
 
         <Message v-if="saveError" severity="error" :closable="false">{{ saveError }}</Message>
 
@@ -655,6 +750,24 @@ async function removeTestCase() {
         </div>
       </form>
     </Dialog>
+
+    <!-- Read-only: the draft belongs to the prompt's own editor, and a slot
+         reference is not the place to change what every other test case using
+         it sends. -->
+    <Dialog
+      v-model:visible="promptViewOpen"
+      modal
+      :header="viewedPrompt?.name ?? 'Prompt'"
+      class="prompt-view-dialog"
+    >
+      <div v-if="viewedPrompt" class="prompt-view">
+        <Tag
+          :value="viewedPrompt.kind"
+          :severity="viewedPrompt.kind === 'system' ? 'info' : 'secondary'"
+        />
+        <pre class="prompt-view-text">{{ viewedPrompt.content || '(empty draft)' }}</pre>
+      </div>
+    </Dialog>
   </div>
 </template>
 
@@ -663,7 +776,7 @@ async function removeTestCase() {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
-  max-width: 64rem;
+  max-width: 72rem;
 }
 
 .page-heading h1 {
@@ -678,6 +791,28 @@ async function removeTestCase() {
   gap: 1.5rem;
 }
 
+/* The app's section idiom, same as `PromptEditView`'s panels. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.5rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: var(--p-content-border-radius);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.panel h2 {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  margin: 0;
+}
+
 .columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -688,6 +823,17 @@ async function removeTestCase() {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  min-width: 0;
+}
+
+.slot-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.slot-select {
+  flex: 1;
   min-width: 0;
 }
 
@@ -704,7 +850,8 @@ async function removeTestCase() {
 }
 
 .field label,
-.field .label {
+.field .label,
+.preview-sticky .label {
   font-size: 0.8125rem;
   font-weight: 500;
   color: var(--p-text-muted-color);
@@ -725,6 +872,107 @@ async function removeTestCase() {
   font-size: 0.75rem;
   color: var(--p-text-color);
   margin: 0;
+}
+
+/* Plain block, not a flex column — see the template comment: a sticky child
+   needs an ancestor box taller than itself, which only the stretched grid
+   item provides. */
+.preview-column {
+  min-width: 0;
+}
+
+/* A small gap, not the topbar's height: `AppLayout`'s `.app-content` is the
+   scroll container (`overflow: auto` inside a `.app-body` sized to
+   `100vh - 3.5rem`), so its scrollport already starts below the pinned
+   topbar and an offset of 3.5rem here would only strand the preview that far
+   down. */
+.preview-sticky {
+  position: sticky;
+  top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.assembled {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: var(--p-content-border-radius);
+  padding: 0.75rem;
+  /* A long prompt must not push the sticky box past the viewport, or it
+     stops being visible while scrolling — which is the whole point of it. */
+  max-height: calc(100vh - 9rem);
+  overflow: auto;
+}
+
+/* One colour per channel, the same tokens the results matrix's prompt peeks
+   read (`src/style.css`): system blue, task violet, the case's own content
+   neutral. */
+.segment {
+  border-left: 3px solid var(--pr-case-accent);
+  background: var(--pr-case-bg);
+  padding: 0.5rem 0.625rem;
+}
+
+.segment-system {
+  border-left-color: var(--pr-system-accent);
+  background: var(--pr-system-bg);
+}
+
+.segment-task {
+  border-left-color: var(--pr-task-accent);
+  background: var(--pr-task-bg);
+}
+
+.segment-label {
+  display: block;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--p-text-muted-color);
+}
+
+.segment-text {
+  margin: 0.25rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--p-font-family-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  color: var(--p-text-color);
+}
+
+.segment-empty {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+}
+
+.user-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.group-caption {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--p-text-muted-color);
+}
+
+/* Task prompt and content are one message, so they share a box and only a
+   rule separates them. */
+.user-message {
+  border: 1px solid var(--p-content-border-color);
+  border-radius: var(--p-content-border-radius);
+  overflow: hidden;
+}
+
+.user-message .segment + .segment {
+  border-top: 1px dashed var(--p-content-border-color);
 }
 
 .hint {
@@ -762,12 +1010,10 @@ async function removeTestCase() {
   gap: 0.125rem;
 }
 
+/* Wider gap than the other panels: the mode radios and the toolset picker
+   below them are two decisions, not one field after another. */
 .tools-section {
-  display: flex;
-  flex-direction: column;
   gap: 1.5rem;
-  border-top: 1px solid var(--p-content-border-color);
-  padding-top: 1.5rem;
 }
 
 .checkbox-column {
@@ -818,5 +1064,28 @@ async function removeTestCase() {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
+}
+
+/* The dialog root is teleported and its width lives in `src/style.css`
+   (`.prompt-view-dialog`); everything inside it is rendered from this
+   template, so it keeps the scope attribute and these rules apply. */
+.prompt-view {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.prompt-view-text {
+  align-self: stretch;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: var(--p-content-border-radius);
+  padding: 0.75rem;
+  font-family: var(--p-font-family-mono, ui-monospace, monospace);
+  font-size: 0.8125rem;
+  color: var(--p-text-color);
 }
 </style>

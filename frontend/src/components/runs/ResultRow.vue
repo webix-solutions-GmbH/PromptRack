@@ -22,7 +22,7 @@ const props = defineProps<{
   /** A viewer still sees the verdict, just not the buttons to change it. */
   canWrite: boolean
   /** `"v4"` when that slot's draft matched a committed version at run
-   * creation, `"dirty"` when it did not, `null` when the slot was empty. One
+   * creation, `"uncommitted"` when it did not, `null` when the slot was empty. One
    * per slot: the two prompts are versioned independently. */
   systemVersionLabel: string | null
   taskVersionLabel: string | null

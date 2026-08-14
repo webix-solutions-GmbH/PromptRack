@@ -302,7 +302,7 @@ async function removePrompt() {
         <h1>
           {{ prompt.name }}
           <Tag :value="prompt.kind" :severity="prompt.kind === 'system' ? 'info' : 'secondary'" />
-          <Tag v-if="prompt.dirty" value="dirty" severity="warn" />
+          <Tag v-if="prompt.dirty" value="uncommitted" severity="warn" />
         </h1>
         <p class="status-line">{{ describeVersionStatus(prompt) }}</p>
         <p v-if="prompt.deployed_at" class="meta">
@@ -428,9 +428,11 @@ async function removePrompt() {
           option-value="value"
         />
       </div>
-      <p v-if="diffLoading" class="hint">Loading diff…</p>
-      <Message v-else-if="diffError" severity="error" :closable="false">{{ diffError }}</Message>
-      <DiffViewer v-else :diff="diffText" />
+      <div class="diff-dialog-body">
+        <p v-if="diffLoading" class="hint">Loading diff…</p>
+        <Message v-else-if="diffError" severity="error" :closable="false">{{ diffError }}</Message>
+        <DiffViewer v-else :diff="diffText" />
+      </div>
     </Dialog>
   </div>
 </template>
@@ -505,18 +507,8 @@ async function removePrompt() {
   display: flex;
 }
 
-.view-dialog {
-  width: 42rem;
-  max-width: 90vw;
-}
-
 .view-textarea {
   width: 100%;
-}
-
-.diff-dialog {
-  width: 44rem;
-  max-width: 90vw;
 }
 
 .diff-controls {
@@ -530,5 +522,20 @@ async function removePrompt() {
   font-size: 0.8125rem;
   font-weight: 500;
   color: var(--p-text-muted-color);
+}
+</style>
+
+<style>
+/* Both dialogs teleport to <body>, out of reach of the scoped block above —
+   sizing lives here instead. The global `.diff-dialog` rule in style.css
+   covers the outer dialog width; this block covers what that rule doesn't. */
+.view-dialog {
+  width: min(48rem, 90vw);
+}
+
+.diff-dialog-body {
+  min-height: 24rem;
+  max-height: 70vh;
+  overflow-y: auto;
 }
 </style>

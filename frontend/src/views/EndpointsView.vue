@@ -3,7 +3,7 @@
 // a proxy, or a hosted API — plus an optional API key and free-text hardware
 // notes; creating/editing one is admin-only, since it holds credentials;
 // every signed-in user can still read the list to pick an endpoint for a run.
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
@@ -79,6 +79,7 @@ function emptyForm(): EndpointFormState {
 function openCreate() {
   form.value = emptyForm()
   formError.value = null
+  connectionResult.value = null
   dialogOpen.value = true
 }
 
@@ -103,6 +104,37 @@ async function submitForm() {
     formError.value = err instanceof ApiError ? err.message : 'Failed to create the endpoint.'
   } finally {
     saving.value = false
+  }
+}
+
+// --- test connection, before the endpoint row exists ----------------------
+
+const testingConnection = ref(false)
+const connectionResult = ref<{ ok: true; latency_ms: number } | { ok: false; error: string } | null>(
+  null,
+)
+
+// A result answers a specific base_url/api_key pair — clear it the moment
+// either changes so a stale "Connection OK" can't be read as still true.
+watch([() => form.value.base_url, () => form.value.api_key], () => {
+  connectionResult.value = null
+})
+
+async function testConnection() {
+  connectionResult.value = null
+  testingConnection.value = true
+  try {
+    const result = await endpointsApi.testConnection(form.value.base_url, form.value.api_key || null)
+    connectionResult.value = result.ok
+      ? { ok: true, latency_ms: result.latency_ms }
+      : { ok: false, error: result.error }
+  } catch (err) {
+    connectionResult.value = {
+      ok: false,
+      error: err instanceof ApiError ? err.message : 'Request failed unexpectedly.',
+    }
+  } finally {
+    testingConnection.value = false
   }
 }
 </script>
@@ -181,15 +213,15 @@ async function submitForm() {
         <div class="field-row three">
           <div class="field">
             <label for="endpoint-cpu">CPU</label>
-            <InputText id="endpoint-cpu" v-model="form.cpu" />
+            <InputText id="endpoint-cpu" v-model="form.cpu" class="w-full" />
           </div>
           <div class="field">
             <label for="endpoint-ram">RAM</label>
-            <InputText id="endpoint-ram" v-model="form.ram" />
+            <InputText id="endpoint-ram" v-model="form.ram" class="w-full" />
           </div>
           <div class="field">
             <label for="endpoint-gpu">GPU</label>
-            <InputText id="endpoint-gpu" v-model="form.gpu" />
+            <InputText id="endpoint-gpu" v-model="form.gpu" class="w-full" />
           </div>
         </div>
         <div class="field">
@@ -200,10 +232,30 @@ async function submitForm() {
           <Checkbox v-model="form.is_global" binary input-id="endpoint-is-global" />
           Global — share this endpoint with every workspace
         </label>
+
+        <div v-if="connectionResult" class="connection-result">
+          <span v-if="connectionResult.ok" class="connection-ok">
+            <i class="pi pi-check-circle" /> Connection OK · {{ connectionResult.latency_ms }} ms
+          </span>
+          <Message v-else severity="warn" :closable="false">{{ connectionResult.error }}</Message>
+        </div>
+
         <Message v-if="formError" severity="error" :closable="false">{{ formError }}</Message>
-        <div class="dialog-actions">
-          <Button type="button" label="Cancel" text @click="dialogOpen = false" />
-          <Button type="submit" label="Create endpoint" :loading="saving" />
+        <div class="dialog-actions" :class="{ split: auth.canAdminister }">
+          <Button
+            v-if="auth.canAdminister"
+            type="button"
+            label="Test connection"
+            severity="secondary"
+            outlined
+            :disabled="!form.base_url.trim() || testingConnection"
+            :loading="testingConnection"
+            @click="testConnection"
+          />
+          <div class="dialog-actions-right">
+            <Button type="button" label="Cancel" text @click="dialogOpen = false" />
+            <Button type="submit" label="Create endpoint" :loading="saving" />
+          </div>
         </div>
       </form>
     </Dialog>
@@ -279,6 +331,10 @@ async function submitForm() {
   display: flex;
   flex-direction: column;
   gap: 0.375rem;
+  /* Grid items default to min-width:auto, which lets an InputText's intrinsic
+   * width push a three-column row wider than its track and bleed out of the
+   * dialog. 0 lets the 1fr tracks actually constrain it. */
+  min-width: 0;
 }
 
 .field label {
@@ -299,9 +355,30 @@ async function submitForm() {
   font-weight: 400;
 }
 
+.connection-ok {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  color: var(--p-green-600, var(--p-green-500));
+}
+
 .dialog-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* Only when the Test connection button actually renders (canAdminister) —
+ * otherwise a lone .dialog-actions-right would land at flex-start instead of
+ * the trailing edge under plain space-between. */
+.dialog-actions.split {
+  justify-content: space-between;
+}
+
+.dialog-actions-right {
+  display: flex;
   gap: 0.5rem;
 }
 </style>

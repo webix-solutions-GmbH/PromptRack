@@ -105,3 +105,26 @@ pre {
   width: 42rem;
   max-width: 90vw;
 }
+
+/* Same teleport reasoning as .form-dialog: dialog width rules must be global. */
+.diff-dialog {
+  width: min(72rem, 95vw);
+}
+
+.prompt-view-dialog {
+  width: min(56rem, 90vw);
+}
+
+/* Prompt-part color coding, shared between the test-case editor's assembled
+ * preview and the results matrix's prompt peeks: system → blue, task → violet
+ * (echoing the brand mark), the case's own content → neutral. The accents are
+ * fixed palette steps that read on both themes; the tinted backgrounds derive
+ * from them, so light/dark needs no second definition. */
+:root {
+  --pr-system-accent: var(--p-blue-500);
+  --pr-system-bg: color-mix(in srgb, var(--p-blue-500) 9%, transparent);
+  --pr-task-accent: var(--p-purple-500);
+  --pr-task-bg: color-mix(in srgb, var(--p-purple-500) 9%, transparent);
+  --pr-case-accent: var(--p-text-muted-color);
+  --pr-case-bg: color-mix(in srgb, var(--p-text-muted-color) 7%, transparent);
+}

@@ -33,6 +33,10 @@ const models = ref<EndpointModel[]>([])
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 
+// Same gate as the Details section's own `v-if` — shared so the two-column
+// grid can drop to one column when that section isn't rendered at all.
+const showDetailsPanel = computed(() => auth.canAdminister && endpoint.value?.editable === true)
+
 interface EndpointFormState {
   name: string
   base_url: string
@@ -294,121 +298,123 @@ async function removeEndpoint() {
         />
       </div>
 
-      <section v-if="auth.canAdminister && endpoint.editable" class="panel">
-        <h2>Details</h2>
-        <form class="dialog-form" @submit.prevent="save">
-          <div class="field-row">
-            <div class="field">
-              <label for="endpoint-name">Name *</label>
-              <InputText id="endpoint-name" v-model="form.name" required />
+      <div class="page-grid" :class="{ single: !showDetailsPanel }">
+        <section v-if="showDetailsPanel" class="panel">
+          <h2>Details</h2>
+          <form class="dialog-form" @submit.prevent="save">
+            <div class="field-row">
+              <div class="field">
+                <label for="endpoint-name">Name *</label>
+                <InputText id="endpoint-name" v-model="form.name" required />
+              </div>
+              <div class="field">
+                <label for="endpoint-base-url">Base URL *</label>
+                <InputText id="endpoint-base-url" v-model="form.base_url" required />
+              </div>
             </div>
             <div class="field">
-              <label for="endpoint-base-url">Base URL *</label>
-              <InputText id="endpoint-base-url" v-model="form.base_url" required />
-            </div>
-          </div>
-          <div class="field">
-            <label for="endpoint-api-key">API key</label>
-            <Password
-              id="endpoint-api-key"
-              v-model="form.api_key"
-              :feedback="false"
-              toggle-mask
-              :disabled="clearApiKey"
-              :placeholder="endpoint.has_api_key ? 'leave blank to keep the stored key' : 'optional'"
-              input-class="w-full"
-            />
-            <p v-if="endpoint.has_api_key" class="hint">
-              An API key is stored — leave this blank to keep it, or type a new one to replace it.
-            </p>
-            <label v-if="endpoint.has_api_key" class="checkbox-option" for="endpoint-clear-api-key">
-              <Checkbox v-model="clearApiKey" binary input-id="endpoint-clear-api-key" />
-              Remove the stored key on save
-            </label>
-          </div>
-          <div class="field-row three">
-            <div class="field">
-              <label for="endpoint-cpu">CPU</label>
-              <InputText id="endpoint-cpu" v-model="form.cpu" />
-            </div>
-            <div class="field">
-              <label for="endpoint-ram">RAM</label>
-              <InputText id="endpoint-ram" v-model="form.ram" />
-            </div>
-            <div class="field">
-              <label for="endpoint-gpu">GPU</label>
-              <InputText id="endpoint-gpu" v-model="form.gpu" />
-            </div>
-          </div>
-          <div class="field">
-            <label for="endpoint-notes">Notes</label>
-            <Textarea id="endpoint-notes" v-model="form.notes" rows="3" auto-resize />
-          </div>
-          <label v-if="auth.isBaseWorkspace" class="checkbox-option" for="endpoint-is-global">
-            <Checkbox v-model="form.is_global" binary input-id="endpoint-is-global" />
-            Global — share this endpoint with every workspace
-          </label>
-
-          <p class="meta">
-            Created {{ formatDateTime(endpoint.created_at) }} · Updated
-            {{ formatDateTime(endpoint.updated_at) }}
-          </p>
-
-          <Message v-if="saveError" severity="error" :closable="false">{{ saveError }}</Message>
-          <div class="dialog-actions start">
-            <Button type="submit" label="Save changes" :loading="saving" />
-          </div>
-        </form>
-
-        <div class="danger-zone">
-          <Button
-            label="Delete endpoint"
-            severity="danger"
-            outlined
-            :loading="deleting"
-            @click="confirmDelete"
-          />
-        </div>
-      </section>
-
-      <section class="panel">
-        <h2>Models</h2>
-        <DataTable :value="models" data-key="id" class="table">
-          <template #empty>No models yet — discover or add one manually below.</template>
-          <Column field="model_id" header="Model ID">
-            <template #body="{ data }: { data: EndpointModel }">
-              <span class="mono">{{ data.model_id }}</span>
-            </template>
-          </Column>
-          <Column header="Status">
-            <template #body="{ data }: { data: EndpointModel }">
-              <Tag
-                :value="data.currently_loaded ? 'loaded' : 'not loaded'"
-                :severity="data.currently_loaded ? 'success' : 'secondary'"
+              <label for="endpoint-api-key">API key</label>
+              <Password
+                id="endpoint-api-key"
+                v-model="form.api_key"
+                :feedback="false"
+                toggle-mask
+                :disabled="clearApiKey"
+                :placeholder="endpoint.has_api_key ? 'leave blank to keep the stored key' : 'optional'"
+                input-class="w-full"
               />
-            </template>
-          </Column>
-          <Column field="source" header="Source" />
-          <Column header="First seen">
-            <template #body="{ data }: { data: EndpointModel }">{{
-              formatDateTime(data.first_seen_at)
-            }}</template>
-          </Column>
-          <Column header="Last seen">
-            <template #body="{ data }: { data: EndpointModel }">{{
-              formatDateTime(data.last_seen_at)
-            }}</template>
-          </Column>
-        </DataTable>
+              <p v-if="endpoint.has_api_key" class="hint">
+                An API key is stored — leave this blank to keep it, or type a new one to replace it.
+              </p>
+              <label v-if="endpoint.has_api_key" class="checkbox-option" for="endpoint-clear-api-key">
+                <Checkbox v-model="clearApiKey" binary input-id="endpoint-clear-api-key" />
+                Remove the stored key on save
+              </label>
+            </div>
+            <div class="field-row three">
+              <div class="field">
+                <label for="endpoint-cpu">CPU</label>
+                <InputText id="endpoint-cpu" v-model="form.cpu" class="w-full" />
+              </div>
+              <div class="field">
+                <label for="endpoint-ram">RAM</label>
+                <InputText id="endpoint-ram" v-model="form.ram" class="w-full" />
+              </div>
+              <div class="field">
+                <label for="endpoint-gpu">GPU</label>
+                <InputText id="endpoint-gpu" v-model="form.gpu" class="w-full" />
+              </div>
+            </div>
+            <div class="field">
+              <label for="endpoint-notes">Notes</label>
+              <Textarea id="endpoint-notes" v-model="form.notes" rows="3" auto-resize />
+            </div>
+            <label v-if="auth.isBaseWorkspace" class="checkbox-option" for="endpoint-is-global">
+              <Checkbox v-model="form.is_global" binary input-id="endpoint-is-global" />
+              Global — share this endpoint with every workspace
+            </label>
 
-        <form v-if="auth.canAdminister" class="add-model-form" @submit.prevent="addModel">
-          <div class="field grow">
-            <label for="new-model-id">Add model manually</label>
-            <InputText id="new-model-id" v-model="newModelId" placeholder="llama-3.1-8b-instruct" />
+            <p class="meta">
+              Created {{ formatDateTime(endpoint.created_at) }} · Updated
+              {{ formatDateTime(endpoint.updated_at) }}
+            </p>
+
+            <Message v-if="saveError" severity="error" :closable="false">{{ saveError }}</Message>
+            <div class="dialog-actions start">
+              <Button type="submit" label="Save changes" :loading="saving" />
+            </div>
+          </form>
+
+          <div class="danger-zone">
+            <Button
+              label="Delete endpoint"
+              severity="danger"
+              outlined
+              :loading="deleting"
+              @click="confirmDelete"
+            />
           </div>
-          <Button type="submit" label="Add" severity="secondary" outlined :loading="addingModel" />
-        </form>
-      </section>
+        </section>
+
+        <section class="panel">
+          <h2>Models</h2>
+          <DataTable :value="models" data-key="id" class="table">
+            <template #empty>No models yet — discover or add one manually below.</template>
+            <Column field="model_id" header="Model ID">
+              <template #body="{ data }: { data: EndpointModel }">
+                <span class="mono">{{ data.model_id }}</span>
+              </template>
+            </Column>
+            <Column header="Status">
+              <template #body="{ data }: { data: EndpointModel }">
+                <Tag
+                  :value="data.currently_loaded ? 'loaded' : 'not loaded'"
+                  :severity="data.currently_loaded ? 'success' : 'secondary'"
+                />
+              </template>
+            </Column>
+            <Column field="source" header="Source" />
+            <Column header="First seen">
+              <template #body="{ data }: { data: EndpointModel }">{{
+                formatDateTime(data.first_seen_at)
+              }}</template>
+            </Column>
+            <Column header="Last seen">
+              <template #body="{ data }: { data: EndpointModel }">{{
+                formatDateTime(data.last_seen_at)
+              }}</template>
+            </Column>
+          </DataTable>
+
+          <form v-if="auth.canAdminister" class="add-model-form" @submit.prevent="addModel">
+            <div class="field grow">
+              <label for="new-model-id">Add model manually</label>
+              <InputText id="new-model-id" v-model="newModelId" placeholder="llama-3.1-8b-instruct" />
+            </div>
+            <Button type="submit" label="Add" severity="secondary" outlined :loading="addingModel" />
+          </form>
+        </section>
+      </div>
     </template>
   </div>
 </template>
@@ -418,7 +424,31 @@ async function removeEndpoint() {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
-  max-width: 48rem;
+  max-width: 90rem;
+}
+
+/* Details (left) and Models (right) side by side on wide screens. Details is
+ * only rendered for admins on editable endpoints (see `showDetailsPanel`) —
+ * `.single` drops to one track so Models doesn't get stranded in a 1fr column
+ * with an empty 1.2fr beside it. */
+.page-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.page-grid.single {
+  grid-template-columns: 1fr;
+}
+
+/* `rem` inside `@media` resolves against the browser's 16px default, never
+ * this app's 17px root — see the note in src/style.css. Written in `px` here
+ * to name the actual pixel breakpoint rather than imply a false precision. */
+@media (max-width: 1100px) {
+  .page-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .page-heading h1 {
@@ -478,6 +508,10 @@ async function removeEndpoint() {
   display: flex;
   flex-direction: column;
   gap: 0.375rem;
+  /* Grid items default to min-width:auto, which lets an InputText's intrinsic
+   * width push a three-column row wider than its track and bleed out of the
+   * panel. 0 lets the 1fr tracks actually constrain it. */
+  min-width: 0;
 }
 
 .field.grow {

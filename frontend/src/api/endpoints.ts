@@ -19,6 +19,9 @@
 //                                            it stands rather than refused)
 //   POST   /api/endpoints/{id}/discover   -> DiscoverModelsResult
 //   POST   /api/endpoints/{id}/test       -> TestConnectionResult
+//   POST   /api/endpoints/test-connection  { base_url, api_key? } -> TestConnectionResult
+//                                            (the "New endpoint" dialog's probe,
+//                                            before a row exists to attach it to)
 //
 // Discover/test answer 200 with a discriminated `ok` union rather than an
 // HTTP error status, because an unreachable endpoint is an expected outcome
@@ -94,4 +97,6 @@ export const endpointsApi = {
     api.post<EndpointModel>(`/endpoints/${id}/models`, { model_id: modelId }),
   discover: (id: number) => api.post<DiscoverModelsResult>(`/endpoints/${id}/discover`),
   test: (id: number) => api.post<TestConnectionResult>(`/endpoints/${id}/test`),
+  testConnection: (base_url: string, api_key: string | null) =>
+    api.post<TestConnectionResult>('/endpoints/test-connection', { base_url, api_key }),
 }
