@@ -6,14 +6,13 @@
 // can only ever show one cell, so comparing two models' answers to the same
 // test case meant opening, closing and remembering.
 //
-// Every row is open, always. A per-row expand/collapse was the same defeat one
-// step smaller — a reader who has to click a row before it says anything is
-// still reading one row at a time. What keeps an always-open row scannable
-// instead is a cap on the two texts that can run to hundreds of lines (the
-// test case text here, the response in `CellDetail`), each scrolling in its
-// own box so one verbose model cannot set the height of the whole row. Only
-// those texts scroll: the rating buttons, metrics and provenance have to be
-// reachable without scrolling anything.
+// Every row is open, always, and open means *fully*: a response renders at
+// its natural height with no inner scrollport, so reading a long answer is
+// one continuous scroll of the matrix rather than a hunt for which nested
+// box the wheel is over. A verbose model therefore sets its own row's
+// height — deliberately: with the case text, prompts, rubric and tools all
+// reading as peeks, the row header carries only identity (group and title)
+// and a row costs no height beyond the answers themselves.
 //
 // Open content is much wider than a clamped preview was, which is what
 // `.cell-detail`'s min-width plus `.matrix-wrap`'s existing horizontal scroll
@@ -32,8 +31,10 @@
 // `backend/app/api/results.py`'s `_tallies`), so this component takes both
 // column shapes and picks per `mode` rather than making the caller normalize
 // them into one.
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { RouterLink } from 'vue-router'
+import Dialog from 'primevue/dialog'
+import Popover from 'primevue/popover'
 import Tag from 'primevue/tag'
 import { formatDateTime, formatDuration, formatRate, formatTokenLabel } from '../../lib/format'
 import { usePromptVersionLabels } from '../../lib/promptVersionLabels'
@@ -223,8 +224,8 @@ const { versionLabel } = usePromptVersionLabels(() =>
   }),
 )
 
-/** The row header's prompt disclosures, in display order — an array so the
- * template renders both slots with one `v-for` instead of two near-identical
+/** The row's prompt texts in display order — an array so the peek content
+ * renders both slots with one `v-for` instead of two near-identical
  * branches. */
 function rowPromptBlocks(
   row: CompareRowView,
@@ -249,6 +250,204 @@ function rowPromptBlocks(
   }
   return blocks
 }
+
+// --- prompt / rubric peeks ------------------------------------------------
+
+// The prompts and the rubric used to open as `<details>` inside the 16rem
+// sticky column, which could only ever render them as a few dozen characters
+// per line crushed against the fixed row height. They are read on demand
+// instead: hovering a peek button shows the text in a popover at reading
+// width (the quick glance between two ratings), clicking pins the same
+// content as a non-modal draggable dialog that survives scrolling the matrix
+// and rating cells behind it. One popover and one dialog serve the whole
+// table — only their content swaps per row.
+
+interface PeekBlock {
+  key: string
+  /** Null when the peek holds a single text needing no sub-heading (the
+   * rubric); the prompts peek labels its two slots, the tools peek each
+   * tool. */
+  label: string | null
+  /** Rendered as a secondary Tag beside the label: a prompt's version, a
+   * tool's toolset. */
+  badge: string | null
+  /** Verbatim-identifier labels (tool names) render mono and case-preserved
+   * instead of the uppercase eyebrow the prose labels get. */
+  mono?: boolean
+  text: string
+}
+
+interface PeekContent {
+  /** What the peek shows, for the dialog header: "Prompts" / "Expected output". */
+  source: string
+  caseTitle: string
+  blocks: PeekBlock[]
+}
+
+function caseTextPeek(row: CompareRowView): PeekContent {
+  return {
+    source: 'Test case',
+    caseTitle: row.test_case_title,
+    // `content` is nullable — a task prompt can be the whole user message —
+    // and the button hides on a null, so this never renders a placeholder.
+    blocks: [{ key: 'case', label: null, badge: null, text: row.test_case_text ?? '' }],
+  }
+}
+
+function promptsPeek(row: CompareRowView): PeekContent {
+  return {
+    source: 'Prompts',
+    caseTitle: row.test_case_title,
+    blocks: rowPromptBlocks(row).map((block) => ({
+      key: block.key,
+      label: block.label,
+      badge: block.version,
+      text: block.text,
+    })),
+  }
+}
+
+function expectedPeek(row: CompareRowView): PeekContent {
+  return {
+    source: 'Expected output',
+    caseTitle: row.test_case_title,
+    blocks: [{ key: 'expected', label: null, badge: null, text: row.expected_output ?? '' }],
+  }
+}
+
+/** The parsed shape of `tools_snapshot` this peek reads — a projection of the
+ * backend's `SnapshotTool` (see `frontend/src/api/runs.ts`), narrowed to what
+ * the list shows. */
+interface SnapshotToolLite {
+  definition: { type: string; function?: { name?: string; description?: string } }
+  toolset_name: string
+}
+
+interface RowTools {
+  count: number
+  content: PeekContent
+}
+
+/** The tools every cell of the row offered, lifted to the row the same way
+ * the prompts are: only when the cells froze byte-identical snapshots — a
+ * disagreeing row gets no pill, and `drift` already names "tools" there.
+ * A computed Map rather than a per-call parse: the template asks per render,
+ * and `JSON.parse` per row per render is the kind of cost that grows with the
+ * matrix. */
+const rowToolsMap = computed<Map<string, RowTools | null>>(() => {
+  const map = new Map<string, RowTools | null>()
+  for (const row of props.rows) {
+    map.set(row.key, computeRowTools(row))
+  }
+  return map
+})
+
+function computeRowTools(row: CompareRowView): RowTools | null {
+  const cells = row.cells.filter((cell): cell is CompareCellView => cell !== null)
+  if (cells.length === 0) return null
+  const first = cells[0].tools_snapshot
+  if (!first) return null
+  if (cells.some((cell) => cell.tools_snapshot !== first)) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(first)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return null
+  const tools = parsed as SnapshotToolLite[]
+  return {
+    count: tools.length,
+    content: {
+      source: 'Tools offered',
+      caseTitle: row.test_case_title,
+      blocks: tools.map((tool, index) => ({
+        key: `tool-${index}`,
+        label: tool.definition?.function?.name ?? tool.definition?.type ?? 'tool',
+        badge: tool.toolset_name ?? null,
+        mono: true,
+        text: tool.definition?.function?.description?.trim() || '(no description)',
+      })),
+    },
+  }
+}
+
+function toolsFor(row: CompareRowView): RowTools | null {
+  return rowToolsMap.value.get(row.key) ?? null
+}
+
+// Null-guarded wrappers for the template: the button only renders when
+// `toolsFor` is non-null, but the template's type checker cannot carry that
+// narrowing from the `v-if` into the handlers.
+function toolsLabel(row: CompareRowView): string {
+  const tools = toolsFor(row)
+  if (tools === null) return ''
+  return `${tools.count} ${tools.count === 1 ? 'tool' : 'tools'}`
+}
+
+function enterTools(event: MouseEvent, row: CompareRowView) {
+  const tools = toolsFor(row)
+  if (tools !== null) peekEnter(event, tools.content)
+}
+
+function pinTools(row: CompareRowView) {
+  const tools = toolsFor(row)
+  if (tools !== null) pin(tools.content)
+}
+
+const peekPopover = ref<InstanceType<typeof Popover> | null>(null)
+const hovered = ref<PeekContent | null>(null)
+const pinned = ref<PeekContent | null>(null)
+const pinnedVisible = ref(false)
+
+// Two timers, deliberately asymmetric: the show delay keeps a cursor passing
+// over the buttons from flashing popovers, the hide delay is the grace period
+// that lets the cursor travel from the button into the popover to scroll a
+// long text without the popover vanishing underneath it.
+let showTimer: ReturnType<typeof setTimeout> | undefined
+let hideTimer: ReturnType<typeof setTimeout> | undefined
+
+function peekEnter(event: MouseEvent, content: PeekContent) {
+  // Captured now: by the time the timer fires the event has been dispatched
+  // and `currentTarget` is null, so `show` gets the element explicitly.
+  const target = event.currentTarget as HTMLElement
+  clearTimeout(hideTimer)
+  clearTimeout(showTimer)
+  showTimer = setTimeout(() => {
+    hovered.value = content
+    const popover = peekPopover.value
+    if (popover === null) return
+    // hide-then-show rather than show alone: `show` on an already-visible
+    // popover updates nothing, so moving straight from one button to another
+    // within the grace period would leave it aligned to the old button.
+    popover.hide()
+    void nextTick(() => popover.show(event, target))
+  }, 150)
+}
+
+function peekLeave() {
+  clearTimeout(showTimer)
+  clearTimeout(hideTimer)
+  hideTimer = setTimeout(() => peekPopover.value?.hide(), 200)
+}
+
+/** Entering the popover itself cancels the pending hide — see the grace
+ * period above. */
+function peekHoverHold() {
+  clearTimeout(hideTimer)
+}
+
+function pin(content: PeekContent) {
+  clearTimeout(showTimer)
+  peekPopover.value?.hide()
+  pinned.value = content
+  pinnedVisible.value = true
+}
+
+onBeforeUnmount(() => {
+  clearTimeout(showTimer)
+  clearTimeout(hideTimer)
+})
 
 /** A cell carries no prompt-token count, so the shared formatter's two-sided
  * form never applies here — only the `~` an estimated count is marked with. */
@@ -293,38 +492,76 @@ function tokenLabel(cell: CompareCellView): string | null {
                 {{ row.group_name }}<template v-if="row.test_case_id === null"> · deleted test case</template>
               </span>
               <span class="row-title">{{ row.test_case_title }}</span>
-              <!-- `content` is nullable: a task prompt can be the whole user
-                   message on its own. -->
-              <p class="row-text row-case-text">{{ row.test_case_text ?? '(no content)' }}</p>
               <!--
-                The prompts the whole row shares, beside the test case text
-                they were sent with. Still behind a disclosure, unlike the test
-                case text: a row is identified by its case, while the prompts
-                are the same in every row of a suite and would push the cells
-                they explain off the screen.
+                Everything the row references — its own case text, the
+                prompts its cells share, and the rubric they're judged
+                against — as peek buttons rather than inline text: hover for
+                a glance, click to pin (see the peek section in the script).
+                All three are reference material read occasionally, and
+                rendering any of them inline was unreadable at any height in
+                a sticky column narrow enough to leave room for the answers.
+                Each button hides when it has nothing to show: a null
+                `test_case_text` (a task prompt can be the whole user
+                message), an empty prompt row, a row with no rubric — the
+                last also covering the cells disagreeing about the rubric
+                (the row's `expected_output` is null then and `drift` says
+                "expected output"): showing one cell's rubric as the row's
+                would be a claim about how the other cells were graded.
               -->
-              <details v-for="block in rowPromptBlocks(row)" :key="block.key" class="row-details">
-                <summary>
-                  {{ block.label }}
-                  <Tag v-if="block.version" severity="secondary" :value="block.version" />
-                </summary>
-                <p class="row-text row-prompt-text">{{ block.text }}</p>
-              </details>
-              <!--
-                The rubric, in the sticky column on purpose: it is what every
-                cell of the row is being judged against, so it has to stay on
-                screen while the reader scrolls sideways through the answers —
-                a right-hand column would slide out of view exactly when the
-                comparison is happening. Absent when the row has no rubric, and
-                absent when the cells disagree about it (the row's
-                `expected_output` is null then and `drift` says "expected
-                output"): showing one cell's rubric as the row's would be a
-                claim about how the other cells were graded.
-              -->
-              <details v-if="row.expected_output" class="row-details">
-                <summary>Expected output</summary>
-                <p class="row-text row-expected-text">{{ row.expected_output }}</p>
-              </details>
+              <div
+                v-if="
+                  row.test_case_text ||
+                  rowPromptBlocks(row).length > 0 ||
+                  toolsFor(row) !== null ||
+                  row.expected_output
+                "
+                class="row-peeks"
+              >
+                <button
+                  v-if="row.test_case_text"
+                  type="button"
+                  class="peek-button"
+                  @mouseenter="peekEnter($event, caseTextPeek(row))"
+                  @mouseleave="peekLeave"
+                  @click="pin(caseTextPeek(row))"
+                >
+                  <i class="pi pi-align-left" aria-hidden="true" />
+                  Test case
+                </button>
+                <button
+                  v-if="rowPromptBlocks(row).length > 0"
+                  type="button"
+                  class="peek-button"
+                  @mouseenter="peekEnter($event, promptsPeek(row))"
+                  @mouseleave="peekLeave"
+                  @click="pin(promptsPeek(row))"
+                >
+                  <i class="pi pi-comment" aria-hidden="true" />
+                  Prompts
+                </button>
+                <button
+                  v-if="toolsFor(row) !== null"
+                  type="button"
+                  class="peek-button"
+                  @mouseenter="enterTools($event, row)"
+                  @mouseleave="peekLeave"
+                  @click="pinTools(row)"
+                >
+                  <i class="pi pi-wrench" aria-hidden="true" />
+                  {{ toolsLabel(row) }}
+                </button>
+                <button
+                  v-if="row.expected_output"
+                  type="button"
+                  class="peek-button"
+                  @mouseenter="peekEnter($event, expectedPeek(row))"
+                  @mouseleave="peekLeave"
+                  @click="pin(expectedPeek(row))"
+                >
+                  <i class="pi pi-check-circle" aria-hidden="true" />
+                  Expected
+                </button>
+              </div>
               <p v-if="row.drift.length > 0" class="drift-note">{{ driftLabel(row.drift) }}</p>
             </div>
           </th>
@@ -387,6 +624,45 @@ function tokenLabel(cell: CompareCellView): string | null {
         </tr>
       </tbody>
     </table>
+    <!-- Both teleport to <body>, so their inner styling lives in the
+         unscoped style block below. The hover handlers sit on the content
+         div rather than the component: the overlay root is teleported and
+         only the markup here is guaranteed to receive them. -->
+    <Popover ref="peekPopover" class="matrix-peek">
+      <div
+        v-if="hovered"
+        class="peek-content peek-scroll"
+        @mouseenter="peekHoverHold"
+        @mouseleave="peekLeave"
+      >
+        <div v-for="block in hovered.blocks" :key="block.key" class="peek-block">
+          <span v-if="block.label" class="peek-block-label" :class="{ mono: block.mono }">
+            {{ block.label }}
+            <Tag v-if="block.badge" severity="secondary" :value="block.badge" />
+          </span>
+          <p class="peek-text">{{ block.text }}</p>
+        </div>
+      </div>
+    </Popover>
+    <!-- Deliberately non-modal (PrimeVue's default): the whole point of
+         pinning is rating cells against the rubric, so the matrix behind it
+         must stay scrollable and clickable, and the dialog dragged wherever
+         it isn't in the way. -->
+    <Dialog
+      v-model:visible="pinnedVisible"
+      class="matrix-peek-dialog"
+      :header="pinned ? `${pinned.source} — ${pinned.caseTitle}` : ''"
+    >
+      <div v-if="pinned" class="peek-content">
+        <div v-for="block in pinned.blocks" :key="block.key" class="peek-block">
+          <span v-if="block.label" class="peek-block-label" :class="{ mono: block.mono }">
+            {{ block.label }}
+            <Tag v-if="block.badge" severity="secondary" :value="block.badge" />
+          </span>
+          <p class="peek-text">{{ block.text }}</p>
+        </div>
+      </div>
+    </Dialog>
   </div>
 </template>
 
@@ -403,11 +679,6 @@ function tokenLabel(cell: CompareCellView): string | null {
    matrix on the page, scrolling all the way down then lands the table's top
    edge exactly under the topbar rather than behind it. */
 .matrix-wrap {
-  /* One height for every row, read by `.cell-inner` and `.row-header` alike so
-     the two columns cannot drift apart. Roughly a third of a 1080p viewport:
-     enough that a typical answer needs no scrolling, small enough that three
-     rows are comparable at once. */
-  --matrix-row-height: 26rem;
   overflow: auto;
   max-height: calc(100vh - 5rem);
   border: 1px solid var(--p-content-border-color);
@@ -438,19 +709,19 @@ thead {
   position: sticky;
   left: 0;
   z-index: 2;
-  width: 16rem;
-  min-width: 16rem;
-  max-width: 16rem;
+  /* Narrow on purpose: the header holds only group, title, peek chips and
+     the drift note — every longer text opens as a peek — so its width is
+     screen the answer columns get to keep. The chips stack vertically at
+     this width, which reads as a tidy list rather than a squeezed row. */
+  width: 10rem;
+  min-width: 10rem;
+  max-width: 10rem;
   border-right: 1px solid var(--p-content-border-color);
   border-bottom: 1px solid var(--p-content-border-color);
   box-shadow: inset -1px 0 0 var(--p-content-border-color);
   background: var(--p-content-background);
-  /* No padding on the cell: the header column and the body cells must resolve
-     to exactly the same total height, or the taller one stretches the row and
-     the other ends short of its bottom edge. Padding here sat *around* the
-     26rem `.row-header`, making this column 1.5rem taller than the 26rem
-     `.cell-inner` in a zero-padding `.cell` — the gap under every cell footer.
-     The padding lives on `.row-header` instead, inside its border-box height. */
+  /* Zero-padding cell, padding on the inner `.row-header` — the same split
+     `.cell`/`.cell-inner` use, so both columns own their full box. */
   padding: 0;
   vertical-align: top;
   font-weight: 400;
@@ -537,9 +808,6 @@ thead .row-header-cell {
 }
 
 .row-header {
-  height: var(--matrix-row-height);
-  /* The cell's padding, carried here so `border-box` counts it inside the row
-     height — see `.row-header-cell` for the equal-height invariant. */
   padding: 0.75rem 1rem;
   display: flex;
   flex-direction: column;
@@ -559,47 +827,50 @@ thead .row-header-cell {
   color: var(--p-text-color);
 }
 
-/* No `display: flex`, same as `CellDetail`'s prompt disclosures: flex drops the
-   native triangle in WebKit/Blink, and these summaries no longer carry a
-   chevron of their own to stand in for it. */
-.row-details summary {
+.row-peeks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+}
+
+/* Quiet pill chips in the app's own component vocabulary — bordered like a
+   PrimeVue outlined control, muted until hovered: up to three per row of a
+   long matrix, they must read as affordances without competing with the
+   answers they annotate. */
+.peek-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  padding: 0.1875rem 0.625rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--p-text-muted-color);
   cursor: pointer;
-  font-size: 0.6875rem;
-  color: var(--p-text-muted-color);
+  white-space: nowrap;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s;
 }
 
-.row-text {
-  margin: 0.25rem 0 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-size: 0.6875rem;
-  color: var(--p-text-muted-color);
+.peek-button .pi {
+  font-size: 0.625rem;
 }
 
-/* Both texts scroll rather than growing the row: with every row open, the
-   longest test case or prompt in the matrix would otherwise decide how many
-   rows fit on a screen. `max-height`, not `height`, so a one-line test case
-   still takes one line. The caps are deliberately different — a prompt is read
-   in full when it is opened at all, a test case is scanned to recognise the
-   row, and the response in `CellDetail` gets more room than either because
-   comparing responses is what the view is for. */
-/* The only flexible child of `.row-header`, so it absorbs whatever the group,
- * title, prompts and drift note leave of the fixed row height. `min-height: 0`
- * over the flex default of `auto`, whose floor is the text's own height — with
- * `auto` this would overflow the row rather than scroll inside it. */
-.row-case-text {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
+.peek-button:hover {
+  background: var(--p-content-hover-background);
+  border-color: var(--p-text-muted-color);
+  color: var(--p-text-color);
 }
 
-/* The rubric is read the same way an opened prompt is — in full, once — so it
-   takes the same cap rather than one of its own. */
-.row-prompt-text,
-.row-expected-text {
-  max-height: 14rem;
-  overflow: auto;
+.peek-button:focus-visible {
+  outline: 1px solid var(--p-primary-color);
+  outline-offset: 1px;
 }
 
 .drift-note {
@@ -617,22 +888,26 @@ thead .row-header-cell {
   border-bottom: 1px solid var(--p-content-border-color);
   padding: 0;
   vertical-align: top;
+  /* The containing block for the pinned `.cell-footer`. A cell's box is
+     always the full row height in table layout (the borders already draw
+     that), which is exactly the definite height the content-sized
+     `.cell-inner` cannot pass down — the `height: 1px` + `height: 100%`
+     td hack resolves in Chrome but collapses every row in Firefox, so the
+     footer escapes the flow entirely instead of asking flex for spare
+     height. */
+  position: relative;
 }
 
-/* An explicit height, deliberately, not a percentage. Filling the cell needs a
- * *definite* height to distribute, and a table cell cannot supply one: on a
- * content-sized row `height: 100%` collapses to `auto` and does nothing, while
- * `height: 1px` makes this box 1px — and as the cell's only child it then stops
- * forcing the row's height at all, collapsing every row. Naming the height
- * outright sidesteps the whole question, and a comparison matrix wants uniform
- * rows anyway: scanning down a column is only meaningful if the rows line up.
- *
- * The cost is accepted, not overlooked — a row whose answers are all short
- * still occupies `--matrix-row-height`. */
+/* Content-sized (top-of-file comment): the tallest cell sets the row, and a
+ * flex column just stacks status line and detail. The bottom padding
+ * reserves the absolutely-pinned footer's band so the tallest cell's own
+ * content never runs under it — sized to the footer's one-line height,
+ * which its `nowrap` metrics keep it at down to `.cell-detail`'s minimum
+ * width. */
 .cell-inner {
-  height: var(--matrix-row-height);
   display: flex;
   flex-direction: column;
+  padding-bottom: 2.5rem;
 }
 
 .empty-cell {
@@ -655,21 +930,20 @@ thead .row-header-cell {
   color: var(--p-text-muted-color);
 }
 
-/* Pinned to the bottom edge two ways over, and both are load-bearing:
- * `.cell-detail` above grows into the spare height, and `margin-top: auto`
- * here takes any remainder — so the line sits on the cell's floor whether the
- * answer overflows its scrollport or is a single word. That is what lets the
- * numbers be compared straight across columns.
- *
- * No `border-top`: the scrollport above already ends on its own edge, and a
- * second rule a few pixels under it just read as a stray line. */
+/* Pinned to the row's bottom edge by absolute position against the `.cell`
+ * (see there for why not flex), so the numbers read straight across the
+ * columns whatever each cell's content height is. `.cell-inner`'s bottom
+ * padding reserves this band. */
 .cell-footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 0.5rem;
-  margin-top: auto;
   padding: 0.5rem 1rem 0.75rem;
 }
 
@@ -702,21 +976,76 @@ thead .row-header-cell {
 
 /* The detail was sized for a dialog; in a `<td>` with four or five columns it
    would be squeezed to a ribbon, so it keeps a floor of its own and
-   `.matrix-wrap` scrolls sideways instead. */
-/* Takes the height left between the status line and the footer, but is *not*
- * the scrollport — as one it scrolled the rating buttons and the "Response"
- * label along with the answer, and those have to stay reachable without
- * scrolling anything. It is instead the top link of a flex chain that hands
- * the leftover height down to `CellDetail`'s `.answer-text`, which scrolls
- * alone. Every link needs `min-height: 0`: a flex item's default floor is its
- * own content, which would turn "scrolls" back into "overflows". */
+   `.matrix-wrap` scrolls sideways instead. Content-sized like everything in
+   the cell — the flex-chain-to-a-scrollport plumbing this used to head went
+   with the fixed row height. */
 .cell-detail {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   min-width: 24rem;
   border-top: 1px solid var(--p-content-border-color);
   padding: 0.75rem 1rem;
+}
+</style>
+
+<style>
+/* The peek popover and dialog teleport to <body>, out of reach of the scoped
+   block above, so their sizing and text styles live here, under the two
+   classes the template hands them. */
+.matrix-peek.p-popover {
+  max-width: 36rem;
+}
+
+.matrix-peek-dialog {
+  width: min(48rem, 90vw);
+}
+
+/* The popover is a glance, so it caps its own height and scrolls; the pinned
+   dialog leaves scrolling to PrimeVue's own `.p-dialog-content`. */
+.matrix-peek .peek-scroll {
+  max-height: 24rem;
+  overflow: auto;
+}
+
+.peek-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.peek-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.peek-block-label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--p-text-muted-color);
+}
+
+/* Tool names are identifiers: shown verbatim, never uppercased into a
+   different name. */
+.peek-block-label.mono {
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--p-font-family-mono, ui-monospace, monospace);
+  font-weight: 600;
+  color: var(--p-text-color);
+}
+
+/* Full text color and a step up from the matrix's 0.6875rem row text: these
+   two surfaces exist to be read, not scanned. */
+.peek-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--p-font-family-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: var(--p-text-color);
 }
 </style>

@@ -78,29 +78,36 @@ async function saveNote() {
     <span v-if="ratingNote" class="note-text">{{ ratingNote }}</span>
   </div>
 
+  <!-- One line, growing rightwards: the note input opens beside the pen
+       instead of below the thumbs, so toggling it never pushes the response
+       down. -->
   <div v-else class="rating-widget">
-    <div class="thumbs">
-      <button
-        v-for="value in RATINGS"
-        :key="value"
-        type="button"
-        class="thumb"
-        :class="{ active: rating === value }"
-        :title="RATING_META[value].description"
-        :aria-pressed="rating === value"
-        :disabled="saving"
-        @click="setRating(value)"
-      >
-        {{ RATING_META[value].emoji }}
-      </button>
-      <Button
-        :label="showNote ? 'Hide note' : ratingNote ? 'Edit note' : 'Add note'"
-        text
-        size="small"
-        @click="showNote = !showNote"
-      />
-      <span v-if="error" class="error-text">{{ error }}</span>
-    </div>
+    <button
+      v-for="value in RATINGS"
+      :key="value"
+      type="button"
+      class="thumb"
+      :class="{ active: rating === value }"
+      :title="RATING_META[value].description"
+      :aria-pressed="rating === value"
+      :disabled="saving"
+      @click="setRating(value)"
+    >
+      {{ RATING_META[value].emoji }}
+    </button>
+    <!-- Default (primary) severity when a note exists, secondary otherwise:
+         the pen itself answers "is there a note here" at a glance. -->
+    <Button
+      icon="pi pi-pencil"
+      text
+      rounded
+      size="small"
+      :severity="ratingNote ? undefined : 'secondary'"
+      :title="showNote ? 'Hide note' : ratingNote ? 'Edit note' : 'Add note'"
+      :aria-label="showNote ? 'Hide note' : ratingNote ? 'Edit note' : 'Add note'"
+      :aria-expanded="showNote"
+      @click="showNote = !showNote"
+    />
     <InputText
       v-if="showNote"
       v-model="noteValue"
@@ -108,6 +115,7 @@ async function saveNote() {
       class="note-input"
       @blur="saveNote"
     />
+    <span v-if="error" class="error-text">{{ error }}</span>
   </div>
 </template>
 
@@ -126,14 +134,9 @@ async function saveNote() {
 
 .rating-widget {
   display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.thumbs {
-  display: flex;
   align-items: center;
   gap: 0.375rem;
+  flex-wrap: wrap;
 }
 
 .thumb {
@@ -164,8 +167,14 @@ async function saveNote() {
   color: var(--p-red-500);
 }
 
+/* Grows into whatever the line has left, up to a cap — a note is a remark,
+   not an essay — and can shrink below its content so a narrow cell wraps it
+   to the next line instead of overflowing. */
 .note-input {
+  flex: 1 1 8rem;
+  min-width: 8rem;
   max-width: 24rem;
   font-size: 0.8125rem;
 }
+
 </style>

@@ -115,15 +115,10 @@ const taskVersionLabel = computed(() =>
 </template>
 
 <style scoped>
-/* Middle links of the flex chain from `MatrixTable`'s `.cell-detail` down to
-   `.answer-text` (see the comment there): `.cell-body` fills the detail box and
-   `.field` absorbs what the rating row, prompt disclosures and tool summary
-   leave, so only the answer scrolls while everything around it stays put.
-   `min-height: 0` on each link — the content-sized default floor would break
-   the chain at whichever link omits it. */
+/* Flex columns for stacking and gaps only: the cell is content-sized
+   (`MatrixTable`, top-of-file comment), so nothing here distributes height
+   and the answer below renders in full. */
 .cell-body {
-  flex: 1 1 auto;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 0.875rem;
@@ -149,8 +144,6 @@ const taskVersionLabel = computed(() =>
 }
 
 .field {
-  flex: 1 1 auto;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
@@ -191,17 +184,11 @@ const taskVersionLabel = computed(() =>
   color: var(--p-text-muted-color);
 }
 
-/* The one scrollport in the cell, and the end of the flex chain: it takes
-   whatever height the fixed-height cell has left rather than a fixed
-   `max-height` cap, which either wasted the room a short cell had or nested a
-   second scrollbar inside a scrolling `.cell-detail` — the reader had to
-   notice which of two boxes their wheel was over. The thinking block is a
-   sibling rather than a child so opening that disclosure never requires
-   scrolling back up inside the answer. */
+/* No scrollport, no height cap: the answer is the thing this matrix exists
+   to show, so it renders whole and the row grows to fit it. The `.pre` cap
+   above stays, deliberately — thinking traces and per-cell prompt copies are
+   disclosures, opened to check, not the payload. */
 .answer-text {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
   border: 1px solid var(--p-content-border-color);
@@ -212,10 +199,6 @@ const taskVersionLabel = computed(() =>
 }
 
 .error-block {
-  /* Stands in for `.field` in the flex chain: with `.cell-detail` no longer a
-     scrollport, a long traceback would otherwise spill over the footer. */
-  min-height: 0;
-  overflow: auto;
   border: 1px solid var(--p-red-300, var(--p-red-500));
   border-radius: var(--p-content-border-radius);
   background: var(--p-red-50, transparent);
