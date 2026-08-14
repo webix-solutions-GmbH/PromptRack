@@ -1,0 +1,81 @@
+/* Global foundation. PrimeVue's styled mode themes the components themselves
+ * and publishes its design tokens as `--p-*` CSS variables, but it never
+ * touches the page around them — the document keeps the browser's own serif
+ * font, 8px body margin and white background until something here says
+ * otherwise. Every view's scoped styles already read those tokens, so this
+ * file only has to hand the page the same ones. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  background: var(--p-content-background);
+  color: var(--p-text-color);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Tells the browser which scheme its own widgets (scrollbars, form controls,
+ * caret) should match. PrimeVue is configured with `darkModeSelector: '.dark'`,
+ * so the class that flips the tokens flips these too. */
+:root {
+  color-scheme: light;
+}
+
+:root:has(.dark),
+.dark {
+  color-scheme: dark;
+}
+
+#app {
+  min-height: 100%;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+p {
+  margin: 0 0 1rem;
+}
+
+a {
+  color: var(--p-primary-color);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.875em;
+}
+
+/* Global rather than scoped: it is handed to PrimeVue components as
+ * `input-class`, which lands on an inner element a parent's scoped styles
+ * cannot reach. */
+.w-full {
+  width: 100%;
+}

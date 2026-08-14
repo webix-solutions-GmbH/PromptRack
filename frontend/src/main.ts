@@ -5,6 +5,7 @@ import ToastService from 'primevue/toastservice'
 import ConfirmationService from 'primevue/confirmationservice'
 import Aura from '@primevue/themes/aura'
 import 'primeicons/primeicons.css'
+import './style.css'
 
 import App from './App.vue'
 import router from './router'
