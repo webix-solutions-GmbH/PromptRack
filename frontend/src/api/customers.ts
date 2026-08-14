@@ -1,10 +1,8 @@
-// Contract this is built against (Task 3.1, backend/app/api/customers.py —
-// not yet landed alongside this task; see the plan's Task 3.1 section).
-// Assumed shape, documented here so a real mismatch is one file to fix:
+// The routes this module talks to (backend/app/api/customers.py):
 //
 //   GET    /api/customers              -> Customer[]
 //   POST   /api/customers               { name, description? } -> Customer
-//   PATCH  /api/customers/{id}          { name, description? } -> Customer
+//   PUT    /api/customers/{id}          { name, description? } -> Customer
 //   POST   /api/customers/{id}/archive  { archived } -> Customer
 //   DELETE /api/customers/{id}          -> (204; RESTRICT/"holds N things"
 //                                            refusal arrives as a normal
@@ -43,7 +41,7 @@ export interface CustomerInput {
 export const customersApi = {
   list: () => api.get<Customer[]>('/customers'),
   create: (input: CustomerInput) => api.post<Customer>('/customers', input),
-  update: (id: number, input: CustomerInput) => api.patch<Customer>(`/customers/${id}`, input),
+  update: (id: number, input: CustomerInput) => api.put<Customer>(`/customers/${id}`, input),
   setArchived: (id: number, archived: boolean) =>
     api.post<Customer>(`/customers/${id}/archive`, { archived }),
   remove: (id: number) => api.delete<void>(`/customers/${id}`),

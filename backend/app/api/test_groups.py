@@ -46,6 +46,11 @@ class TestGroupView(BaseModel):
 class TestGroupWriteRequest(BaseModel):
     name: str = Field(min_length=1)
     description: str | None = None
+    #: Ordering, not content, and nothing in the UI edits it — so `PUT` treats
+    #: it patch-like the same way `app.api.machines` treats a machine's
+    #: `api_key`: omit it and the stored order is left alone (0 on create).
+    #: A rename that dropped the field would otherwise silently collapse the
+    #: whole suite's ordering to 0.
     sort_order: int = 0
 
     @field_validator("name")
@@ -135,12 +140,12 @@ async def update_test_group_endpoint(
 ) -> TestGroupView:
     del actor
     await _get_or_404(scope, session, group_id)
-    await update_test_group(
-        scope,
-        session,
-        group_id,
-        {"name": body.name, "description": body.description, "sort_order": body.sort_order},
-    )
+
+    values: dict[str, object] = {"name": body.name, "description": body.description}
+    if "sort_order" in body.model_fields_set:
+        values["sort_order"] = body.sort_order
+
+    await update_test_group(scope, session, group_id, values)
     await session.commit()
     refreshed = await _get_or_404(scope, session, group_id)
     counts = await test_case_counts_by_group(scope, session)

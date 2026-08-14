@@ -104,6 +104,28 @@ class TestTestGroupCrud:
         assert updated.json()["name"] == "Renamed"
         assert updated.json()["description"] == "new"
 
+    async def test_renaming_a_group_preserves_its_sort_order(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """Nothing in the UI edits `sort_order`, so a rename body does not carry
+        it — and must not collapse the suite's ordering to the field's default.
+        An explicitly named value still replaces it.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        group = await create_test_group(scope, session, name="Original", sort_order=7)
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        renamed = await client.put(f"/api/test-groups/{group.id}", json={"name": "Renamed"})
+        assert renamed.status_code == 200, renamed.text
+        assert renamed.json()["sort_order"] == 7
+
+        reordered = await client.put(
+            f"/api/test-groups/{group.id}", json={"name": "Renamed", "sort_order": 2}
+        )
+        assert reordered.json()["sort_order"] == 2
+
     async def test_deleting_a_group_cascades_to_its_test_cases(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:

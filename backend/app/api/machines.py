@@ -24,15 +24,17 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.guards import Admin, CurrentScope, CurrentUser, DbSession, Writer
-from app.models import Machine
+from app.models import Machine, MachineModel, MachineModelSource
 from app.repos.machines import (
     MachineModelCounts,
     create_machine,
     delete_machine,
     get_machine,
+    list_machine_models,
     list_machines,
     machine_model_counts,
     sync_discovered_models,
+    touch_machine_model,
     update_machine,
 )
 from app.scope import Scope
@@ -101,6 +103,35 @@ class MachineWriteRequest(BaseModel):
         return cleaned or None
 
 
+class MachineModelView(BaseModel):
+    """One model ever seen on a machine.
+
+    `source` says how it was *first* learned about, `currently_loaded` what the
+    last discovery pass reported — the machine detail page's table and the
+    new-run page's "previously seen" list both read exactly this.
+    """
+
+    id: int
+    machine_id: int
+    model_id: str
+    currently_loaded: bool
+    first_seen_at: datetime
+    last_seen_at: datetime
+    source: MachineModelSource
+
+
+class MachineModelAddRequest(BaseModel):
+    model_id: str = Field(min_length=1)
+
+    @field_validator("model_id")
+    @classmethod
+    def _model_id_not_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Model id is required.")
+        return cleaned
+
+
 class DiscoverResponse(BaseModel):
     ok: bool
     discovered: int = 0
@@ -130,6 +161,18 @@ def _to_view(machine: Machine, counts: MachineModelCounts | None) -> MachineView
         updated_at=machine.updated_at,
         model_count=counts.total if counts is not None else 0,
         loaded_model_count=counts.loaded if counts is not None else 0,
+    )
+
+
+def _model_view(row: MachineModel) -> MachineModelView:
+    return MachineModelView(
+        id=row.id,
+        machine_id=row.machine_id,
+        model_id=row.model_id,
+        currently_loaded=row.currently_loaded,
+        first_seen_at=row.first_seen_at,
+        last_seen_at=row.last_seen_at,
+        source=row.source,
     )
 
 
@@ -228,6 +271,59 @@ async def delete_machine_endpoint(
     await _get_or_404(scope, session, machine_id)
     await delete_machine(scope, session, machine_id)
     await session.commit()
+
+
+# --------------------------------------------------------------------------
+# Models seen on a machine
+# --------------------------------------------------------------------------
+
+
+@router.get("/{machine_id}/models")
+async def list_machine_models_endpoint(
+    machine_id: int, actor: CurrentUser, scope: CurrentScope, session: DbSession
+) -> list[MachineModelView]:
+    """Every model ever seen on this machine, currently loaded ones first.
+
+    `CurrentUser`, like the machine itself: the new-run page needs this list
+    for every role, and it names models, never the key they authenticate with.
+    """
+    del actor
+    await _get_or_404(scope, session, machine_id)
+    rows = await list_machine_models(scope, session, machine_id=machine_id, order="loaded-first")
+    return [_model_view(row) for row in rows]
+
+
+@router.post("/{machine_id}/models")
+async def add_machine_model_endpoint(
+    machine_id: int,
+    body: MachineModelAddRequest,
+    actor: Writer,
+    scope: CurrentScope,
+    session: DbSession,
+) -> MachineModelView:
+    """Records a model the endpoint never advertised — a model that has to be
+    named by hand because `/v1/models` does not list it.
+
+    An upsert, not a create: a model already on this machine only has its
+    `last_seen_at` bumped and is answered with as it stands (`source` keeps
+    saying how it was *first* learned about), so there is no 201 to report and
+    no conflict to refuse. `Writer`, matching `POST /discover` — a model id is
+    content, not a credential.
+    """
+    del actor
+    await _get_or_404(scope, session, machine_id)
+    await touch_machine_model(
+        scope, session, machine_id=machine_id, model_id=body.model_id, source="manual"
+    )
+    await session.commit()
+
+    rows = await list_machine_models(scope, session, machine_id=machine_id)
+    row = next((candidate for candidate in rows if candidate.model_id == body.model_id), None)
+    if row is None:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "The model could not be recorded."
+        )
+    return _model_view(row)
 
 
 # --------------------------------------------------------------------------

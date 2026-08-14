@@ -5,6 +5,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import InputText from 'primevue/inputtext'
@@ -14,7 +15,7 @@ import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
-import { machinesApi, type Machine, type MachineModel } from '../api/machines'
+import { machinesApi, type Machine, type MachineInput, type MachineModel } from '../api/machines'
 import { ApiError } from '../api/client'
 import { formatDateTime } from '../lib/format'
 import { useAuthStore } from '../stores/auth'
@@ -35,6 +36,8 @@ const loadError = ref<string | null>(null)
 interface MachineFormState {
   name: string
   base_url: string
+  /** Always starts blank: the stored key is never sent to the client, and a
+   * blank field means "leave it alone", not "clear it". */
   api_key: string
   cpu: string
   ram: string
@@ -52,17 +55,21 @@ const form = ref<MachineFormState>({
   notes: '',
 })
 
+/** Clearing a stored key has to be deliberate — see `buildInput`. */
+const clearApiKey = ref(false)
+
 function applyMachine(row: Machine) {
   machine.value = row
   form.value = {
     name: row.name,
     base_url: row.base_url,
-    api_key: row.api_key ?? '',
+    api_key: '',
     cpu: row.cpu ?? '',
     ram: row.ram ?? '',
     gpu: row.gpu ?? '',
     notes: row.notes ?? '',
   }
+  clearApiKey.value = false
 }
 
 async function load() {
@@ -90,19 +97,33 @@ watch(machineId, load)
 const saving = ref(false)
 const saveError = ref<string | null>(null)
 
+/** `api_key` is the one field this form does not replace wholesale: the route
+ * treats it patch-like, so it is present in the body only when the admin typed
+ * a new key or explicitly asked for the stored one to be removed. Anything
+ * else — including a save that never touched the field — leaves it intact.
+ */
+function buildInput(): MachineInput {
+  const input: MachineInput = {
+    name: form.value.name,
+    base_url: form.value.base_url,
+    cpu: form.value.cpu || null,
+    ram: form.value.ram || null,
+    gpu: form.value.gpu || null,
+    notes: form.value.notes || null,
+  }
+  if (clearApiKey.value) {
+    input.api_key = null
+  } else if (form.value.api_key.length > 0) {
+    input.api_key = form.value.api_key
+  }
+  return input
+}
+
 async function save() {
   saveError.value = null
   saving.value = true
   try {
-    const updated = await machinesApi.update(machineId.value, {
-      name: form.value.name,
-      base_url: form.value.base_url,
-      api_key: form.value.api_key || null,
-      cpu: form.value.cpu || null,
-      ram: form.value.ram || null,
-      gpu: form.value.gpu || null,
-      notes: form.value.notes || null,
-    })
+    const updated = await machinesApi.update(machineId.value, buildInput())
     applyMachine(updated)
     toast.add({ severity: 'success', summary: 'Machine saved', life: 3000 })
   } catch (err) {
@@ -278,9 +299,17 @@ async function removeMachine() {
               v-model="form.api_key"
               :feedback="false"
               toggle-mask
-              placeholder="optional"
+              :disabled="clearApiKey"
+              :placeholder="machine.has_api_key ? 'leave blank to keep the stored key' : 'optional'"
               input-class="w-full"
             />
+            <p v-if="machine.has_api_key" class="hint">
+              An API key is stored — leave this blank to keep it, or type a new one to replace it.
+            </p>
+            <label v-if="machine.has_api_key" class="checkbox-option" for="machine-clear-api-key">
+              <Checkbox v-model="clearApiKey" binary input-id="machine-clear-api-key" />
+              Remove the stored key on save
+            </label>
           </div>
           <div class="field-row three">
             <div class="field">
@@ -447,6 +476,20 @@ async function removeMachine() {
   font-size: 0.75rem;
   color: var(--p-text-muted-color);
   margin: 0;
+}
+
+.hint {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  margin: 0;
+}
+
+.checkbox-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 400;
 }
 
 .dialog-actions {

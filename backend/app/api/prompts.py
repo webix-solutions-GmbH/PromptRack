@@ -81,9 +81,15 @@ class PromptView(BaseModel):
 
 class PromptWriteRequest(BaseModel):
     name: str = Field(min_length=1)
-    content: str = Field(min_length=1)
+    #: An empty draft is legitimate: the asset can be created before its text
+    #: is written (`is_dirty` calls a prompt with no versions dirty either way,
+    #: so the first commit is still allowed), and
+    #: `resolve_effective_prompt` already reads a whitespace-only prompt as "no
+    #: system message". Only the *name* identifies the asset, so only the name
+    #: is required.
+    content: str = ""
 
-    @field_validator("name", "content")
+    @field_validator("name")
     @classmethod
     def _not_blank(cls, value: str) -> str:
         cleaned = value.strip()
@@ -91,14 +97,24 @@ class PromptWriteRequest(BaseModel):
             raise ValueError("This field is required.")
         return cleaned
 
+    @field_validator("content")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()
+
 
 class PromptPatchRequest(BaseModel):
-    """Partial update of the draft — either field, or both, may be omitted."""
+    """Partial update of the draft — either field, or both, may be omitted.
+
+    A present-but-empty `content` clears the draft, the same state a prompt is
+    created in: an editor that can reach empty has to be able to get back
+    there. A blank `name` is still refused — that is the asset's identity.
+    """
 
     name: str | None = None
     content: str | None = None
 
-    @field_validator("name", "content")
+    @field_validator("name")
     @classmethod
     def _not_blank_if_present(cls, value: str | None) -> str | None:
         if value is None:
@@ -107,6 +123,11 @@ class PromptPatchRequest(BaseModel):
         if not cleaned:
             raise ValueError("This field cannot be blank.")
         return cleaned
+
+    @field_validator("content")
+    @classmethod
+    def _strip_if_present(cls, value: str | None) -> str | None:
+        return None if value is None else value.strip()
 
 
 class PromptVersionView(BaseModel):
@@ -296,7 +317,9 @@ async def patch_prompt_endpoint(
     if "name" in body.model_fields_set:
         values["name"] = body.name
     if "content" in body.model_fields_set:
-        values["content"] = body.content
+        # A JSON `null` says the same thing as `""` — no draft text — and the
+        # column is NOT NULL. "Absent" is already carried by `model_fields_set`.
+        values["content"] = body.content or ""
 
     if values:
         await update_prompt(scope, session, prompt_id, values)

@@ -89,7 +89,7 @@ class TestPromptCrud:
         assert got.status_code == 200
         assert got.json()["content"] == "Say hi."
 
-    async def test_blank_name_or_content_is_rejected(
+    async def test_a_blank_name_is_rejected(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
         customer_id, _ = await create_workspace("Acme")
@@ -100,9 +100,38 @@ class TestPromptCrud:
         assert (
             await client.post("/api/prompts", json={"name": "  ", "content": "x"})
         ).status_code == 422
-        assert (
-            await client.post("/api/prompts", json={"name": "x", "content": "  "})
-        ).status_code == 422
+
+    async def test_an_empty_draft_is_accepted(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """The asset can exist before its text is written — only the name
+        identifies it. Blank, whitespace-only and omitted all mean the same
+        empty draft, and the prompt is still dirty (nothing is committed), so
+        the first commit stays available.
+        """
+        customer_id, _ = await create_workspace("Acme")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        blank = await client.post("/api/prompts", json={"name": "Blank", "content": "  "})
+        assert blank.status_code == 201, blank.text
+        assert blank.json()["content"] == ""
+        assert blank.json()["dirty"] is True
+
+        omitted = await client.post("/api/prompts", json={"name": "Omitted"})
+        assert omitted.status_code == 201, omitted.text
+        assert omitted.json()["content"] == ""
+
+        # And it can be filled in and committed like any other draft.
+        patched = await client.patch(
+            f"/api/prompts/{omitted.json()['id']}", json={"content": "Say hi."}
+        )
+        assert patched.json()["content"] == "Say hi."
+        committed = await client.post(
+            f"/api/prompts/{omitted.json()['id']}/commit", json={"message": "first"}
+        )
+        assert committed.status_code == 201, committed.text
 
     async def test_a_viewer_cannot_create_a_prompt(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
@@ -146,17 +175,26 @@ class TestPromptCrud:
         assert body["name"] == "Greeting"
         assert body["content"] == "Say hello."
 
-    async def test_patch_rejects_a_blank_content(
+    async def test_patch_can_clear_the_draft_but_not_the_name(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
+        """An editor that can start empty has to be able to get back there, so a
+        blank `content` clears the draft. The name is the asset's identity and
+        stays required.
+        """
         customer_id, scope = await create_workspace("Acme")
         prompt = await create_prompt(scope, session, name="Greeting", content="Say hi.")
         await session.commit()
         await make_user(session, "member@example.com", "member", customer_id)
         await login(client, "member@example.com")
 
-        response = await client.patch(f"/api/prompts/{prompt.id}", json={"content": "   "})
-        assert response.status_code == 422
+        cleared = await client.patch(f"/api/prompts/{prompt.id}", json={"content": "   "})
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["content"] == ""
+
+        assert (
+            await client.patch(f"/api/prompts/{prompt.id}", json={"name": "  "})
+        ).status_code == 422
 
     async def test_deleting_a_prompt(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace

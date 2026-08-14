@@ -5,7 +5,11 @@
 //
 //   GET    /api/test-groups                    -> TestGroup[]   (test_case_count embedded)
 //   POST   /api/test-groups                      TestGroupInput -> TestGroup
-//   PATCH  /api/test-groups/{id}                  Partial<TestGroupInput> -> TestGroup
+//   PUT    /api/test-groups/{id}                  TestGroupInput -> TestGroup (full
+//                                                   replacement except `sort_order`,
+//                                                   which is patch-like: omit it and
+//                                                   the stored order survives, so a
+//                                                   rename cannot silently reset it)
 //   DELETE /api/test-groups/{id}                 -> (204; cascades its test cases)
 //
 //   GET    /api/test-cases?group_id=            -> TestCase[]   (all test cases,
@@ -21,9 +25,9 @@
 //                                                   semantics + post-patch tool-config check)")
 //   DELETE /api/test-cases/{id}                  -> (204)
 //
-//   POST   /api/test-cases/effective-prompt-preview
+//   POST   /api/test-cases/effective-prompt
 //          { prompt_id: number | null, mode: PromptMode, custom_text: string | null }
-//          -> { effective: string | null }
+//          -> { content: string | null }
 //
 // `toolset_ids` travels on `TestCase`/`TestCaseInput` directly rather than
 // through a separate link endpoint — `create_test_case`/`update_test_case`
@@ -102,14 +106,15 @@ export interface TestCaseInput {
 }
 
 export interface EffectivePromptPreview {
-  effective: string | null
+  /** `null` when the resolved prompt is empty or whitespace-only — i.e. the
+   * run sends no system message at all. */
+  content: string | null
 }
 
 export const testGroupsApi = {
   list: () => api.get<TestGroup[]>('/test-groups'),
   create: (input: TestGroupInput) => api.post<TestGroup>('/test-groups', input),
-  update: (id: number, input: Partial<TestGroupInput>) =>
-    api.patch<TestGroup>(`/test-groups/${id}`, input),
+  update: (id: number, input: TestGroupInput) => api.put<TestGroup>(`/test-groups/${id}`, input),
   remove: (id: number) => api.delete<void>(`/test-groups/${id}`),
 }
 
@@ -125,5 +130,5 @@ export const testCasesApi = {
     prompt_id: number | null
     mode: PromptMode
     custom_text: string | null
-  }) => api.post<EffectivePromptPreview>('/test-cases/effective-prompt-preview', input),
+  }) => api.post<EffectivePromptPreview>('/test-cases/effective-prompt', input),
 }

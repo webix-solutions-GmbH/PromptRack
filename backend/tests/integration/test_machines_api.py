@@ -11,6 +11,7 @@ plan names.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import datetime
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -20,7 +21,13 @@ from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.main import app
-from app.repos.machines import create_machine
+from app.repos.machines import (
+    create_machine,
+    get_machine,
+    list_machine_models,
+    sync_discovered_models,
+    touch_machine_model,
+)
 from app.scope import Scope
 from app.services import discovery
 
@@ -146,21 +153,88 @@ class TestMachineCrud:
     async def test_omitting_the_api_key_leaves_it_untouched(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
+        """The editor never sees the stored key, so it cannot echo it back — a
+        save that says nothing about the field has to preserve it verbatim, not
+        just leave `has_api_key` true.
+        """
         customer_id, scope = await create_workspace("Acme")
         machine = await create_machine(
             scope, session, name="box", base_url="http://x/v1", api_key="s3cret"
         )
+        # Captured before `expire_all()` below: an expired attribute needs an
+        # `await` to refresh, and `machine` is a plain reference here.
+        machine_id = machine.id
         await session.commit()
         await make_user(session, "admin@example.com", "admin", customer_id)
         await login(client, "admin@example.com")
 
         updated = await client.put(
-            f"/api/machines/{machine.id}", json={"name": "renamed", "base_url": "http://x/v1"}
+            f"/api/machines/{machine_id}", json={"name": "renamed", "base_url": "http://x/v1"}
         )
         assert updated.status_code == 200
         body = updated.json()
         assert body["name"] == "renamed"
         assert body["has_api_key"] is True
+
+        session.expire_all()
+        stored = await get_machine(scope, session, machine_id)
+        assert stored is not None
+        assert stored.api_key == "s3cret"
+
+    async def test_a_named_api_key_replaces_the_stored_one(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        machine = await create_machine(
+            scope, session, name="box", base_url="http://x/v1", api_key="s3cret"
+        )
+        # Captured before `expire_all()` below: an expired attribute needs an
+        # `await` to refresh, and `machine` is a plain reference here.
+        machine_id = machine.id
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_id)
+        await login(client, "admin@example.com")
+
+        updated = await client.put(
+            f"/api/machines/{machine_id}",
+            json={"name": "box", "base_url": "http://x/v1", "api_key": "rotated"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["has_api_key"] is True
+
+        session.expire_all()
+        stored = await get_machine(scope, session, machine_id)
+        assert stored is not None
+        assert stored.api_key == "rotated"
+
+    async def test_an_explicit_null_api_key_clears_it(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """`null` is how the editor's "remove the stored key" action says so
+        deliberately — the one shape that is meant to destroy a credential.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        machine = await create_machine(
+            scope, session, name="box", base_url="http://x/v1", api_key="s3cret"
+        )
+        # Captured before `expire_all()` below: an expired attribute needs an
+        # `await` to refresh, and `machine` is a plain reference here.
+        machine_id = machine.id
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_id)
+        await login(client, "admin@example.com")
+
+        updated = await client.put(
+            f"/api/machines/{machine_id}",
+            json={"name": "box", "base_url": "http://x/v1", "api_key": None},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["has_api_key"] is False
+
+        session.expire_all()
+        stored = await get_machine(scope, session, machine_id)
+        assert stored is not None
+        assert stored.api_key is None
 
     async def test_an_explicit_blank_api_key_clears_it(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
@@ -169,15 +243,23 @@ class TestMachineCrud:
         machine = await create_machine(
             scope, session, name="box", base_url="http://x/v1", api_key="s3cret"
         )
+        # Captured before `expire_all()` below: an expired attribute needs an
+        # `await` to refresh, and `machine` is a plain reference here.
+        machine_id = machine.id
         await session.commit()
         await make_user(session, "admin@example.com", "admin", customer_id)
         await login(client, "admin@example.com")
 
         updated = await client.put(
-            f"/api/machines/{machine.id}",
+            f"/api/machines/{machine_id}",
             json={"name": "box", "base_url": "http://x/v1", "api_key": ""},
         )
         assert updated.json()["has_api_key"] is False
+
+        session.expire_all()
+        stored = await get_machine(scope, session, machine_id)
+        assert stored is not None
+        assert stored.api_key is None
 
     async def test_deleting_a_machine(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
@@ -204,6 +286,182 @@ class TestMachineCrud:
 
         assert (await client.get(f"/api/machines/{machine_a.id}")).status_code == 404
         assert (await client.delete(f"/api/machines/{machine_a.id}")).status_code == 404
+
+
+class TestMachineModels:
+    """`GET/POST /api/machines/{id}/models` — the history table the new-run
+    page's model picker and the machine detail page both read.
+    """
+
+    async def test_list_puts_currently_loaded_models_first(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+        # Seen once, never since — the row a discovery pass would have left
+        # behind with `currently_loaded` false.
+        await touch_machine_model(
+            scope, session, machine_id=machine.id, model_id="retired-model", source="manual"
+        )
+        await sync_discovered_models(scope, session, machine.id, ["loaded-model"])
+        await session.commit()
+        await make_user(session, "viewer@example.com", "viewer", customer_id)
+        await login(client, "viewer@example.com")
+
+        response = await client.get(f"/api/machines/{machine.id}/models")
+        assert response.status_code == 200, response.text
+        rows = response.json()
+        assert [row["model_id"] for row in rows] == ["loaded-model", "retired-model"]
+        # The SPA's `MachineModel` interface, field for field.
+        assert set(rows[0]) == {
+            "id",
+            "machine_id",
+            "model_id",
+            "currently_loaded",
+            "first_seen_at",
+            "last_seen_at",
+            "source",
+        }
+        assert rows[0]["currently_loaded"] is True
+        assert rows[0]["source"] == "discovered"
+        assert rows[1]["currently_loaded"] is False
+        assert rows[1]["machine_id"] == machine.id
+
+    async def test_a_machine_with_no_models_lists_nothing(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """The distinction the machine detail page depends on: an empty history
+        is a 200 with `[]`, not the 404 a missing machine answers."""
+        customer_id, scope = await create_workspace("Acme")
+        machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+        await session.commit()
+        await make_user(session, "viewer@example.com", "viewer", customer_id)
+        await login(client, "viewer@example.com")
+
+        response = await client.get(f"/api/machines/{machine.id}/models")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    async def test_a_manual_add_creates_the_row(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        created = await client.post(
+            f"/api/machines/{machine.id}/models", json={"model_id": "  qwen3-32b  "}
+        )
+        assert created.status_code == 200, created.text
+        body = created.json()
+        assert body["model_id"] == "qwen3-32b"
+        assert body["source"] == "manual"
+        # A manually named model is not claimed to be loaded — only discovery
+        # says that.
+        assert body["currently_loaded"] is False
+
+        listed = await client.get(f"/api/machines/{machine.id}/models")
+        assert [row["model_id"] for row in listed.json()] == ["qwen3-32b"]
+
+    async def test_adding_a_model_twice_upserts_rather_than_failing(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        first = await client.post(f"/api/machines/{machine.id}/models", json={"model_id": "qwen"})
+        second = await client.post(f"/api/machines/{machine.id}/models", json={"model_id": "qwen"})
+        assert first.status_code == 200
+        assert second.status_code == 200, second.text
+        assert second.json()["id"] == first.json()["id"]
+
+        # The sighting is bumped; the row's own history is not rewritten.
+        assert second.json()["first_seen_at"] == first.json()["first_seen_at"]
+        assert datetime.fromisoformat(second.json()["last_seen_at"]) >= datetime.fromisoformat(
+            first.json()["last_seen_at"]
+        )
+
+        listed = await client.get(f"/api/machines/{machine.id}/models")
+        assert len(listed.json()) == 1
+
+    async def test_a_model_discovery_already_recorded_keeps_its_source(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """`source` says how a model was *first* learned about, so naming a
+        discovered model by hand must not relabel it."""
+        customer_id, scope = await create_workspace("Acme")
+        machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+        await sync_discovered_models(scope, session, machine.id, ["qwen"])
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        response = await client.post(
+            f"/api/machines/{machine.id}/models", json={"model_id": "qwen"}
+        )
+        assert response.status_code == 200
+        assert response.json()["source"] == "discovered"
+        assert response.json()["currently_loaded"] is True
+
+    async def test_a_blank_model_id_is_refused(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        assert (
+            await client.post(f"/api/machines/{machine.id}/models", json={"model_id": ""})
+        ).status_code == 422
+        assert (
+            await client.post(f"/api/machines/{machine.id}/models", json={"model_id": "   "})
+        ).status_code == 422
+        assert (await client.get(f"/api/machines/{machine.id}/models")).json() == []
+
+    async def test_a_viewer_cannot_add_a_model(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        machine = await create_machine(scope, session, name="box", base_url="http://x/v1")
+        await session.commit()
+        await make_user(session, "viewer@example.com", "viewer", customer_id)
+        await login(client, "viewer@example.com")
+
+        response = await client.post(
+            f"/api/machines/{machine.id}/models", json={"model_id": "qwen"}
+        )
+        assert response.status_code == 403
+        assert (await client.get(f"/api/machines/{machine.id}/models")).json() == []
+
+    async def test_another_workspaces_machine_is_a_404_both_ways(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        _, scope_a = await create_workspace("A")
+        machine_a = await create_machine(scope_a, session, name="a-box", base_url="http://a/v1")
+        await touch_machine_model(
+            scope_a, session, machine_id=machine_a.id, model_id="a-model", source="manual"
+        )
+        customer_b, _ = await create_workspace("B")
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_b)
+        await login(client, "admin@example.com")
+
+        assert (await client.get(f"/api/machines/{machine_a.id}/models")).status_code == 404
+        posted = await client.post(
+            f"/api/machines/{machine_a.id}/models", json={"model_id": "smuggled"}
+        )
+        assert posted.status_code == 404
+
+        # And nothing landed on the other workspace's machine.
+        surviving = await list_machine_models(scope_a, session, machine_id=machine_a.id)
+        assert [row.model_id for row in surviving] == ["a-model"]
 
 
 class TestDiscoverAndTest:

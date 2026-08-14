@@ -76,7 +76,11 @@ class ToolsetView(BaseModel):
     kind: ToolsetKind
     mcp_url: str | None
     has_mcp_headers: bool
+    #: Both counts, because discovery disables a vanished tool rather than
+    #: deleting it: "3/5 enabled" is the only honest summary of an MCP toolset
+    #: whose server has moved on.
     tool_count: int
+    enabled_tool_count: int
     created_at: datetime
     updated_at: datetime
 
@@ -217,7 +221,7 @@ def _tool_view(tool: Tool) -> ToolView:
     )
 
 
-def _toolset_view(toolset: Toolset, tool_count: int) -> ToolsetView:
+def _toolset_view(toolset: Toolset, tool_count: int, enabled_tool_count: int) -> ToolsetView:
     return ToolsetView(
         id=toolset.id,
         name=toolset.name,
@@ -226,6 +230,7 @@ def _toolset_view(toolset: Toolset, tool_count: int) -> ToolsetView:
         mcp_url=toolset.mcp_url,
         has_mcp_headers=bool(toolset.mcp_headers),
         tool_count=tool_count,
+        enabled_tool_count=enabled_tool_count,
         created_at=toolset.created_at,
         updated_at=toolset.updated_at,
     )
@@ -242,7 +247,7 @@ async def _detail_view(
     scope: Scope, session: AsyncSession, toolset: Toolset
 ) -> ToolsetDetailView:
     tools = await list_tools(scope, session, toolset_ids=[toolset.id])
-    base = _toolset_view(toolset, len(tools))
+    base = _toolset_view(toolset, len(tools), sum(1 for tool in tools if tool.enabled))
     return ToolsetDetailView(**base.model_dump(), tools=[_tool_view(tool) for tool in tools])
 
 
@@ -311,7 +316,11 @@ async def list_toolsets_endpoint(
     toolsets = await list_toolsets(scope, session)
     tools = await list_tools(scope, session)
     counts = Counter(tool.toolset_id for tool in tools)
-    return [_toolset_view(toolset, counts.get(toolset.id, 0)) for toolset in toolsets]
+    enabled_counts = Counter(tool.toolset_id for tool in tools if tool.enabled)
+    return [
+        _toolset_view(toolset, counts.get(toolset.id, 0), enabled_counts.get(toolset.id, 0))
+        for toolset in toolsets
+    ]
 
 
 @router.get("/{toolset_id}")

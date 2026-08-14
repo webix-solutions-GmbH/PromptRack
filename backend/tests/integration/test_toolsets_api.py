@@ -21,7 +21,7 @@ from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.main import app
-from app.repos.toolsets import create_tool, create_toolset
+from app.repos.toolsets import create_tool, create_toolset, get_toolset
 from app.scope import Scope
 from app.services import mcp_client
 
@@ -124,6 +124,10 @@ class TestToolsetCrud:
     async def test_omitting_mcp_headers_on_update_leaves_them_untouched(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
+        """The editor never sees the stored headers, so it cannot echo them back
+        — a save that says nothing about the field has to preserve them
+        verbatim, not just leave `has_mcp_headers` true.
+        """
         customer_id, scope = await create_workspace("Acme")
         toolset = await create_toolset(
             scope,
@@ -133,16 +137,99 @@ class TestToolsetCrud:
             mcp_url="http://mcp:9000/mcp",
             mcp_headers='{"Authorization": "Bearer s3cret"}',
         )
+        # Captured before `expire_all()` below: an expired attribute needs an
+        # `await` to refresh, and `toolset` is a plain reference here.
+        toolset_id = toolset.id
         await session.commit()
         await make_user(session, "admin@example.com", "admin", customer_id)
         await login(client, "admin@example.com")
 
         updated = await client.put(
-            f"/api/toolsets/{toolset.id}",
+            f"/api/toolsets/{toolset_id}",
             json={"name": "Websearch v2", "kind": "mcp", "mcp_url": "http://mcp:9000/mcp"},
         )
         assert updated.status_code == 200, updated.text
         assert updated.json()["has_mcp_headers"] is True
+
+        session.expire_all()
+        stored = await get_toolset(scope, session, toolset_id)
+        assert stored is not None
+        assert stored.mcp_headers == '{"Authorization": "Bearer s3cret"}'
+
+    async def test_named_mcp_headers_replace_the_stored_ones(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        toolset = await create_toolset(
+            scope,
+            session,
+            name="Websearch",
+            kind="mcp",
+            mcp_url="http://mcp:9000/mcp",
+            mcp_headers='{"Authorization": "Bearer s3cret"}',
+        )
+        # Captured before `expire_all()` below: an expired attribute needs an
+        # `await` to refresh, and `toolset` is a plain reference here.
+        toolset_id = toolset.id
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_id)
+        await login(client, "admin@example.com")
+
+        updated = await client.put(
+            f"/api/toolsets/{toolset_id}",
+            json={
+                "name": "Websearch",
+                "kind": "mcp",
+                "mcp_url": "http://mcp:9000/mcp",
+                "mcp_headers": '{"Authorization": "Bearer rotated"}',
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["has_mcp_headers"] is True
+
+        session.expire_all()
+        stored = await get_toolset(scope, session, toolset_id)
+        assert stored is not None
+        assert stored.mcp_headers == '{"Authorization": "Bearer rotated"}'
+
+    async def test_an_explicit_null_mcp_headers_clears_them(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """`null` is how the editor's "remove the stored headers" action says so
+        deliberately — the one shape that is meant to destroy a credential.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        toolset = await create_toolset(
+            scope,
+            session,
+            name="Websearch",
+            kind="mcp",
+            mcp_url="http://mcp:9000/mcp",
+            mcp_headers='{"Authorization": "Bearer s3cret"}',
+        )
+        # Captured before `expire_all()` below: an expired attribute needs an
+        # `await` to refresh, and `toolset` is a plain reference here.
+        toolset_id = toolset.id
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_id)
+        await login(client, "admin@example.com")
+
+        updated = await client.put(
+            f"/api/toolsets/{toolset_id}",
+            json={
+                "name": "Websearch",
+                "kind": "mcp",
+                "mcp_url": "http://mcp:9000/mcp",
+                "mcp_headers": None,
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["has_mcp_headers"] is False
+
+        session.expire_all()
+        stored = await get_toolset(scope, session, toolset_id)
+        assert stored is not None
+        assert stored.mcp_headers is None
 
     async def test_an_explicit_blank_mcp_headers_clears_it(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
@@ -156,12 +243,15 @@ class TestToolsetCrud:
             mcp_url="http://mcp:9000/mcp",
             mcp_headers='{"Authorization": "Bearer s3cret"}',
         )
+        # Captured before `expire_all()` below: an expired attribute needs an
+        # `await` to refresh, and `toolset` is a plain reference here.
+        toolset_id = toolset.id
         await session.commit()
         await make_user(session, "admin@example.com", "admin", customer_id)
         await login(client, "admin@example.com")
 
         updated = await client.put(
-            f"/api/toolsets/{toolset.id}",
+            f"/api/toolsets/{toolset_id}",
             json={
                 "name": "Websearch",
                 "kind": "mcp",
@@ -183,17 +273,25 @@ class TestToolsetCrud:
             mcp_url="http://mcp:9000/mcp",
             mcp_headers='{"Authorization": "Bearer s3cret"}',
         )
+        # Captured before `expire_all()` below: an expired attribute needs an
+        # `await` to refresh, and `toolset` is a plain reference here.
+        toolset_id = toolset.id
         await session.commit()
         await make_user(session, "admin@example.com", "admin", customer_id)
         await login(client, "admin@example.com")
 
         updated = await client.put(
-            f"/api/toolsets/{toolset.id}", json={"name": "Websearch", "kind": "manual"}
+            f"/api/toolsets/{toolset_id}", json={"name": "Websearch", "kind": "manual"}
         )
         assert updated.status_code == 200, updated.text
         body = updated.json()
         assert body["mcp_url"] is None
         assert body["has_mcp_headers"] is False
+
+        session.expire_all()
+        stored = await get_toolset(scope, session, toolset_id)
+        assert stored is not None
+        assert stored.mcp_headers is None
 
     async def test_a_member_cannot_create_a_toolset(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
@@ -340,6 +438,37 @@ class TestToolCrud:
         )
         assert response.status_code == 200
         assert response.json()["enabled"] is False
+
+    async def test_enabled_tool_count_excludes_disabled_tools(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """Both counts, on the list and the detail response: discovery disables
+        a vanished tool rather than deleting it, so "1/2 enabled" is what the
+        toolsets list and the test-case editor have to be able to say.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        toolset = await create_toolset(scope, session, name="Odoo")
+        await create_tool(scope, session, toolset.id, name="echo_upper")
+        disabled = await create_tool(scope, session, toolset.id, name="add_numbers")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        before = await client.get(f"/api/toolsets/{toolset.id}")
+        assert before.json()["tool_count"] == 2
+        assert before.json()["enabled_tool_count"] == 2
+
+        toggled = await client.put(
+            f"/api/toolsets/{toolset.id}/tools/{disabled.id}/enabled", json={"enabled": False}
+        )
+        assert toggled.status_code == 200, toggled.text
+
+        detail = await client.get(f"/api/toolsets/{toolset.id}")
+        assert detail.json()["tool_count"] == 2
+        assert detail.json()["enabled_tool_count"] == 1
+
+        listed = await client.get("/api/toolsets")
+        assert [(t["tool_count"], t["enabled_tool_count"]) for t in listed.json()] == [(2, 1)]
 
     async def test_deleting_a_tool(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace

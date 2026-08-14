@@ -5,6 +5,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
@@ -18,7 +19,8 @@ import { useToast } from 'primevue/usetoast'
 import {
   toolsetsApi,
   type Tool,
-  type Toolset,
+  type ToolsetDetail,
+  type ToolsetInput,
   type ToolsetKind,
 } from '../api/toolsets'
 import { ApiError } from '../api/client'
@@ -33,7 +35,7 @@ const router = useRouter()
 const confirm = useConfirm()
 const toast = useToast()
 
-const toolset = ref<Toolset | null>(null)
+const toolset = ref<ToolsetDetail | null>(null)
 const tools = ref<Tool[]>([])
 const loading = ref(true)
 const loadError = ref<string | null>(null)
@@ -48,6 +50,8 @@ interface ToolsetFormState {
   description: string
   kind: ToolsetKind
   mcp_url: string
+  /** Always starts blank: the stored headers are never sent to the client, and
+   * a blank field means "leave them alone", not "clear them". */
   mcp_headers: string
 }
 
@@ -59,27 +63,29 @@ const form = ref<ToolsetFormState>({
   mcp_headers: '',
 })
 
-function applyToolset(row: Toolset) {
+/** Clearing stored headers has to be deliberate — see `buildInput`. */
+const clearMcpHeaders = ref(false)
+
+function applyToolset(row: ToolsetDetail) {
   toolset.value = row
+  tools.value = row.tools
   form.value = {
     name: row.name,
     description: row.description ?? '',
     kind: row.kind,
     mcp_url: row.mcp_url ?? '',
-    mcp_headers: row.mcp_headers ?? '',
+    mcp_headers: '',
   }
+  clearMcpHeaders.value = false
 }
 
 async function load() {
   loading.value = true
   loadError.value = null
   try {
-    const [toolsetRow, toolRows] = await Promise.all([
-      toolsetsApi.get(toolsetId.value),
-      toolsetsApi.listTools(toolsetId.value),
-    ])
-    applyToolset(toolsetRow)
-    tools.value = toolRows
+    // The tools come embedded in the toolset's own detail response — there is
+    // no `/toolsets/{id}/tools` route to ask separately.
+    applyToolset(await toolsetsApi.get(toolsetId.value))
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : 'Failed to load the toolset.'
   } finally {
@@ -90,22 +96,47 @@ async function load() {
 onMounted(load)
 watch(toolsetId, load)
 
+/** Re-reads the toolset after a tool action, since the tool list only exists
+ * inside the detail response. Deliberately not `applyToolset`: a tool action
+ * must not throw away unsaved edits in the Details form.
+ */
+async function refreshTools() {
+  const detail = await toolsetsApi.get(toolsetId.value)
+  toolset.value = detail
+  tools.value = detail.tools
+}
+
 // --- save toolset --------------------------------------------------------
 
 const saving = ref(false)
 const saveError = ref<string | null>(null)
 
+/** `mcp_headers` is the one field this form does not replace wholesale: the
+ * route treats it patch-like, so it is present in the body only when the admin
+ * typed new headers or explicitly asked for the stored ones to be removed.
+ * Anything else — including a save that never touched the field — leaves them
+ * intact. (Switching to `manual` clears them server-side either way.)
+ */
+function buildInput(): ToolsetInput {
+  const input: ToolsetInput = {
+    name: form.value.name,
+    description: form.value.description || null,
+    kind: form.value.kind,
+    mcp_url: form.value.kind === 'mcp' ? form.value.mcp_url || null : null,
+  }
+  if (clearMcpHeaders.value) {
+    input.mcp_headers = null
+  } else if (form.value.mcp_headers.length > 0) {
+    input.mcp_headers = form.value.mcp_headers
+  }
+  return input
+}
+
 async function save() {
   saveError.value = null
   saving.value = true
   try {
-    const updated = await toolsetsApi.update(toolsetId.value, {
-      name: form.value.name,
-      description: form.value.description || null,
-      kind: form.value.kind,
-      mcp_url: form.value.kind === 'mcp' ? form.value.mcp_url || null : null,
-      mcp_headers: form.value.kind === 'mcp' ? form.value.mcp_headers || null : null,
-    })
+    const updated = await toolsetsApi.update(toolsetId.value, buildInput())
     applyToolset(updated)
     toast.add({ severity: 'success', summary: 'Toolset saved', life: 3000 })
   } catch (err) {
@@ -130,7 +161,7 @@ async function discoverTools() {
         detail: result.retired > 0 ? `Disabled ${result.retired} that vanished` : undefined,
         life: 4000,
       })
-      tools.value = await toolsetsApi.listTools(toolsetId.value)
+      await refreshTools()
     } else {
       toast.add({ severity: 'error', summary: 'Discovery failed', detail: result.error, life: 6000 })
     }
@@ -229,14 +260,14 @@ async function submitTool() {
       mock_response: toolForm.value.mock_response || null,
     }
     if (editingTool.value) {
-      await toolsetsApi.updateTool(editingTool.value.id, input)
+      await toolsetsApi.updateTool(toolsetId.value, editingTool.value.id, input)
       toast.add({ severity: 'success', summary: 'Tool saved', life: 3000 })
     } else {
       await toolsetsApi.createTool(toolsetId.value, input)
       toast.add({ severity: 'success', summary: 'Tool added', life: 3000 })
     }
     toolDialogOpen.value = false
-    tools.value = await toolsetsApi.listTools(toolsetId.value)
+    await refreshTools()
   } catch (err) {
     toolFormError.value = err instanceof ApiError ? err.message : 'Failed to save the tool.'
   } finally {
@@ -251,8 +282,8 @@ const busyToolId = ref<number | null>(null)
 async function toggleToolEnabled(tool: Tool) {
   busyToolId.value = tool.id
   try {
-    await toolsetsApi.updateTool(tool.id, { enabled: !tool.enabled })
-    tools.value = await toolsetsApi.listTools(toolsetId.value)
+    await toolsetsApi.setToolEnabled(toolsetId.value, tool.id, !tool.enabled)
+    await refreshTools()
   } catch (err) {
     toast.add({
       severity: 'error',
@@ -278,8 +309,8 @@ function confirmDeleteTool(tool: Tool) {
 async function removeTool(tool: Tool) {
   busyToolId.value = tool.id
   try {
-    await toolsetsApi.removeTool(tool.id)
-    tools.value = await toolsetsApi.listTools(toolsetId.value)
+    await toolsetsApi.removeTool(toolsetId.value, tool.id)
+    await refreshTools()
   } catch (err) {
     toast.add({
       severity: 'error',
@@ -338,7 +369,34 @@ async function removeTool(tool: Tool) {
             </div>
             <div class="field">
               <label for="toolset-mcp-headers">Headers (JSON)</label>
-              <Textarea id="toolset-mcp-headers" v-model="form.mcp_headers" rows="3" auto-resize />
+              <Textarea
+                id="toolset-mcp-headers"
+                v-model="form.mcp_headers"
+                rows="3"
+                auto-resize
+                :disabled="clearMcpHeaders"
+                :placeholder="
+                  toolset.has_mcp_headers
+                    ? 'leave blank to keep the stored headers'
+                    : '{&quot;Authorization&quot;: &quot;Bearer …&quot;}'
+                "
+              />
+              <p v-if="toolset.has_mcp_headers" class="hint">
+                Authentication headers are stored — leave this blank to keep them, or paste a new
+                JSON object to replace them.
+              </p>
+              <label
+                v-if="toolset.has_mcp_headers"
+                class="checkbox-option"
+                for="toolset-clear-mcp-headers"
+              >
+                <Checkbox
+                  v-model="clearMcpHeaders"
+                  binary
+                  input-id="toolset-clear-mcp-headers"
+                />
+                Remove the stored headers on save
+              </label>
             </div>
           </template>
 
@@ -531,6 +589,20 @@ async function removeTool(tool: Tool) {
   font-size: 0.75rem;
   color: var(--p-text-muted-color);
   margin: 0;
+}
+
+.hint {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  margin: 0;
+}
+
+.checkbox-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 400;
 }
 
 .dialog-actions {

@@ -312,7 +312,7 @@ async function removePrompt() {
         <h2>History</h2>
         <VersionHistory
           :versions="versions"
-          :deployed-version-id="prompt.deployed_version_id"
+          :deployed-version-id="prompt.deployed_version?.id ?? null"
           :can-write="auth.canWrite"
           :busy-version-id="busyVersionId"
           @view="openView"

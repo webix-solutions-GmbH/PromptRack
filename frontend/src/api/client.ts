@@ -44,6 +44,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
   get: <T>(path: string) => request<T>('GET', path),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
+  // `put` where the route takes a full-replacement body (every field required,
+  // omissions reset to their default), `patch` where it genuinely patches only
+  // the keys present. The backend draws that line per resource, so the two
+  // cannot be used interchangeably — a mismatch is a 405.
+  put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),
   delete: <T>(path: string) => request<T>('DELETE', path),
 }

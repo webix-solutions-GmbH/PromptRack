@@ -1,16 +1,22 @@
-// Contract this is built against (Task 3.1, backend/app/api/machines.py —
-// not yet landed alongside this task; see the plan's Task 3.1 section and
-// backend/app/repos/machines.py, which this mirrors field-for-field).
-// Assumed shape:
+// The routes this module talks to (backend/app/api/machines.py):
 //
 //   GET    /api/machines                 -> Machine[]  (counts embedded, the
 //                                            list page's "N/M loaded" column)
 //   POST   /api/machines                  MachineInput -> Machine
 //   GET    /api/machines/{id}            -> Machine
-//   PATCH  /api/machines/{id}             MachineInput -> Machine
+//   PUT    /api/machines/{id}             MachineInput -> Machine
 //   DELETE /api/machines/{id}            -> (204)
-//   GET    /api/machines/{id}/models     -> MachineModel[]
-//   POST   /api/machines/{id}/models      { model_id } -> MachineModel  (manual add)
+//
+// `api_key` is write-only: the response never carries it, only `has_api_key`.
+// On `PUT` it is the one field that is *not* a full replacement — omit it and
+// the stored key is left alone, send `null`/`""` to clear it deliberately, send
+// a value to replace it. So a caller must not spread a form's empty string into
+// the body, or every save wipes the key.
+//   GET    /api/machines/{id}/models     -> MachineModel[]  (loaded first)
+//   POST   /api/machines/{id}/models      { model_id } -> MachineModel  (manual
+//                                            add; an upsert, so a model already
+//                                            on the machine is answered with as
+//                                            it stands rather than refused)
 //   POST   /api/machines/{id}/discover   -> DiscoverModelsResult
 //   POST   /api/machines/{id}/test       -> TestConnectionResult
 //
@@ -24,7 +30,8 @@ export interface Machine {
   id: number
   name: string
   base_url: string
-  api_key: string | null
+  /** Whether a key is stored — the key itself never leaves the server. */
+  has_api_key: boolean
   cpu: string | null
   ram: string | null
   gpu: string | null
@@ -38,6 +45,7 @@ export interface Machine {
 export interface MachineInput {
   name: string
   base_url: string
+  /** Omit to keep the stored key, `null` to clear it, a string to replace it. */
   api_key?: string | null
   cpu?: string | null
   ram?: string | null
@@ -69,7 +77,7 @@ export const machinesApi = {
   list: () => api.get<Machine[]>('/machines'),
   get: (id: number) => api.get<Machine>(`/machines/${id}`),
   create: (input: MachineInput) => api.post<Machine>('/machines', input),
-  update: (id: number, input: MachineInput) => api.patch<Machine>(`/machines/${id}`, input),
+  update: (id: number, input: MachineInput) => api.put<Machine>(`/machines/${id}`, input),
   remove: (id: number) => api.delete<void>(`/machines/${id}`),
   listModels: (id: number) => api.get<MachineModel[]>(`/machines/${id}/models`),
   addModel: (id: number, modelId: string) =>

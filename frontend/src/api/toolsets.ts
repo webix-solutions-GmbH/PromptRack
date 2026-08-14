@@ -1,18 +1,29 @@
-// Contract this is built against (Task 3.2, backend/app/api/toolsets.py —
-// not yet landed alongside this task; see the plan's Task 3.2 section and
-// backend/app/repos/toolsets.py, which this mirrors field-for-field).
-// Assumed shape:
+// The routes this module talks to (backend/app/api/toolsets.py):
 //
-//   GET    /api/toolsets                 -> Toolset[]  (counts embedded)
-//   POST   /api/toolsets                  ToolsetInput -> Toolset
-//   GET    /api/toolsets/{id}            -> Toolset
-//   PATCH  /api/toolsets/{id}             ToolsetInput -> Toolset
-//   DELETE /api/toolsets/{id}            -> (204; cascades its tools)
-//   GET    /api/toolsets/{id}/tools      -> Tool[]
-//   POST   /api/toolsets/{id}/tools       ToolInput -> Tool  (manual toolsets)
-//   PATCH  /api/tools/{id}                Partial<ToolInput & {enabled}> -> Tool
-//   DELETE /api/tools/{id}               -> (204)
-//   POST   /api/toolsets/{id}/discover   -> DiscoverToolsResult
+//   GET    /api/toolsets                             -> Toolset[]  (counts embedded)
+//   POST   /api/toolsets                              ToolsetInput -> ToolsetDetail
+//   GET    /api/toolsets/{id}                        -> ToolsetDetail
+//   PUT    /api/toolsets/{id}                         ToolsetInput -> ToolsetDetail
+//   DELETE /api/toolsets/{id}                        -> (204; cascades its tools)
+//   POST   /api/toolsets/{id}/tools                   ToolInput -> Tool  (manual toolsets)
+//   PUT    /api/toolsets/{id}/tools/{toolId}          ToolInput -> Tool
+//   PUT    /api/toolsets/{id}/tools/{toolId}/enabled  { enabled } -> Tool
+//   DELETE /api/toolsets/{id}/tools/{toolId}         -> (204)
+//   POST   /api/toolsets/{id}/discover               -> DiscoverToolsResult
+//
+// There is no `GET /toolsets/{id}/tools`: a toolset's tools travel inside its
+// own detail response (`ToolsetDetail.tools`), which is also what every
+// mutation below answers with, so one read refreshes the whole page.
+//
+// A tool is addressed through its toolset rather than by bare id: that is what
+// scopes it (`tools` carries no `customer_id`, only `toolset_id`), so the
+// toolset is not decoration in the path. Enabling/disabling is its own route
+// because the editor's route replaces the whole tool and `ToolInput` carries no
+// `enabled` field at all.
+//
+// `mcp_headers` is write-only, exactly like a machine's `api_key`: the response
+// carries only `has_mcp_headers`, and on `PUT` an omitted field leaves the
+// stored headers alone while `null`/`""` clears them.
 //
 // Discover answers 200 with a discriminated `ok` union rather than an HTTP
 // error status — an unreachable MCP server is an expected probe outcome, not
@@ -27,10 +38,13 @@ export interface Toolset {
   description: string | null
   kind: ToolsetKind
   mcp_url: string | null
-  mcp_headers: string | null
+  /** Whether headers are stored — the headers themselves never leave the server. */
+  has_mcp_headers: boolean
   created_at: string
   updated_at: string
   tool_count: number
+  /** Discovery disables a vanished tool rather than deleting it, so the two
+   * counts differ and "3/5 enabled" is the honest summary. */
   enabled_tool_count: number
 }
 
@@ -39,6 +53,8 @@ export interface ToolsetInput {
   description?: string | null
   kind: ToolsetKind
   mcp_url?: string | null
+  /** Omit to keep the stored headers, `null` to clear them, a JSON object
+   * string to replace them. */
   mcp_headers?: string | null
 }
 
@@ -64,21 +80,28 @@ export interface ToolInput {
   mock_response?: string | null
 }
 
+/** What every single-toolset route answers with: the toolset plus its tools. */
+export interface ToolsetDetail extends Toolset {
+  tools: Tool[]
+}
+
 export type DiscoverToolsResult =
   | { ok: true; discovered: number; retired: number; tools: string[] }
   | { ok: false; error: string }
 
 export const toolsetsApi = {
   list: () => api.get<Toolset[]>('/toolsets'),
-  get: (id: number) => api.get<Toolset>(`/toolsets/${id}`),
-  create: (input: ToolsetInput) => api.post<Toolset>('/toolsets', input),
-  update: (id: number, input: ToolsetInput) => api.patch<Toolset>(`/toolsets/${id}`, input),
+  get: (id: number) => api.get<ToolsetDetail>(`/toolsets/${id}`),
+  create: (input: ToolsetInput) => api.post<ToolsetDetail>('/toolsets', input),
+  update: (id: number, input: ToolsetInput) => api.put<ToolsetDetail>(`/toolsets/${id}`, input),
   remove: (id: number) => api.delete<void>(`/toolsets/${id}`),
-  listTools: (toolsetId: number) => api.get<Tool[]>(`/toolsets/${toolsetId}/tools`),
   createTool: (toolsetId: number, input: ToolInput) =>
     api.post<Tool>(`/toolsets/${toolsetId}/tools`, input),
-  updateTool: (toolId: number, input: Partial<ToolInput & { enabled: boolean }>) =>
-    api.patch<Tool>(`/tools/${toolId}`, input),
-  removeTool: (toolId: number) => api.delete<void>(`/tools/${toolId}`),
+  updateTool: (toolsetId: number, toolId: number, input: ToolInput) =>
+    api.put<Tool>(`/toolsets/${toolsetId}/tools/${toolId}`, input),
+  setToolEnabled: (toolsetId: number, toolId: number, enabled: boolean) =>
+    api.put<Tool>(`/toolsets/${toolsetId}/tools/${toolId}/enabled`, { enabled }),
+  removeTool: (toolsetId: number, toolId: number) =>
+    api.delete<void>(`/toolsets/${toolsetId}/tools/${toolId}`),
   discover: (id: number) => api.post<DiscoverToolsResult>(`/toolsets/${id}/discover`),
 }

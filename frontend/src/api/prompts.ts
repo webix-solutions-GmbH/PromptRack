@@ -46,12 +46,15 @@ export interface Prompt {
   name: string
   /** The mutable draft — what the editor writes and what a run always tests. */
   content: string
-  deployed_version_id: number | null
+  /** When the pointer was moved. *Who* moved it is stored (`prompts.deployed_by`)
+   * but not exposed — there is no user-lookup endpoint to render a name with,
+   * the same reason `PromptVersion.created_by` shows as `user #N`. */
   deployed_at: string | null
-  deployed_by: number | null
   created_at: string
   updated_at: string
   head_version: PromptVersionSummary | null
+  /** The version claimed live at the customer. Read its `.id` for comparisons —
+   * the prompt row carries no flat `deployed_version_id`. */
   deployed_version: PromptVersionSummary | null
   /** `content` differs from `head_version`'s frozen text (or nothing is
    * committed yet at all) — the editor's dirty indicator, computed server-side. */
@@ -60,6 +63,8 @@ export interface Prompt {
 
 export interface PromptInput {
   name: string
+  /** Optional both here and server-side: an asset can exist before its text is
+   * written, and an empty draft is a legitimate starting state. */
   content?: string
 }
 

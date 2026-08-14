@@ -71,13 +71,19 @@ function promptRefFor(caseRow: TestCase): string {
 // --- group create / rename / delete --------------------------------------
 
 const editingGroupId = ref<number | null>(null)
-const groupForm = ref({ name: '', description: '' })
+// `sort_order` is not editable here, but the rename route replaces the whole
+// group — leaving it out of the body would reset it to 0.
+const groupForm = ref({ name: '', description: '', sort_order: 0 })
 const groupFormError = ref<string | null>(null)
 const savingGroup = ref(false)
 
 function startEditGroup(group: TestGroup) {
   editingGroupId.value = group.id
-  groupForm.value = { name: group.name, description: group.description ?? '' }
+  groupForm.value = {
+    name: group.name,
+    description: group.description ?? '',
+    sort_order: group.sort_order,
+  }
   groupFormError.value = null
 }
 
@@ -92,6 +98,7 @@ async function saveGroup(groupId: number) {
     await testGroupsApi.update(groupId, {
       name: groupForm.value.name,
       description: groupForm.value.description || null,
+      sort_order: groupForm.value.sort_order,
     })
     editingGroupId.value = null
     await load()

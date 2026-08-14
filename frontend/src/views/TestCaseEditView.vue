@@ -176,12 +176,32 @@ const effectivePreview = computed(() =>
 // Fetches the tool list for every currently-selected toolset once, so the
 // "tools offered" preview and collision check can be computed without a
 // round trip per keystroke. Toolsets already fetched are never refetched.
+//
+// A toolset's tools travel inside its own detail response; there is no
+// `/toolsets/{id}/tools` route to ask for them separately. A read that fails
+// is recorded as "offers nothing" rather than left absent, so the preview
+// cannot sit on "Loading tools…" forever — the server's own
+// `assert_tool_config` still has the last word when the case is saved.
 watch(
   () => form.toolsetIds,
   async (ids) => {
     const missing = ids.filter((id) => !(id in toolsByToolset.value))
     if (missing.length === 0) return
-    const fetched = await Promise.all(missing.map((id) => toolsetsApi.listTools(id)))
+    const fetched = await Promise.all(
+      missing.map(async (id) => {
+        try {
+          return (await toolsetsApi.get(id)).tools
+        } catch (err) {
+          toast.add({
+            severity: 'error',
+            summary: 'Failed to load a toolset’s tools',
+            detail: err instanceof ApiError ? err.message : undefined,
+            life: 5000,
+          })
+          return []
+        }
+      }),
+    )
     missing.forEach((id, index) => {
       toolsByToolset.value = { ...toolsByToolset.value, [id]: fetched[index] }
     })
