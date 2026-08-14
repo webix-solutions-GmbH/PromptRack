@@ -26,7 +26,7 @@ scripts/test-integration.sh                                  # same, from the re
 cd backend && uv run ruff check .                            # lint
 
 cd frontend && npm run build          # vue-tsc -b && vite build; catches type errors too
-cd frontend && npm run typecheck      # vue-tsc --noEmit only
+cd frontend && npm run typecheck      # vue-tsc -b, no bundle — see the note below
 
 cd backend && uv run alembic revision --autogenerate -m "..."  # write a migration from model changes
 ```
@@ -520,6 +520,23 @@ actually write; and `expected_output` is **never sent to the model**
 what lets the rating aids state a payload or a canary outright.
 
 ## Testing
+
+**The API contract between `backend/app/api/*.py` and `frontend/src/api/*.ts` is the
+seam that breaks, and no type checker guards it.** Those TypeScript interfaces are
+hand-written descriptions of a Pydantic model; when one drifts, TS still compiles — the
+interface is simply a lie about the wire format, and the failure surfaces as a blank
+table, a 404/405, or a `TypeError` inside a render that takes the whole dialog down with
+it. The rewrite's two halves were built in parallel and drifted in eleven places this
+way (a wrong field name, `diff: string` for a `list[str]`, `PATCH` against a `PUT` route,
+two whole endpoints that were never written, and a `null` credential overwriting a stored
+API key). So: when changing a response model, grep the matching `src/api/*.ts` in the same
+change, and prefer integration tests that assert the **stored column** over ones that
+assert a flag derived from it.
+
+`npm run typecheck` was a no-op for exactly this reason and hid the drift: it ran
+`vue-tsc --noEmit` against `frontend/tsconfig.json`, which is `{"files": [],
+"references": [...]}` — no files, so it always exited 0. It runs `vue-tsc -b` now.
+Only `-b` (or `-p tsconfig.app.json`) checks anything in a project-references setup.
 
 Two suites, split by whether they need a database.
 
