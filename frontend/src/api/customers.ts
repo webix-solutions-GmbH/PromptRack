@@ -32,7 +32,7 @@ export interface Customer {
   archived: boolean
   created_at: string
   updated_at: string
-  counts: CustomerCounts
+  content: CustomerCounts
 }
 
 export interface CustomerInput {

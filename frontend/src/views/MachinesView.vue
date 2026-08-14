@@ -126,7 +126,7 @@ async function submitForm() {
       </Column>
       <Column header="Models">
         <template #body="{ data }: { data: Machine }">
-          {{ data.loaded_count }}/{{ data.model_count }} loaded
+          {{ data.loaded_model_count }}/{{ data.model_count }} loaded
         </template>
       </Column>
       <Column header="Created">

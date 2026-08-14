@@ -32,7 +32,7 @@ export interface Machine {
   created_at: string
   updated_at: string
   model_count: number
-  loaded_count: number
+  loaded_model_count: number
 }
 
 export interface MachineInput {

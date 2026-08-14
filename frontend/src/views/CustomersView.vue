@@ -51,7 +51,7 @@ async function reload() {
 }
 
 function describeContents(customer: Customer): string {
-  const { counts } = customer
+  const counts = customer.content
   const parts = [
     `${counts.machines} machine${counts.machines === 1 ? '' : 's'}`,
     `${counts.prompts} prompt${counts.prompts === 1 ? '' : 's'}`,
