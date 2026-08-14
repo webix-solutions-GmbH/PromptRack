@@ -13,14 +13,13 @@
 // `/auth/me` afterward for the canonical state, so a shape mismatch there
 // cannot desync the store.
 //
-// Assumption (undocumented in the plan, flagged for reconciliation with
-// Task 2.1): the 401 body from `/auth/me` carries `setup_required: true`
-// when the `users` table is empty, so the router guard can send a fresh
-// install to `/setup` instead of a login form with no account to log into.
-// If the backend lands without this field, `setupRequired` simply stays
-// false and every unauthenticated visitor lands on `/login`.
+// Whether an install still needs its first account is a separate question
+// from who is signed in, and it has its own endpoint: `GET /api/auth/status`
+// answers `{ signup_open }` to anyone, open exactly while the `users` table
+// is empty. It is only asked after a 401, so a signed-in session costs one
+// request as before.
 import { defineStore } from 'pinia'
-import { api, ApiError } from '../api/client'
+import { api } from '../api/client'
 
 export type Role = 'admin' | 'member' | 'viewer'
 
@@ -49,15 +48,18 @@ interface MeResponse {
   can_administer: boolean
 }
 
-function hasSetupRequired(error: unknown): boolean {
-  if (!(error instanceof ApiError) || error.status !== 401) return false
-  const details = error.details
-  return (
-    typeof details === 'object' &&
-    details !== null &&
-    'setup_required' in details &&
-    (details as { setup_required?: unknown }).setup_required === true
-  )
+interface StatusResponse {
+  signup_open: boolean
+}
+
+/** Never throws: an unreachable status endpoint means "not a fresh install",
+ * which lands the visitor on `/login` rather than an unusable setup form. */
+async function signupOpen(): Promise<boolean> {
+  try {
+    return (await api.get<StatusResponse>('/auth/status')).signup_open
+  } catch {
+    return false
+  }
 }
 
 export const useAuthStore = defineStore('auth', {
@@ -71,8 +73,8 @@ export const useAuthStore = defineStore('auth', {
      * router guard knows not to flash `/login` before the session check
      * has had a chance to run. */
     initialized: false,
-    /** True only after a 401 from `/auth/me` that reports an empty user
-     * table — see the module doc above. */
+    /** True while the install has no account yet — signed out and
+     * `/auth/status` reports sign-up open. */
     setupRequired: false,
   }),
   actions: {
@@ -96,9 +98,9 @@ export const useAuthStore = defineStore('auth', {
         const me = await api.get<MeResponse>('/auth/me')
         this.applyMe(me)
         this.setupRequired = false
-      } catch (error) {
+      } catch {
         this.clear()
-        this.setupRequired = hasSetupRequired(error)
+        this.setupRequired = await signupOpen()
       } finally {
         this.initialized = true
       }
