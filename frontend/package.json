@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:all": "concurrently --kill-others --names api,web --prefix-colors cyan,magenta \"uv run --directory ../backend uvicorn app.main:app --reload\" \"vite\"",
+    "dev:all": "concurrently --kill-others --names api,web --prefix-colors cyan,magenta \"uv run --directory ../backend uvicorn app.main:app --reload --port 8077\" \"vite\"",
     "build": "vue-tsc -b && vite build",
     "typecheck": "vue-tsc -b --force",
     "preview": "vite preview"

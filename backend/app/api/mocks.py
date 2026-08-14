@@ -205,7 +205,7 @@ def _sse(payload: Any) -> bytes:
 async def mock_llm_models() -> Response:
     """Model list for the built-in mock endpoint.
 
-    Point a machine at `http://localhost:8000/api/mock-llm` to exercise runs
+    Point a machine at `http://localhost:8077/api/mock-llm` to exercise runs
     without real hardware.
     """
     if not mocks_enabled():
@@ -431,7 +431,7 @@ async def mock_mcp(request: Request) -> Response:
     `notifications/initialized`, `ping`, `tools/list` and `tools/call`,
     answering with plain JSON rather than an SSE stream (which the spec
     allows for a single response). Register a toolset with URL
-    `http://localhost:8000/api/mock-mcp`, hit Discover, and the tools below
+    `http://localhost:8077/api/mock-mcp`, hit Discover, and the tools below
     show up.
 
     Query parameters steer it: `?hide=echo_upper` drops a tool from

@@ -14,7 +14,7 @@ judge.
 ```bash
 # Backend (Python 3.12+, uv)
 docker compose -f docker-compose.dev.yml up -d   # postgres:17-alpine on :5433
-cd backend && uv run alembic upgrade head && uv run uvicorn app.main:app --reload
+cd backend && uv run alembic upgrade head && uv run uvicorn app.main:app --reload --port 8077
 
 # Frontend (Node 22+), in a second terminal
 cd frontend && npm install && npm run dev
@@ -23,7 +23,7 @@ cd frontend && npm install && npm run dev
 Or `make run`, which starts the database, applies migrations and runs both dev
 servers under `concurrently` so one ctrl-c stops the pair.
 
-Open `http://localhost:5173` and create the first account — it becomes the
+Open `http://localhost:5177` and create the first account — it becomes the
 administrator. `docs/example-suite/` is a worked evaluation suite an agent can
 build into a workspace over MCP if you want something to run.
 

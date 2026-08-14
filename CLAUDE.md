@@ -12,8 +12,8 @@ Frontend: Node 22+, npm.
 ```bash
 docker compose -f docker-compose.dev.yml up -d          # postgres:17-alpine on 127.0.0.1:5433
 cd backend && uv run alembic upgrade head                 # apply migrations
-cd backend && uv run uvicorn app.main:app --reload         # http://localhost:8000
-cd frontend && npm install && npm run dev                  # http://localhost:5173, proxies /api
+cd backend && uv run uvicorn app.main:app --reload --port 8077   # http://localhost:8077
+cd frontend && npm install && npm run dev                  # http://localhost:5177, proxies /api
 
 make run                             # db (waits for healthy) + migrations + both dev
                                      # servers via concurrently; ctrl-c stops both.
@@ -123,7 +123,7 @@ versioning design itself.
   uses; it throws `ApiError { status, message }` from the envelope
   `app/main.py`'s exception handlers write (`{"message": ...}` on every error, so a
   guard's 403 and a validation 422 read the same to the client). `vite.config.ts` proxies
-  `/api` to `http://localhost:8000` in dev.
+  `/api` to `http://localhost:8077` in dev.
 - **Auth is session-cookie-based**, checked by FastAPI dependencies
   (`app/auth/guards.py`): `CurrentUser`, `Writer` (`require_writer`), `Admin`
   (`require_admin`). There is no client-side route "protection" beyond a
@@ -551,13 +551,13 @@ Everything else is verified against the dev server + the mocks (`backend/app/api
 gated by `mocks_enabled()` — dev, or `ENABLE_MOCKS=true` in production; the refusal is a
 **404, not a 403**, so these routes should not appear to exist in production):
 
-- **Mock LLM** — register a machine with base_url `http://localhost:8000/api/mock-llm`.
+- **Mock LLM** — register a machine with base_url `http://localhost:8077/api/mock-llm`.
   `TRIGGER_ERROR` in the user message → 500, `TRIGGER_SLOW` → 2s TTFT delay,
   `TRIGGER_TOOL_LOOP` → never stops calling tools (exercises `max_turns`). When the
   request carries `tools` and no tool result yet, it streams a tool call for the first
   tool with arguments synthesized from its schema, split across chunks; once a tool
   result is present it answers in text quoting it.
-- **Mock MCP** — an MCP toolset pointing at `http://localhost:8000/api/mock-mcp` serves
+- **Mock MCP** — an MCP toolset pointing at `http://localhost:8077/api/mock-mcp` serves
   `echo_upper` and `add_numbers`. `?hide=<tool>` drops one from `tools/list` (verifies
   discovery disables rather than deletes), `?fail=1` makes every call return `isError`.
 

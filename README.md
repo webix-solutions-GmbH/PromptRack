@@ -47,7 +47,7 @@ Point your agent at it and tell it to set the same thing up for your customer.
 
 ```bash
 cp .env.example .env    # dev defaults work as-is
-make run                # postgres in docker, migrations, backend on :8000, frontend on :5173
+make run                # postgres in docker, migrations, backend on :8077, frontend on :5177
 ```
 
 `make` on its own lists the other targets (`test`, `lint`, `typecheck`, `check`).
