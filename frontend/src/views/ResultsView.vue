@@ -29,6 +29,7 @@ import {
 import { ApiError } from '../api/client'
 import { formatDateTime, formatDuration, formatRate } from '../lib/format'
 import type { Rating } from '../lib/rating'
+import { applyColumnTallyDelta, applyTallyDelta } from '../lib/ratingTally'
 import MatrixTable from '../components/results/MatrixTable.vue'
 import { useAuthStore } from '../stores/auth'
 
@@ -194,9 +195,11 @@ const groupOptions = computed(() =>
 
 // --- rating write-through ------------------------------------------------
 
-// `RatingButtons` has already sent the PATCH by the time this fires; patching
-// the cell in place keeps it and the tallies it feeds honest without
-// re-requesting the whole comparison.
+// `RatingButtons` has already sent the PATCH by the time this fires; this
+// patches the cell in place and, when the patch actually carries a rating,
+// adjusts the one column tally (model mode) or run column + `available_runs`
+// entry (run mode) that cell feeds by delta — same immutable assignment,
+// no refetch of the whole comparison.
 function handleRatingChange(payload: {
   cell: CompareCellView
   patch: { rating?: Rating | null; ratingNote?: string | null }
@@ -208,12 +211,63 @@ function handleRatingChange(payload: {
     ...('rating' in patch ? { rating: patch.rating ?? null } : {}),
     ...('ratingNote' in patch ? { rating_note: patch.ratingNote ?? null } : {}),
   }
+
+  // The column a cell belongs to is just its index within `row.cells` — the
+  // same index that indexes `run_columns`/`column_tallies`/`model_columns`.
+  let columnIndex = -1
+  for (const row of matrix.value.rows) {
+    const index = row.cells.findIndex((cell) => cell !== null && cell.id === target.id)
+    if (index !== -1) {
+      columnIndex = index
+      break
+    }
+  }
+
+  const rows = matrix.value.rows.map((row) => ({
+    ...row,
+    cells: row.cells.map((cell) => (cell !== null && cell.id === target.id ? updated : cell)),
+  }))
+
+  // Only a rating change moves a tally — a note-only patch leaves every
+  // tally untouched.
+  if (!('rating' in patch) || columnIndex === -1) {
+    matrix.value = { ...matrix.value, rows }
+    return
+  }
+  const oldRating = target.rating
+  const newRating = patch.rating ?? null
+
+  if (matrix.value.mode === 'models') {
+    matrix.value = {
+      ...matrix.value,
+      rows,
+      column_tallies: matrix.value.column_tallies.map((tally, index) =>
+        index === columnIndex ? applyColumnTallyDelta(tally, oldRating, newRating) : tally,
+      ),
+      // `model_columns` mirrors `column_tallies` index-for-index (the
+      // selected subset); `available_models` holds every model column, so it
+      // has to be matched by key rather than index.
+      model_columns: matrix.value.model_columns.map((column, index) =>
+        index === columnIndex ? applyTallyDelta(column, oldRating, newRating) : column,
+      ),
+      available_models: matrix.value.available_models.map((model) =>
+        model.key === target.column_key ? applyTallyDelta(model, oldRating, newRating) : model,
+      ),
+    }
+    return
+  }
+
+  const runColumns = matrix.value.run_columns.map((column, index) =>
+    index === columnIndex ? applyTallyDelta(column, oldRating, newRating) : column,
+  )
+  const changedRunId = runColumns[columnIndex]?.id
   matrix.value = {
     ...matrix.value,
-    rows: matrix.value.rows.map((row) => ({
-      ...row,
-      cells: row.cells.map((cell) => (cell !== null && cell.id === target.id ? updated : cell)),
-    })),
+    rows,
+    run_columns: runColumns,
+    available_runs: matrix.value.available_runs.map((run) =>
+      run.id === changedRunId ? applyTallyDelta(run, oldRating, newRating) : run,
+    ),
   }
 }
 </script>
