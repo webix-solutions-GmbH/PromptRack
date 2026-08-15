@@ -378,7 +378,7 @@ async function removeEndpoint() {
 
         <section class="panel">
           <h2>Models</h2>
-          <DataTable :value="models" data-key="id" class="table">
+          <DataTable :value="models" data-key="id" class="table list-table">
             <template #empty>No models yet — discover or add one manually below.</template>
             <Column field="model_id" header="Model ID">
               <template #body="{ data }: { data: EndpointModel }">

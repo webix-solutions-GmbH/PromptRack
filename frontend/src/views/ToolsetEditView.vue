@@ -442,7 +442,7 @@ async function removeTool(tool: Tool) {
           <Button v-if="auth.canWrite" label="Add tool" size="small" outlined @click="openNewTool" />
         </div>
 
-        <DataTable :value="tools" data-key="id" class="table">
+        <DataTable :value="tools" data-key="id" class="table list-table">
           <template #empty>
             {{
               toolset.kind === 'mcp'

@@ -175,7 +175,7 @@ async function removeCustomer(customer: Customer) {
 
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
-    <DataTable :value="customers" :loading="loading" data-key="id" class="table">
+    <DataTable :value="customers" :loading="loading" data-key="id" class="table list-table">
       <template #empty>No workspaces yet.</template>
       <Column field="name" header="Name">
         <template #body="{ data }: { data: Customer }">

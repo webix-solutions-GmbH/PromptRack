@@ -4,11 +4,12 @@
 // notes; creating/editing one is admin-only, since it holds credentials;
 // every signed-in user can still read the list to pick an endpoint for a run.
 import { onMounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
+import type { DataTableRowClickEvent } from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
@@ -23,6 +24,15 @@ import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
 const toast = useToast()
+const router = useRouter()
+
+// Same row-navigation contract as the other list views: the row opens the
+// endpoint, anchors/buttons inside a cell keep their own actions.
+function onRowClick(event: DataTableRowClickEvent) {
+  const target = event.originalEvent.target as HTMLElement | null
+  if (target?.closest('a, button')) return
+  void router.push(`/endpoints/${(event.data as Endpoint).id}`)
+}
 
 const endpoints = ref<Endpoint[]>([])
 const loading = ref(true)
@@ -154,7 +164,13 @@ async function testConnection() {
 
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
-    <DataTable :value="endpoints" :loading="loading" data-key="id" class="table">
+    <DataTable
+      :value="endpoints"
+      :loading="loading"
+      data-key="id"
+      class="table list-table row-nav"
+      @row-click="onRowClick"
+    >
       <template #empty>No endpoints yet — add one with "New endpoint".</template>
       <Column field="name" header="Name">
         <template #body="{ data }: { data: Endpoint }">

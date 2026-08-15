@@ -3,11 +3,12 @@
 // `mcp_url` and headers, which are credentials — but every member reads the
 // list to pick toolsets for a test case.
 import { onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
+import type { DataTableRowClickEvent } from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
@@ -22,6 +23,15 @@ import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
 const toast = useToast()
+const router = useRouter()
+
+// Same row-navigation contract as the other list views: the row opens the
+// toolset, anchors/buttons inside a cell keep their own actions.
+function onRowClick(event: DataTableRowClickEvent) {
+  const target = event.originalEvent.target as HTMLElement | null
+  if (target?.closest('a, button')) return
+  void router.push(`/toolsets/${(event.data as Toolset).id}`)
+}
 
 const toolsets = ref<Toolset[]>([])
 const loading = ref(true)
@@ -118,7 +128,13 @@ async function submitForm() {
 
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
-    <DataTable :value="toolsets" :loading="loading" data-key="id" class="table">
+    <DataTable
+      :value="toolsets"
+      :loading="loading"
+      data-key="id"
+      class="table list-table row-nav"
+      @row-click="onRowClick"
+    >
       <template #empty>No toolsets yet — add one with "New toolset".</template>
       <Column field="name" header="Name">
         <template #body="{ data }: { data: Toolset }">

@@ -12,6 +12,7 @@ import { RouterLink, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
+import type { DataTableRowClickEvent } from 'primevue/datatable'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
@@ -26,6 +27,14 @@ const auth = useAuthStore()
 const router = useRouter()
 const confirm = useConfirm()
 const toast = useToast()
+
+// Same row-navigation contract as the other list views: the row opens the
+// run, anchors/buttons inside a cell keep their own actions.
+function onRowClick(event: DataTableRowClickEvent) {
+  const target = event.originalEvent.target as HTMLElement | null
+  if (target?.closest('a, button')) return
+  void router.push(`/runs/${(event.data as { id: number }).id}`)
+}
 
 const runs = ref<RunView[]>([])
 const loading = ref(true)
@@ -156,7 +165,13 @@ const hasRuns = computed(() => runs.value.length > 0)
 
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
-    <DataTable :value="runs" :loading="loading" data-key="id" class="table">
+    <DataTable
+      :value="runs"
+      :loading="loading"
+      data-key="id"
+      class="table list-table row-nav"
+      @row-click="onRowClick"
+    >
       <template #empty>
         {{ hasRuns ? 'No runs match this filter.' : 'No runs yet — start one with "New run".' }}
       </template>

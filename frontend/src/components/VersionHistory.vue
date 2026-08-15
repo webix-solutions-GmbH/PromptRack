@@ -40,7 +40,7 @@ function isBusy(version: PromptVersion): boolean {
 </script>
 
 <template>
-  <DataTable :value="versions" data-key="id" class="table">
+  <DataTable :value="versions" data-key="id" class="table list-table">
     <template #empty>No commits yet — save the draft and commit to start the history.</template>
     <Column header="Version">
       <template #body="{ data }: { data: PromptVersion }">
