@@ -142,6 +142,10 @@ pre {
   padding: 0.125rem 0.4rem;
 }
 
+.list-table .p-datatable-sort-icon {
+  font-size: 0.6875rem;
+}
+
 /* Same teleport reasoning as .form-dialog: dialog width rules must be global. */
 .diff-dialog {
   width: min(72rem, 95vw);

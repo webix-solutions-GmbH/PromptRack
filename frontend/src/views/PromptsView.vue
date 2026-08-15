@@ -9,6 +9,8 @@ import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
+import IconField from 'primevue/iconfield'
+import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import SelectButton from 'primevue/selectbutton'
@@ -59,11 +61,55 @@ const kindFilterOptions = [
   ...PROMPT_KINDS.map((kind) => ({ label: kind.label, value: kind.value })),
 ]
 
-const visiblePrompts = computed(() =>
-  kindFilter.value === null
-    ? prompts.value
-    : prompts.value.filter((prompt) => prompt.kind === kindFilter.value),
-)
+// Substring match, case-insensitive — with ~20 named assets the goal is
+// "type three letters, see the prompt", not query syntax.
+const nameFilter = ref('')
+
+// The version-lifecycle buckets a consultant actually asks for: what's still
+// being drafted (uncommitted), what never shipped (not deployed), what's live
+// (deployed), and the regression-check list (deployed ≠ head — the same set
+// the dashboard panel of that name shows). Buckets may overlap: a deployed
+// prompt with a dirty draft is in both "Deployed" and "Uncommitted".
+type StatusFilter = 'all' | 'uncommitted' | 'not_deployed' | 'deployed' | 'drift'
+
+const statusFilter = ref<StatusFilter>('all')
+
+const statusFilterOptions: { label: string; value: StatusFilter }[] = [
+  { label: 'All', value: 'all' },
+  { label: 'Uncommitted', value: 'uncommitted' },
+  { label: 'Not deployed', value: 'not_deployed' },
+  { label: 'Deployed', value: 'deployed' },
+  { label: 'Deployed ≠ head', value: 'drift' },
+]
+
+function matchesStatus(prompt: Prompt, filter: StatusFilter): boolean {
+  switch (filter) {
+    case 'all':
+      return true
+    case 'uncommitted':
+      return prompt.dirty
+    case 'not_deployed':
+      return prompt.deployed_version === null
+    case 'deployed':
+      return prompt.deployed_version !== null
+    case 'drift':
+      return (
+        prompt.deployed_version !== null &&
+        prompt.head_version !== null &&
+        prompt.deployed_version.version !== prompt.head_version.version
+      )
+  }
+}
+
+const visiblePrompts = computed(() => {
+  const query = nameFilter.value.trim().toLowerCase()
+  return prompts.value.filter(
+    (prompt) =>
+      (kindFilter.value === null || prompt.kind === kindFilter.value) &&
+      matchesStatus(prompt, statusFilter.value) &&
+      (query === '' || prompt.name.toLowerCase().includes(query)),
+  )
+})
 
 function kindLabel(kind: PromptKind): string {
   return PROMPT_KINDS.find((option) => option.value === kind)?.label ?? kind
@@ -130,6 +176,19 @@ async function submitForm() {
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
     <div class="filter-row">
+      <IconField class="name-filter">
+        <InputIcon class="pi pi-search" />
+        <InputText v-model="nameFilter" placeholder="Search by name" size="small" />
+        <InputIcon
+          v-if="nameFilter !== ''"
+          class="pi pi-times clear-search"
+          role="button"
+          tabindex="0"
+          aria-label="Clear search"
+          @click="nameFilter = ''"
+          @keydown.enter="nameFilter = ''"
+        />
+      </IconField>
       <span class="filter-label">Kind</span>
       <SelectButton
         v-model="kindFilter"
@@ -137,12 +196,28 @@ async function submitForm() {
         option-label="label"
         option-value="value"
         :allow-empty="false"
+        size="small"
+      />
+      <span class="filter-label">Status</span>
+      <SelectButton
+        v-model="statusFilter"
+        :options="statusFilterOptions"
+        option-label="label"
+        option-value="value"
+        :allow-empty="false"
+        size="small"
       />
     </div>
 
-    <DataTable :value="visiblePrompts" :loading="loading" data-key="id" class="table list-table">
+    <DataTable
+      :value="visiblePrompts"
+      :loading="loading"
+      data-key="id"
+      class="table list-table"
+      removable-sort
+    >
       <template #empty>No prompts yet — add one with "New prompt".</template>
-      <Column field="name" header="Name">
+      <Column field="name" header="Name" sortable>
         <template #body="{ data }: { data: Prompt }">
           <div class="name-cell">
             <RouterLink :to="`/prompts/${data.id}`" class="name-link">{{ data.name }}</RouterLink>
@@ -150,7 +225,7 @@ async function submitForm() {
           </div>
         </template>
       </Column>
-      <Column header="Kind">
+      <Column field="kind" header="Kind" sortable>
         <template #body="{ data }: { data: Prompt }">
           <Tag
             :value="kindLabel(data.kind)"
@@ -158,7 +233,7 @@ async function submitForm() {
           />
         </template>
       </Column>
-      <Column header="Used by">
+      <Column field="used_by_test_case_count" header="Used by" sortable>
         <template #body="{ data }: { data: Prompt }">
           <!-- Flat and forced: a prompt's cases span groups, so landing on
                the grouped view would scatter the answer across panels the
@@ -183,7 +258,7 @@ async function submitForm() {
       <Column header="Version status">
         <template #body="{ data }: { data: Prompt }">{{ describeVersionStatus(data) }}</template>
       </Column>
-      <Column header="Updated">
+      <Column field="updated_at" header="Updated" sortable>
         <template #body="{ data }: { data: Prompt }">{{ formatDateTime(data.updated_at) }}</template>
       </Column>
     </DataTable>
@@ -293,13 +368,26 @@ async function submitForm() {
 .filter-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.75rem;
+}
+
+.filter-row > .filter-label:not(:first-child) {
+  margin-left: 0.5rem;
 }
 
 .filter-label {
   font-size: 0.8125rem;
   font-weight: 500;
   color: var(--p-text-muted-color);
+}
+
+.name-filter :deep(input) {
+  width: 16rem;
+}
+
+.clear-search {
+  cursor: pointer;
 }
 
 .unused {
