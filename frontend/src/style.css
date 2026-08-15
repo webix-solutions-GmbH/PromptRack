@@ -106,11 +106,11 @@ pre {
   max-width: 90vw;
 }
 
-/* Restyles a PrimeVue DataTable to the density of /results' hand-rolled
- * picker-table (0.8125rem body, slim uppercase header, bordered, row hover),
- * so both table styles read as one design. Global because it reaches into
- * PrimeVue's own .p-datatable-* classes, and shared so any list view can opt
- * in with `class="table list-table"`. */
+/* Restyles a PrimeVue DataTable to the app's list density (0.8125rem body,
+ * slim uppercase header, bordered, row hover) — the density /results' picker
+ * tables were hand-rolled at before they became DataTables like every other
+ * list. Global because it reaches into PrimeVue's own .p-datatable-* classes,
+ * and shared so any list view can opt in with `class="table list-table"`. */
 .list-table .p-datatable-table-container {
   border: 1px solid var(--p-content-border-color);
   border-radius: var(--p-content-border-radius);
@@ -151,13 +151,209 @@ pre {
   cursor: pointer;
 }
 
-/* Same teleport reasoning as .form-dialog: dialog width rules must be global. */
+/* Same teleport reasoning as .form-dialog: dialog width rules must be global.
+ * Three widths and every dialog in the app picks one of them — `.form-dialog`
+ * for a creation form, `.view-dialog` for reading one frozen text,
+ * `.diff-dialog` for two of them side by side. */
+.view-dialog {
+  width: min(56rem, 90vw);
+}
+
 .diff-dialog {
   width: min(72rem, 95vw);
 }
 
-.prompt-view-dialog {
-  width: min(56rem, 90vw);
+/* --- Shared page chrome ---------------------------------------------------
+ *
+ * The classes every list and edit page spells the same way. They used to live
+ * as a scoped copy per view, which is how `.page` ended up with three
+ * different gaps and `.row-actions` with two different alignments. One
+ * definition here is what keeps them from drifting again; a view that
+ * genuinely needs a different value keeps its own scoped rule, which wins on
+ * specificity (a scoped selector carries the view's `data-v-*` attribute).
+ * Global rather than a shared component because these are plain boxes — there
+ * is nothing to wrap them in that would not be a wrapper for its own sake. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.page-heading h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0 0 0.375rem;
+}
+
+.subtitle {
+  max-width: 48rem;
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+  margin: 0;
+}
+
+.name-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.name-link {
+  font-weight: 500;
+  color: var(--p-text-color);
+  text-decoration: none;
+}
+
+.name-link:hover {
+  text-decoration: underline;
+}
+
+/* Shrink-to-fit trailing column: the row actions take exactly their own width
+ * and the columns before them keep the rest. */
+.actions-column {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* Same shrink-to-fit trick for narrow data columns (counts, timestamps), so a
+ * wide flexible column can never squeeze them into wrapping. */
+.fit-column {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
+.mono {
+  font-family: var(--p-font-family-mono, ui-monospace, monospace);
+  font-size: 0.8125rem;
+  color: var(--p-text-muted-color);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.field label,
+.field .label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--p-text-muted-color);
+}
+
+.dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* A checkbox and its caption on one line, the caption in body weight so it
+ * reads as an option rather than as another field label. */
+.checkbox-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 400;
+}
+
+.hint {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  margin: 0;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.5rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: var(--p-content-border-radius);
+}
+
+.panel h2 {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Page-level destructive actions, fenced off below the form they belong to
+ * rather than sitting next to the ordinary ones in a header. */
+.danger-zone {
+  border-top: 1px solid var(--p-content-border-color);
+  padding-top: 1rem;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+/* Breathing room between one control and the next filter's label, without a
+ * wrapper element per label/control pair. */
+.filter-row > .filter-label:not(:first-child) {
+  margin-left: 0.5rem;
+}
+
+.filter-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--p-text-muted-color);
+}
+
+/* What a list shows when it has nothing to list, *outside* a DataTable (which
+ * draws its own empty row). Dashed so it reads as an absence rather than as a
+ * panel that happens to be short. */
+.empty-state {
+  margin: 0;
+  padding: 1.5rem;
+  text-align: center;
+  border: 1px dashed var(--p-content-border-color);
+  border-radius: var(--p-content-border-radius);
+  font-size: 0.875rem;
+  color: var(--p-text-muted-color);
+}
+
+/* One measurement, label and value: the result cards and the transcript's
+ * per-turn rows line these up the same way. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: var(--p-content-border-radius);
+  padding: 0.1rem 0.45rem;
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+}
+
+.chip b {
+  font-family: var(--p-font-family-mono, ui-monospace, monospace);
+  font-weight: 500;
+  color: var(--p-text-color);
 }
 
 /* Prompt-part color coding, shared between the test-case editor's assembled

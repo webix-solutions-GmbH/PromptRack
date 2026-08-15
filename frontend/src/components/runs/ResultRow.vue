@@ -10,6 +10,7 @@
 import { computed } from 'vue'
 import Tag from 'primevue/tag'
 import { formatDuration, formatRate, formatTokenLabel } from '../../lib/format'
+import { RESULT_STATUS_SEVERITY } from '../../lib/runStatus'
 import { splitThinking } from '../../lib/thinking'
 import type { Rating } from '../../lib/rating'
 import type { RunResultView } from '../../api/runs'
@@ -47,13 +48,6 @@ const tokenLabel = computed(() =>
   formatTokenLabel(props.result.prompt_tokens, props.result.completion_tokens, props.result.tokens_estimated),
 )
 
-const statusSeverity: Record<string, 'secondary' | 'info' | 'success' | 'danger'> = {
-  pending: 'secondary',
-  running: 'info',
-  ok: 'success',
-  error: 'danger',
-}
-
 const ratingResponse = computed(() => splitThinking(props.result.response_text ?? ''))
 </script>
 
@@ -68,7 +62,7 @@ const ratingResponse = computed(() => splitThinking(props.result.response_text ?
         <Tag v-if="isToolRun" severity="info" :value="`tools: ${result.tool_mode}`" />
         <Tag v-if="systemVersionLabel" severity="secondary" :value="`system ${systemVersionLabel}`" />
         <Tag v-if="taskVersionLabel" severity="secondary" :value="`task ${taskVersionLabel}`" />
-        <Tag :severity="statusSeverity[result.status] ?? 'secondary'" :value="result.status" />
+        <Tag :severity="RESULT_STATUS_SEVERITY[result.status] ?? 'secondary'" :value="result.status" />
       </div>
     </header>
 
@@ -334,22 +328,5 @@ const ratingResponse = computed(() => splitThinking(props.result.response_text ?
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
-  padding: 0.1rem 0.45rem;
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-}
-
-.chip b {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-weight: 500;
-  color: var(--p-text-color);
 }
 </style>

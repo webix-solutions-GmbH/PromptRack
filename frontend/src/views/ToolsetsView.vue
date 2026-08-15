@@ -16,7 +16,13 @@ import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
-import { toolsetsApi, type Toolset, type ToolsetKind } from '../api/toolsets'
+import {
+  toolsetsApi,
+  TOOLSET_KIND_OPTIONS,
+  toolsetKindLabel,
+  type Toolset,
+  type ToolsetKind,
+} from '../api/toolsets'
 import { ApiError } from '../api/client'
 import { formatDateTime } from '../lib/format'
 import { useAuthStore } from '../stores/auth'
@@ -52,11 +58,6 @@ async function load() {
 onMounted(load)
 
 // --- create dialog -----------------------------------------------------
-
-const kindOptions: { label: string; value: ToolsetKind }[] = [
-  { label: 'Manual', value: 'manual' },
-  { label: 'MCP', value: 'mcp' },
-]
 
 interface ToolsetFormState {
   name: string
@@ -101,7 +102,7 @@ async function submitForm() {
       mcp_headers: form.value.kind === 'mcp' ? form.value.mcp_headers || null : null,
       is_global: form.value.is_global,
     })
-    toast.add({ severity: 'success', summary: 'Toolset created', life: 3000 })
+    toast.add({ severity: 'success', summary: 'Toolset created', life: 5000 })
     dialogOpen.value = false
     await load()
   } catch (err) {
@@ -131,27 +132,28 @@ async function submitForm() {
     <DataTable
       :value="toolsets"
       :loading="loading"
+      removable-sort
       data-key="id"
       class="table list-table row-nav"
       @row-click="onRowClick"
     >
       <template #empty>No toolsets yet — add one with "New toolset".</template>
-      <Column field="name" header="Name">
+      <Column field="name" header="Name" sortable>
         <template #body="{ data }: { data: Toolset }">
           <div class="name-cell">
             <RouterLink :to="`/toolsets/${data.id}`" class="name-link">{{ data.name }}</RouterLink>
-            <Tag :value="data.kind === 'mcp' ? 'MCP' : 'manual'" :severity="data.kind === 'mcp' ? 'info' : 'secondary'" />
+            <Tag :value="toolsetKindLabel(data.kind)" :severity="data.kind === 'mcp' ? 'info' : 'secondary'" />
             <Tag v-if="data.is_global" value="Global" severity="info" />
           </div>
           <span v-if="data.description" class="description">{{ data.description }}</span>
         </template>
       </Column>
-      <Column header="Tools">
+      <Column header="Tools" class="fit-column">
         <template #body="{ data }: { data: Toolset }">
           {{ data.enabled_tool_count }}/{{ data.tool_count }} enabled
         </template>
       </Column>
-      <Column header="Updated">
+      <Column field="updated_at" header="Updated" sortable class="fit-column">
         <template #body="{ data }: { data: Toolset }">{{ formatDateTime(data.updated_at) }}</template>
       </Column>
     </DataTable>
@@ -172,7 +174,7 @@ async function submitForm() {
         </div>
         <div class="field">
           <label>Kind</label>
-          <SelectButton v-model="form.kind" :options="kindOptions" option-label="label" option-value="value" />
+          <SelectButton v-model="form.kind" :options="TOOLSET_KIND_OPTIONS" option-label="label" option-value="value" />
         </div>
         <template v-if="form.kind === 'mcp'">
           <div class="field">
@@ -205,84 +207,10 @@ async function submitForm() {
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.page-heading h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0 0 0.375rem;
-}
-
-.subtitle {
-  max-width: 48rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-  margin: 0;
-}
-
-.name-cell {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.name-link {
-  font-weight: 500;
-  color: var(--p-text-color);
-  text-decoration: none;
-}
-
-.name-link:hover {
-  text-decoration: underline;
-}
-
 .description {
   display: block;
   font-size: 0.8125rem;
   color: var(--p-text-muted-color);
   margin-top: 0.125rem;
-}
-
-.dialog-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.field label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
-.checkbox-option {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  font-weight: 400;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
 }
 </style>

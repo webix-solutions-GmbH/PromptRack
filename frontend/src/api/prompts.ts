@@ -157,6 +157,12 @@ export const PROMPT_KINDS: { value: PromptKind; label: string; hint: string }[] 
   },
 ]
 
+/** The label `PROMPT_KINDS` gives a kind, so no view renders the raw wire
+ * value. Falls back to the value itself for a kind this build predates. */
+export function kindLabel(kind: PromptKind): string {
+  return PROMPT_KINDS.find((option) => option.value === kind)?.label ?? kind
+}
+
 /** The list/editor's one-glance "is what's live what we last verified"
  * signal (spec: "deployed v3, head is v5"). Pure so both `PromptsView` and
  * `PromptEditView` render the identical sentence for the identical state. */

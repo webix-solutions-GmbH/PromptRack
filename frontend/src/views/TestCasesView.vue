@@ -47,8 +47,6 @@ import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import type { DataTableRowClickEvent } from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
-import IconField from 'primevue/iconfield'
-import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Panel from 'primevue/panel'
@@ -58,6 +56,7 @@ import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
+import SearchField from '../components/SearchField.vue'
 import { testCasesApi, testGroupsApi, type TestCase, type TestGroup } from '../api/testCases'
 import { ApiError } from '../api/client'
 import { useAuthStore } from '../stores/auth'
@@ -190,15 +189,17 @@ const titleFilter = ref('')
 // PrimeVue's Select will actually display instead of showing the placeholder.
 const ALL_GROUPS = 0
 const groupFilter = ref<number>(ALL_GROUPS)
-const toolModeFilter = ref<TestCase['tool_mode'] | null>(null)
+// 'all' rather than null: SelectButton cannot highlight an option whose value is null.
+const ALL_TOOL_MODES = 'all'
+const toolModeFilter = ref<TestCase['tool_mode'] | typeof ALL_TOOL_MODES>(ALL_TOOL_MODES)
 
 const groupFilterOptions = computed(() => [
   { label: 'All groups', value: ALL_GROUPS },
   ...groups.value.map((group) => ({ label: group.name, value: group.id })),
 ])
 
-const toolModeFilterOptions: { label: string; value: TestCase['tool_mode'] | null }[] = [
-  { label: 'All', value: null },
+const toolModeFilterOptions: { label: string; value: TestCase['tool_mode'] | typeof ALL_TOOL_MODES }[] = [
+  { label: 'All', value: ALL_TOOL_MODES },
   { label: 'none', value: 'none' },
   { label: 'definitions', value: 'definitions' },
   { label: 'execute', value: 'execute' },
@@ -209,10 +210,17 @@ const visibleFlatRows = computed(() => {
   return flatRows.value.filter(
     (row) =>
       (groupFilter.value === ALL_GROUPS || row.group_id === groupFilter.value) &&
-      (toolModeFilter.value === null || row.tool_mode === toolModeFilter.value) &&
+      (toolModeFilter.value === ALL_TOOL_MODES || row.tool_mode === toolModeFilter.value) &&
       (query === '' || row.title.toLowerCase().includes(query)),
   )
 })
+
+const flatFiltersActive = computed(
+  () =>
+    titleFilter.value.trim() !== '' ||
+    groupFilter.value !== ALL_GROUPS ||
+    toolModeFilter.value !== ALL_TOOL_MODES,
+)
 
 const visibleGroups = computed(() =>
   soloGroupId.value === null
@@ -297,7 +305,7 @@ async function submitForm() {
         description: form.value.description || null,
         sort_order: form.value.sort_order,
       })
-      toast.add({ severity: 'success', summary: 'Group saved', life: 3000 })
+      toast.add({ severity: 'success', summary: 'Group saved', life: 5000 })
     } else {
       // Not soloed after creating: every group is on the page already, so
       // jumping into the new (empty) one would only hide the rest.
@@ -305,7 +313,7 @@ async function submitForm() {
         name: form.value.name,
         description: form.value.description || null,
       })
-      toast.add({ severity: 'success', summary: 'Group created', life: 3000 })
+      toast.add({ severity: 'success', summary: 'Group created', life: 5000 })
     }
     dialogOpen.value = false
     await load()
@@ -403,6 +411,7 @@ async function removeCase(testCase: TestCase) {
           option-label="label"
           option-value="value"
           :allow-empty="false"
+          size="small"
           @update:model-value="setViewMode"
         />
       </div>
@@ -437,22 +446,11 @@ async function removeCase(testCase: TestCase) {
 
     <template v-if="viewMode === 'flat'">
       <div class="filter-row">
-        <IconField class="name-filter">
-          <InputIcon class="pi pi-search" />
-          <InputText v-model="titleFilter" placeholder="Search by title" size="small" />
-          <InputIcon
-            v-if="titleFilter !== ''"
-            class="pi pi-times clear-search"
-            role="button"
-            tabindex="0"
-            aria-label="Clear search"
-            @click="titleFilter = ''"
-            @keydown.enter="titleFilter = ''"
-          />
-        </IconField>
-        <span class="filter-label">Group</span>
+        <SearchField v-model="titleFilter" placeholder="Search by title" />
+        <label class="filter-label" for="test-case-group-filter">Group</label>
         <Select
           v-model="groupFilter"
+          input-id="test-case-group-filter"
           :options="groupFilterOptions"
           option-label="label"
           option-value="value"
@@ -475,10 +473,17 @@ async function removeCase(testCase: TestCase) {
         sort-field="group_name"
         :sort-order="1"
         removable-sort
+        :loading="loading"
         class="table list-table row-nav"
         @row-click="onCaseRowClick"
       >
-        <template #empty>No test cases match.</template>
+        <template #empty>
+          {{
+            flatFiltersActive
+              ? 'No test cases match this filter.'
+              : 'No test cases yet — add one with "New test case".'
+          }}
+        </template>
         <Column field="group_name" header="Group" sortable />
         <Column field="title" header="Title" sortable>
           <template #body="{ data }: { data: TestCase }">
@@ -513,8 +518,7 @@ async function removeCase(testCase: TestCase) {
     </template>
 
     <template v-else>
-      <p v-if="loading" class="empty">Loading…</p>
-      <p v-else-if="visibleGroups.length === 0" class="empty">
+      <p v-if="!loading && visibleGroups.length === 0" class="empty-state">
         {{
           soloGroupId === null
             ? 'No groups yet — add one with "New group".'
@@ -588,6 +592,7 @@ async function removeCase(testCase: TestCase) {
           :value="casesFor(group.id)"
           data-key="id"
           removable-sort
+          :loading="loading"
           class="table list-table row-nav"
           @row-click="onCaseRowClick"
         >
@@ -600,7 +605,7 @@ async function removeCase(testCase: TestCase) {
           <Column header="Prompt">
             <template #body="{ data }: { data: TestCase }">{{ promptRefFor(data) }}</template>
           </Column>
-          <Column header="Tools">
+          <Column field="tool_mode" header="Tools" sortable>
             <template #body="{ data }: { data: TestCase }">
               <Tag
                 :value="data.tool_mode"
@@ -667,33 +672,6 @@ async function removeCase(testCase: TestCase) {
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 0.5rem;
-}
-
-.page-heading h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0 0 0.375rem;
-}
-
-.subtitle {
-  max-width: 48rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-  margin: 0;
-}
-
 .view-toggle {
   margin-top: 0.75rem;
 }
@@ -726,12 +704,6 @@ async function removeCase(testCase: TestCase) {
   cursor: pointer;
 }
 
-.empty {
-  font-size: 0.875rem;
-  color: var(--p-text-muted-color);
-  margin: 0;
-}
-
 .group-title {
   display: flex;
   align-items: baseline;
@@ -753,27 +725,6 @@ async function removeCase(testCase: TestCase) {
 
 .group-panel :deep(.p-panel-header .p-panel-toggle-button) {
   display: none;
-}
-
-.filter-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-}
-
-.filter-label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
-.name-filter :deep(input) {
-  width: 16rem;
-}
-
-.clear-search {
-  cursor: pointer;
 }
 
 .group-filter {
@@ -814,44 +765,5 @@ async function removeCase(testCase: TestCase) {
   color: var(--p-text-muted-color);
   margin: 0 0 0.75rem;
   max-width: 60rem;
-}
-
-.name-link {
-  font-weight: 500;
-  color: var(--p-text-color);
-  text-decoration: none;
-}
-
-.name-link:hover {
-  text-decoration: underline;
-}
-
-.actions-column {
-  width: 1%;
-  white-space: nowrap;
-}
-
-.dialog-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.field label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
 }
 </style>

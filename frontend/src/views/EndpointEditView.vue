@@ -138,7 +138,7 @@ async function save() {
   try {
     const updated = await endpointsApi.update(endpointId.value, buildInput())
     applyEndpoint(updated)
-    toast.add({ severity: 'success', summary: 'Endpoint saved', life: 3000 })
+    toast.add({ severity: 'success', summary: 'Endpoint saved', life: 5000 })
   } catch (err) {
     saveError.value = err instanceof ApiError ? err.message : 'Failed to save the endpoint.'
   } finally {
@@ -158,17 +158,17 @@ async function testConnection() {
       toast.add({
         severity: 'success',
         summary: `Reachable — HTTP ${result.status} in ${result.latency_ms}ms`,
-        life: 4000,
+        life: 5000,
       })
     } else {
-      toast.add({ severity: 'error', summary: 'Test connection failed', detail: result.error, life: 6000 })
+      toast.add({ severity: 'error', summary: 'Test connection failed', detail: result.error, life: 5000 })
     }
   } catch (err) {
     toast.add({
       severity: 'error',
       summary: 'Test connection failed',
       detail: err instanceof ApiError ? err.message : 'Request failed unexpectedly.',
-      life: 6000,
+      life: 5000,
     })
   } finally {
     testing.value = false
@@ -188,18 +188,18 @@ async function discoverModels() {
         severity: 'success',
         summary: `Found ${result.discovered} model${result.discovered === 1 ? '' : 's'}`,
         detail: result.retired > 0 ? `${result.retired} no longer loaded` : undefined,
-        life: 4000,
+        life: 5000,
       })
       models.value = await endpointsApi.listModels(endpointId.value)
     } else {
-      toast.add({ severity: 'error', summary: 'Discovery failed', detail: result.error, life: 6000 })
+      toast.add({ severity: 'error', summary: 'Discovery failed', detail: result.error, life: 5000 })
     }
   } catch (err) {
     toast.add({
       severity: 'error',
       summary: 'Discovery failed',
       detail: err instanceof ApiError ? err.message : 'Request failed unexpectedly.',
-      life: 6000,
+      life: 5000,
     })
   } finally {
     discovering.value = false
@@ -238,7 +238,7 @@ function confirmDelete() {
   if (!endpoint.value) return
   confirm.require({
     header: 'Delete endpoint',
-    message: `Delete endpoint "${endpoint.value.name}"? This cannot be undone.`,
+    message: `Delete endpoint "${endpoint.value.name}"? Past runs keep their own frozen copies.`,
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', text: true },
     accept: () => void removeEndpoint(),
@@ -378,14 +378,14 @@ async function removeEndpoint() {
 
         <section class="panel">
           <h2>Models</h2>
-          <DataTable :value="models" data-key="id" class="table list-table">
+          <DataTable :value="models" :loading="loading" data-key="id" class="table list-table" removable-sort>
             <template #empty>No models yet — discover or add one manually below.</template>
-            <Column field="model_id" header="Model ID">
+            <Column field="model_id" header="Model ID" sortable>
               <template #body="{ data }: { data: EndpointModel }">
                 <span class="mono">{{ data.model_id }}</span>
               </template>
             </Column>
-            <Column header="Status">
+            <Column field="currently_loaded" header="Status" sortable>
               <template #body="{ data }: { data: EndpointModel }">
                 <Tag
                   :value="data.currently_loaded ? 'loaded' : 'not loaded'"
@@ -393,13 +393,13 @@ async function removeEndpoint() {
                 />
               </template>
             </Column>
-            <Column field="source" header="Source" />
-            <Column header="First seen">
+            <Column field="source" header="Source" sortable />
+            <Column field="first_seen_at" header="First seen" sortable>
               <template #body="{ data }: { data: EndpointModel }">{{
                 formatDateTime(data.first_seen_at)
               }}</template>
             </Column>
-            <Column header="Last seen">
+            <Column field="last_seen_at" header="Last seen" sortable>
               <template #body="{ data }: { data: EndpointModel }">{{
                 formatDateTime(data.last_seen_at)
               }}</template>
@@ -411,7 +411,7 @@ async function removeEndpoint() {
               <label for="new-model-id">Add model manually</label>
               <InputText id="new-model-id" v-model="newModelId" placeholder="llama-3.1-8b-instruct" />
             </div>
-            <Button type="submit" label="Add" severity="secondary" outlined :loading="addingModel" />
+            <Button type="submit" label="Add model" severity="secondary" outlined :loading="addingModel" />
           </form>
         </section>
       </div>
@@ -421,9 +421,6 @@ async function removeEndpoint() {
 
 <style scoped>
 .page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
   max-width: 90rem;
 }
 
@@ -451,19 +448,17 @@ async function removeEndpoint() {
   }
 }
 
+/* The heading carries a Tag beside the name, so it lays its children out on
+ * one line instead of taking the global's plain block flow. */
 .page-heading h1 {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0 0 0.25rem;
 }
 
+/* The base URL under the heading is a `<p>`, which the global paragraph rule
+ * would give a bottom margin the heading block does not want. */
 .mono {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-size: 0.875rem;
-  color: var(--p-text-muted-color);
   margin: 0;
 }
 
@@ -471,27 +466,6 @@ async function removeEndpoint() {
   display: flex;
   gap: 0.75rem;
   flex-wrap: wrap;
-}
-
-.panel {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  padding: 1.5rem;
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
-}
-
-.panel h2 {
-  font-size: 1.0625rem;
-  font-weight: 600;
-  margin: 0;
-}
-
-.dialog-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
 }
 
 .field-row {
@@ -505,9 +479,6 @@ async function removeEndpoint() {
 }
 
 .field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
   /* Grid items default to min-width:auto, which lets an InputText's intrinsic
    * width push a three-column row wider than its track and bleed out of the
    * panel. 0 lets the 1fr tracks actually constrain it. */
@@ -518,48 +489,14 @@ async function removeEndpoint() {
   flex: 1;
 }
 
-.field label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
-.w-full {
-  width: 100%;
-}
-
 .meta {
   font-size: 0.75rem;
   color: var(--p-text-muted-color);
   margin: 0;
 }
 
-.hint {
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-  margin: 0;
-}
-
-.checkbox-option {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  font-weight: 400;
-}
-
-.dialog-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
 .dialog-actions.start {
   justify-content: flex-start;
-}
-
-.danger-zone {
-  border-top: 1px solid var(--p-content-border-color);
-  padding-top: 1rem;
 }
 
 .add-model-form {

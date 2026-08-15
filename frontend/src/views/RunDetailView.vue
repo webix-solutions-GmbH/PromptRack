@@ -28,9 +28,10 @@ import {
   type TranscriptMessage,
 } from '../api/runs'
 import { ApiError } from '../api/client'
-import { formatDateTime, formatDuration, formatParams, formatRate } from '../lib/format'
+import { endpointLabel, formatDateTime, formatDuration, formatParams, formatRate } from '../lib/format'
 import { countRatings, type Rating } from '../lib/rating'
 import { usePromptVersionLabels } from '../lib/promptVersionLabels'
+import { RUN_STATUS_SEVERITY } from '../lib/runStatus'
 import ResultRow from '../components/runs/ResultRow.vue'
 import { useAuthStore } from '../stores/auth'
 
@@ -42,7 +43,7 @@ const router = useRouter()
 const confirm = useConfirm()
 const toast = useToast()
 
-const endpointName = ref('(deleted endpoint)')
+const endpointName = ref(endpointLabel(null))
 const baseUrl = ref<string | null>(null)
 const cpu = ref<string | null>(null)
 const ram = ref<string | null>(null)
@@ -84,7 +85,7 @@ async function load() {
   loadError.value = null
   try {
     const run = await runsApi.get(runId.value)
-    endpointName.value = run.endpoint_snapshot?.name ?? '(deleted endpoint)'
+    endpointName.value = endpointLabel(run.endpoint_snapshot?.name)
     baseUrl.value = run.endpoint_snapshot?.base_url ?? null
     cpu.value = run.endpoint_snapshot?.cpu ?? null
     ram.value = run.endpoint_snapshot?.ram ?? null
@@ -348,13 +349,6 @@ async function removeRun() {
 
 // --- summary line -------------------------------------------------------
 
-const statusSeverity: Record<RunStatus, 'secondary' | 'info' | 'success' | 'danger'> = {
-  pending: 'secondary',
-  running: 'info',
-  completed: 'success',
-  failed: 'danger',
-}
-
 const pendingCount = computed(() => results.value.filter((row) => row.status === 'pending').length)
 // Rows stuck in 'running' while this tab is not driving are leftovers from a
 // crashed process; the executor reclaims them as 'pending' on the next
@@ -388,7 +382,7 @@ const totalDuration = computed(() =>
           <div class="header-heading">
             <h1>
               Run #{{ runId }}
-              <Tag :severity="statusSeverity[runStatus]" :value="runStatus" />
+              <Tag :severity="RUN_STATUS_SEVERITY[runStatus]" :value="runStatus" />
               <Tag v-if="archivedAt !== null" severity="warn" value="archived" />
             </h1>
             <p class="mono-line">{{ modelId }} @ {{ endpointName }}</p>
@@ -408,7 +402,6 @@ const totalDuration = computed(() =>
                 :loading="busy"
                 @click="toggleArchive"
               />
-              <Button label="Delete run" outlined severity="danger" :loading="busy" @click="confirmDelete" />
             </template>
           </div>
         </div>
@@ -503,17 +496,23 @@ const totalDuration = computed(() =>
           @rating-change="(patch) => handleRatingChange(result.id, patch)"
         />
       </section>
+
+      <section v-if="auth.canWrite" class="panel">
+        <div class="danger-zone">
+          <Button
+            label="Delete run"
+            severity="danger"
+            outlined
+            :loading="busy"
+            @click="confirmDelete"
+          />
+        </div>
+      </section>
     </template>
   </div>
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
 .header-card {
   display: flex;
   flex-direction: column;
@@ -565,9 +564,9 @@ const totalDuration = computed(() =>
   }
 }
 
+/* Tighter gap than the global .field: this is a compact label/value display
+ * grid (see .field-label/.field-value below), not a form field. */
 .field {
-  display: flex;
-  flex-direction: column;
   gap: 0.125rem;
   min-width: 0;
 }

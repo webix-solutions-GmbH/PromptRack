@@ -22,6 +22,7 @@ import { useToast } from 'primevue/usetoast'
 import {
   promptsApi,
   describeVersionStatus,
+  kindLabel,
   PROMPT_KINDS,
   type DiffRef,
   type Prompt,
@@ -85,7 +86,7 @@ async function saveDraft() {
     const updated = await promptsApi.updateDraft(promptId.value, { content: draftContent.value })
     prompt.value = updated
     draftContent.value = updated.content
-    toast.add({ severity: 'success', summary: 'Draft saved', life: 2500 })
+    toast.add({ severity: 'success', summary: 'Draft saved', life: 5000 })
   } catch (err) {
     saveError.value = err instanceof ApiError ? err.message : 'Failed to save the draft.'
   } finally {
@@ -117,7 +118,7 @@ async function changeKind(kind: PromptKind) {
   savingKind.value = true
   try {
     prompt.value = await promptsApi.updateDraft(promptId.value, { kind })
-    toast.add({ severity: 'success', summary: `Kind set to ${kind}`, life: 2500 })
+    toast.add({ severity: 'success', summary: `Kind set to ${kind}`, life: 5000 })
   } catch (err) {
     kindError.value = err instanceof ApiError ? err.message : 'Failed to change the kind.'
   } finally {
@@ -143,7 +144,7 @@ async function handleCommit(message: string) {
     await promptsApi.commit(promptId.value, message)
     commitDialogOpen.value = false
     await load()
-    toast.add({ severity: 'success', summary: 'Committed', life: 3000 })
+    toast.add({ severity: 'success', summary: 'Committed', life: 5000 })
   } catch (err) {
     commitError.value = err instanceof ApiError ? err.message : 'Failed to commit.'
   } finally {
@@ -159,7 +160,7 @@ async function handleDeploy(version: PromptVersion) {
   busyVersionId.value = version.id
   try {
     prompt.value = await promptsApi.deploy(promptId.value, version.id)
-    toast.add({ severity: 'success', summary: `Deployed v${version.version}`, life: 3000 })
+    toast.add({ severity: 'success', summary: `Deployed v${version.version}`, life: 5000 })
   } catch (err) {
     toast.add({
       severity: 'error',
@@ -178,7 +179,7 @@ function confirmRestore(version: PromptVersion) {
     message: unsavedChanges.value
       ? `Copy v${version.version}'s content into the draft? Your unsaved draft edits will be discarded.`
       : `Copy v${version.version}'s content into the draft? Review and commit it to record the rollback in history.`,
-    acceptProps: { label: 'Restore', severity: 'danger' },
+    acceptProps: { label: 'Restore' },
     rejectProps: { label: 'Cancel', text: true },
     accept: () => void handleRestore(version),
   })
@@ -301,7 +302,10 @@ async function removePrompt() {
       <div class="page-heading">
         <h1>
           {{ prompt.name }}
-          <Tag :value="prompt.kind" :severity="prompt.kind === 'system' ? 'info' : 'secondary'" />
+          <Tag
+            :value="kindLabel(prompt.kind)"
+            :severity="prompt.kind === 'system' ? 'info' : 'secondary'"
+          />
           <Tag v-if="prompt.dirty" value="uncommitted" severity="warn" />
         </h1>
         <p class="status-line">{{ describeVersionStatus(prompt) }}</p>
@@ -350,7 +354,7 @@ async function removePrompt() {
             />
             <Button
               v-if="auth.canWrite"
-              label="Commit…"
+              label="Commit"
               :disabled="!canCommit"
               @click="commitDialogOpen = true"
             />
@@ -439,9 +443,6 @@ async function removePrompt() {
 
 <style scoped>
 .page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
   max-width: 56rem;
 }
 
@@ -449,9 +450,6 @@ async function removePrompt() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0 0 0.25rem;
 }
 
 .status-line {
@@ -466,25 +464,10 @@ async function removePrompt() {
   margin: 0.125rem 0 0;
 }
 
-.panel {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 1.5rem;
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
-}
-
 .panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-
-.panel h2 {
-  font-size: 1.0625rem;
-  font-weight: 600;
-  margin: 0;
 }
 
 .draft-actions {
@@ -495,16 +478,6 @@ async function removePrompt() {
 .mono-input :deep(textarea) {
   font-family: var(--p-font-family-mono, ui-monospace, monospace);
   font-size: 0.8125rem;
-}
-
-.hint {
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-  margin: 0;
-}
-
-.danger-zone {
-  display: flex;
 }
 
 .view-textarea {
@@ -526,13 +499,9 @@ async function removePrompt() {
 </style>
 
 <style>
-/* Both dialogs teleport to <body>, out of reach of the scoped block above —
-   sizing lives here instead. The global `.diff-dialog` rule in style.css
-   covers the outer dialog width; this block covers what that rule doesn't. */
-.view-dialog {
-  width: min(48rem, 90vw);
-}
-
+/* The diff dialog teleports to <body>, out of reach of the scoped block
+   above. The global `.diff-dialog` rule in style.css covers the outer
+   dialog's width; this covers the inner scroll region it doesn't. */
 .diff-dialog-body {
   min-height: 24rem;
   max-height: 70vh;

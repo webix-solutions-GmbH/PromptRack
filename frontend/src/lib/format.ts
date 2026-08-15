@@ -70,6 +70,27 @@ export function formatTokenLabel(
   return promptTokens !== null ? `${promptTokens} in / ${completion} out` : completion
 }
 
+/**
+ * One-line preview of a longer text: whitespace collapsed to single spaces
+ * and cut to `max` characters with an ellipsis. `—` for nothing at all, so a
+ * table cell keeps its em-dash placeholder instead of going blank.
+ */
+export function excerpt(value: string | null | undefined, max = 60): string {
+  if (!value) return '—'
+  const flat = value.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat
+}
+
+/**
+ * An endpoint's name as a run displays it. A run keeps its
+ * `endpoint_snapshot`, so the fallback is only reached when the run predates
+ * the snapshot or carries none — the endpoint row itself being deleted never
+ * blanks a past run (see the snapshot model in CLAUDE.md).
+ */
+export function endpointLabel(name: string | null | undefined): string {
+  return name ?? '(deleted endpoint)'
+}
+
 /** Renders a run's `params` (temperature/max_tokens) for display. */
 export function formatParams(params: Record<string, unknown> | null): string {
   if (!params) return 'server defaults'

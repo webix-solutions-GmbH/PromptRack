@@ -84,18 +84,6 @@ async function submit() {
   gap: 1rem;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.field label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
 .w-full {
   width: 100%;
 }

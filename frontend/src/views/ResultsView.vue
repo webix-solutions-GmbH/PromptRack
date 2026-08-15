@@ -14,10 +14,20 @@
 // address bar can never claim a selection the table does not show.
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
+import Column from 'primevue/column'
+import DataTable from 'primevue/datatable'
+import type { DataTableRowClickEvent } from 'primevue/datatable'
 import Message from 'primevue/message'
-import { resultsApi, type CompareCellView, type CompareMode, type MatrixResponse } from '../api/results'
+import SelectButton from 'primevue/selectbutton'
+import {
+  resultsApi,
+  type CompareCellView,
+  type CompareMode,
+  type CompareRunView,
+  type MatrixResponse,
+  type ModelColumnView,
+} from '../api/results'
 import { ApiError } from '../api/client'
 import { formatDateTime, formatDuration, formatRate } from '../lib/format'
 import type { Rating } from '../lib/rating'
@@ -105,8 +115,13 @@ async function load() {
 
 onMounted(load)
 
-function switchMode(next: CompareMode) {
-  if (mode.value === next) return
+const modeOptions: { label: string; value: CompareMode }[] = [
+  { label: 'By model', value: 'models' },
+  { label: 'By run', value: 'runs' },
+]
+
+function switchMode(next: CompareMode | null) {
+  if (next === null || mode.value === next) return
   mode.value = next
   void load()
 }
@@ -133,15 +148,35 @@ function toggleModel(key: string) {
   void load()
 }
 
-function toggleGroup(id: number | null) {
-  if (id === null) {
-    selectedGroupIds.value = []
-  } else if (selectedGroupIds.value.includes(id)) {
-    selectedGroupIds.value = selectedGroupIds.value.filter((existing) => existing !== id)
-  } else {
-    selectedGroupIds.value = [...selectedGroupIds.value, id]
-  }
+// No group selected means every group, which is what an empty selection
+// already encodes — so the multi-select needs no "All" option of its own.
+function setGroupFilter(ids: number[] | null) {
+  selectedGroupIds.value = ids ?? []
   void load()
+}
+
+// --- picker rows -----------------------------------------------------------
+
+// The row is the one click target; the checkbox in it is display-only (see the
+// template comment), so both tables toggle from the row-click event.
+function onRunRowClick(event: DataTableRowClickEvent) {
+  const target = event.originalEvent.target as HTMLElement | null
+  if (target?.closest('a, button')) return
+  toggleRun((event.data as CompareRunView).id)
+}
+
+function onModelRowClick(event: DataTableRowClickEvent) {
+  const target = event.originalEvent.target as HTMLElement | null
+  if (target?.closest('a, button')) return
+  toggleModel((event.data as ModelColumnView).key)
+}
+
+function runRowClass(run: CompareRunView) {
+  return selectedRunIds.value.includes(run.id) ? 'selected' : ''
+}
+
+function modelRowClass(column: ModelColumnView) {
+  return selectedModelKeys.value.includes(column.key) ? 'selected' : ''
 }
 
 // --- derived view state ----------------------------------------------------
@@ -152,6 +187,12 @@ const columnCount = computed(() =>
 )
 const rows = computed(() => matrix.value?.rows ?? [])
 const belowMinimum = computed(() => matrix.value !== null && columnCount.value < matrix.value.min_columns)
+const groupOptions = computed(() =>
+  (matrix.value?.groups ?? []).map((group) => ({
+    label: `${group.name} (${group.test_case_count})`,
+    value: group.id,
+  })),
+)
 
 // --- rating write-through ------------------------------------------------
 
@@ -182,21 +223,19 @@ function handleRatingChange(payload: {
 <template>
   <div class="page">
     <div class="page-header">
-      <h1>Results</h1>
-      <div class="mode-tabs">
-        <Button
-          label="By model"
-          :severity="isModels ? undefined : 'secondary'"
-          :outlined="!isModels"
+      <div class="page-heading">
+        <h1>Results</h1>
+        <!-- On the heading's side of the header row: the pivot changes how the
+             page reads, it does not add anything. -->
+        <SelectButton
+          class="view-toggle"
+          :model-value="mode"
+          :options="modeOptions"
+          option-label="label"
+          option-value="value"
+          :allow-empty="false"
           size="small"
-          @click="switchMode('models')"
-        />
-        <Button
-          label="By run"
-          :severity="!isModels ? undefined : 'secondary'"
-          :outlined="isModels"
-          size="small"
-          @click="switchMode('runs')"
+          @update:model-value="switchMode"
         />
       </div>
     </div>
@@ -210,146 +249,164 @@ function handleRatingChange(payload: {
       </p>
 
       <section v-if="!isModels" class="picker">
-        <p v-if="matrix.available_runs.length === 0" class="empty-text">
+        <p v-if="matrix.available_runs.length === 0" class="empty-state">
           No comparable runs yet — finish a run first.
         </p>
-        <table v-else class="picker-table">
-          <thead>
-            <tr>
-              <th></th>
-              <th>Run</th>
-              <th>Model</th>
-              <th>Endpoint</th>
-              <th>Created</th>
-              <th title="good / meh / bad">Rating</th>
-              <th>Avg speed</th>
-              <th title="Sum of every result's generation time; tool waiting excluded">
+        <DataTable
+          v-else
+          :value="matrix.available_runs"
+          :loading="loading"
+          data-key="id"
+          class="table list-table row-nav"
+          removable-sort
+          :row-class="runRowClass"
+          @row-click="onRunRowClick"
+        >
+          <Column class="check-column">
+            <template #body="{ data }: { data: CompareRunView }">
+              <!-- Display-only: the row is the one click target. A click on
+                   the checkbox itself used to fire twice (the input's click
+                   plus the label-forwarded one), toggling on and straight
+                   back off — pointer-events: none routes it to the row. -->
+              <Checkbox
+                :model-value="selectedRunIds.includes(data.id)"
+                binary
+                :disabled="!selectedRunIds.includes(data.id) && selectedRunIds.length >= MAX_COMPARE_RUNS"
+              />
+            </template>
+          </Column>
+          <Column field="id" header="Run" sortable>
+            <template #body="{ data }: { data: CompareRunView }">#{{ data.id }}</template>
+          </Column>
+          <Column field="model_id" header="Model" sortable>
+            <template #body="{ data }: { data: CompareRunView }">
+              <span class="mono">{{ data.model_id }}</span>
+            </template>
+          </Column>
+          <Column field="endpoint_name" header="Endpoint" sortable />
+          <Column field="created_at" header="Created" sortable>
+            <template #body="{ data }: { data: CompareRunView }">
+              {{ formatDateTime(data.created_at) }}
+            </template>
+          </Column>
+          <Column>
+            <template #header><span title="good / meh / bad">Rating</span></template>
+            <template #body="{ data }: { data: CompareRunView }">
+              <span class="good-count">{{ data.good }}</span
+              >/<span class="meh-count">{{ data.meh }}</span
+              >/<span class="bad-count">{{ data.bad }}</span>
+            </template>
+          </Column>
+          <Column field="avg_rate" header="Avg speed" sortable>
+            <template #body="{ data }: { data: CompareRunView }">
+              {{ formatRate(data.avg_rate) }}
+            </template>
+          </Column>
+          <Column field="total_duration_ms" sortable>
+            <template #header>
+              <span title="Sum of every result's generation time; tool waiting excluded">
                 Total time
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="run in matrix.available_runs"
-              :key="run.id"
-              class="picker-row"
-              :class="{ selected: selectedRunIds.includes(run.id) }"
-              @click="toggleRun(run.id)"
-            >
-              <td class="picker-check">
-                <!-- Display-only: the row is the one click target. A click on
-                     the checkbox itself used to fire twice (the input's click
-                     plus the label-forwarded one), toggling on and straight
-                     back off — pointer-events: none routes it to the row. -->
-                <Checkbox
-                  :model-value="selectedRunIds.includes(run.id)"
-                  binary
-                  :disabled="!selectedRunIds.includes(run.id) && selectedRunIds.length >= MAX_COMPARE_RUNS"
-                />
-              </td>
-              <td>#{{ run.id }}</td>
-              <td class="mono">{{ run.model_id }}</td>
-              <td>{{ run.endpoint_name }}</td>
-              <td>{{ formatDateTime(run.created_at) }}</td>
-              <td>
-                <span class="good-count">{{ run.good }}</span
-                >/<span class="meh-count">{{ run.meh }}</span
-                >/<span class="bad-count">{{ run.bad }}</span>
-              </td>
-              <td>{{ formatRate(run.avg_rate) }}</td>
-              <td>{{ formatDuration(run.total_duration_ms) }}</td>
-            </tr>
-          </tbody>
-        </table>
+              </span>
+            </template>
+            <template #body="{ data }: { data: CompareRunView }">
+              {{ formatDuration(data.total_duration_ms) }}
+            </template>
+          </Column>
+        </DataTable>
       </section>
 
       <section v-else class="picker">
-        <p v-if="matrix.available_models.length === 0" class="empty-text">
+        <p v-if="matrix.available_models.length === 0" class="empty-state">
           No results yet — finish a run first, then come back.
         </p>
         <template v-else>
-          <table class="picker-table">
-            <thead>
-              <tr>
-                <th></th>
-                <th>Model</th>
-                <th>Endpoint</th>
-                <th title="Distinct test cases with a usable result">Test cases</th>
-                <th>Runs</th>
-                <th>Latest run</th>
-                <th title="good / meh / bad">Rating</th>
-                <th>Avg speed</th>
-                <th title="Sum of every result's generation time; tool waiting excluded">
+          <DataTable
+            :value="matrix.available_models"
+            :loading="loading"
+            data-key="key"
+            class="table list-table row-nav"
+            removable-sort
+            :row-class="modelRowClass"
+            @row-click="onModelRowClick"
+          >
+            <Column class="check-column">
+              <template #body="{ data }: { data: ModelColumnView }">
+                <!-- Display-only, same as the run picker's. -->
+                <Checkbox
+                  :model-value="selectedModelKeys.includes(data.key)"
+                  binary
+                  :disabled="
+                    !selectedModelKeys.includes(data.key) &&
+                    selectedModelKeys.length >= MAX_COMPARE_MODELS
+                  "
+                />
+              </template>
+            </Column>
+            <Column field="model_id" header="Model" sortable>
+              <template #body="{ data }: { data: ModelColumnView }">
+                <span class="mono">{{ data.model_id }}</span>
+              </template>
+            </Column>
+            <Column field="endpoint_name" header="Endpoint" sortable />
+            <Column field="test_case_count" sortable>
+              <template #header>
+                <span title="Distinct test cases with a usable result">Test cases</span>
+              </template>
+            </Column>
+            <Column field="run_count" header="Runs" sortable />
+            <Column field="latest_run_at" header="Latest run" sortable>
+              <template #body="{ data }: { data: ModelColumnView }">
+                {{ formatDateTime(data.latest_run_at) }}
+              </template>
+            </Column>
+            <Column>
+              <template #header><span title="good / meh / bad">Rating</span></template>
+              <template #body="{ data }: { data: ModelColumnView }">
+                <span class="good-count">{{ data.good }}</span
+                >/<span class="meh-count">{{ data.meh }}</span
+                >/<span class="bad-count">{{ data.bad }}</span>
+              </template>
+            </Column>
+            <Column field="avg_rate" header="Avg speed" sortable>
+              <template #body="{ data }: { data: ModelColumnView }">
+                {{ formatRate(data.avg_rate) }}
+              </template>
+            </Column>
+            <Column field="total_duration_ms" sortable>
+              <template #header>
+                <span title="Sum of every result's generation time; tool waiting excluded">
                   Total time
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="column in matrix.available_models"
-                :key="column.key"
-                class="picker-row"
-                :class="{ selected: selectedModelKeys.includes(column.key) }"
-                @click="toggleModel(column.key)"
-              >
-                <td class="picker-check">
-                  <!-- Display-only, same as the run picker's. -->
-                  <Checkbox
-                    :model-value="selectedModelKeys.includes(column.key)"
-                    binary
-                    :disabled="
-                      !selectedModelKeys.includes(column.key) &&
-                      selectedModelKeys.length >= MAX_COMPARE_MODELS
-                    "
-                  />
-                </td>
-                <td class="mono">{{ column.model_id }}</td>
-                <td>{{ column.endpoint_name }}</td>
-                <td>{{ column.test_case_count }}</td>
-                <td>{{ column.run_count }}</td>
-                <td>{{ formatDateTime(column.latest_run_at) }}</td>
-                <td>
-                  <span class="good-count">{{ column.good }}</span
-                  >/<span class="meh-count">{{ column.meh }}</span
-                  >/<span class="bad-count">{{ column.bad }}</span>
-                </td>
-                <td>{{ formatRate(column.avg_rate) }}</td>
-                <td>{{ formatDuration(column.total_duration_ms) }}</td>
-              </tr>
-            </tbody>
-          </table>
+                </span>
+              </template>
+              <template #body="{ data }: { data: ModelColumnView }">
+                {{ formatDuration(data.total_duration_ms) }}
+              </template>
+            </Column>
+          </DataTable>
 
-          <div v-if="matrix.groups.length > 0" class="group-chips">
-            <button
-              type="button"
-              class="chip-toggle"
-              :class="{ active: selectedGroupIds.length === 0 }"
-              @click="toggleGroup(null)"
-            >
-              All
-            </button>
-            <button
-              v-for="group in matrix.groups"
-              :key="group.id"
-              type="button"
-              class="chip-toggle"
-              :class="{ active: selectedGroupIds.includes(group.id) }"
-              @click="toggleGroup(group.id)"
-            >
-              {{ group.name }} ({{ group.test_case_count }})
-            </button>
+          <div v-if="matrix.groups.length > 0" class="filter-row">
+            <span class="filter-label">Groups</span>
+            <SelectButton
+              :model-value="selectedGroupIds"
+              :options="groupOptions"
+              option-label="label"
+              option-value="value"
+              multiple
+              size="small"
+              @update:model-value="setGroupFilter"
+            />
           </div>
         </template>
       </section>
 
-      <div v-if="belowMinimum" class="placeholder">
+      <div v-if="belowMinimum" class="empty-state">
         {{
           isModels
             ? 'Select a model above to see its results — or several to compare them.'
             : `Select at least ${matrix.min_columns} runs above to build the comparison matrix.`
         }}
       </div>
-      <div v-else-if="rows.length === 0" class="placeholder">
+      <div v-else-if="rows.length === 0" class="empty-state">
         {{
           isModels
             ? `None of the test cases in scope has a result from the selected ${columnCount === 1 ? 'model' : 'models'} yet.`
@@ -383,28 +440,8 @@ function handleRatingChange(payload: {
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-}
-
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.page-header h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0;
-}
-
-.mode-tabs {
-  display: flex;
-  gap: 0.375rem;
+.view-toggle {
+  margin-top: 0.75rem;
 }
 
 .hint-text {
@@ -419,64 +456,19 @@ function handleRatingChange(payload: {
   gap: 0.75rem;
 }
 
-.empty-text {
-  margin: 0;
-  padding: 1.5rem;
-  text-align: center;
-  border: 1px dashed var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
-  font-size: 0.875rem;
-  color: var(--p-text-muted-color);
-}
-
-/* `border-collapse: collapse` makes browsers drop `border-radius` entirely,
- * which left this table square-cornered next to the .list-table DataTables.
- * Separate borders with zero spacing render identically while letting the
- * radius clip; the head cells round their own top corners since the thead
- * background would otherwise paint over them. */
-.picker-table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
-  font-size: 0.8125rem;
-}
-
-.picker-table thead th:first-child {
-  border-top-left-radius: calc(var(--p-content-border-radius) - 1px);
-}
-
-.picker-table thead th:last-child {
-  border-top-right-radius: calc(var(--p-content-border-radius) - 1px);
-}
-
-.picker-table tbody tr:last-child td {
-  border-bottom: none;
-}
-
-.picker-table thead {
-  background: var(--p-content-hover-background);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  font-size: 0.6875rem;
-  color: var(--p-text-muted-color);
-}
-
-.picker-table th,
-.picker-table td {
-  padding: 0.5rem 0.75rem;
-  text-align: left;
-  border-bottom: 1px solid var(--p-content-border-color);
-}
-
-.picker-row {
-  cursor: pointer;
+/* Shrink-to-fit leading column: the checkbox takes its own width and the
+ * columns after it keep the rest. */
+.picker :deep(.check-column) {
+  width: 1%;
 }
 
 /* See the template comment: the checkbox is display-only, the row toggles. */
-.picker-check :deep(.p-checkbox) {
+.picker :deep(.p-checkbox) {
   pointer-events: none;
+}
+
+.picker :deep(.p-datatable-tbody > tr.selected) {
+  background: var(--p-highlight-background);
 }
 
 .good-count {
@@ -489,49 +481,6 @@ function handleRatingChange(payload: {
 
 .bad-count {
   color: var(--p-red-600, var(--p-red-500));
-}
-
-.picker-row:hover {
-  background: var(--p-content-hover-background);
-}
-
-.picker-row.selected {
-  background: var(--p-highlight-background);
-}
-
-.mono {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-size: 0.75rem;
-}
-
-.group-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.375rem;
-}
-
-.chip-toggle {
-  border: 1px solid var(--p-content-border-color);
-  border-radius: 999px;
-  background: transparent;
-  padding: 0.25rem 0.75rem;
-  font-size: 0.75rem;
-  color: var(--p-text-color);
-  cursor: pointer;
-}
-
-.chip-toggle.active {
-  border-color: var(--p-primary-color);
-  background: var(--p-highlight-background);
-}
-
-.placeholder {
-  padding: 2.5rem;
-  text-align: center;
-  border: 1px dashed var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
-  font-size: 0.875rem;
-  color: var(--p-text-muted-color);
 }
 
 .matrix-section {

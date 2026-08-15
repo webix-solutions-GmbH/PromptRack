@@ -721,7 +721,7 @@ function tokenLabel(cell: CompareCellView): string | null {
          it isn't in the way. -->
     <Dialog
       v-model:visible="pinnedVisible"
-      class="matrix-peek-dialog"
+      class="view-dialog"
       :header="pinned ? `${pinned.source} — ${pinned.caseTitle}` : ''"
     >
       <div v-if="pinned" class="peek-content">
@@ -840,10 +840,6 @@ thead .row-header-cell {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
-}
-
-.mono {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
 }
 
 .model-id {
@@ -1112,10 +1108,6 @@ thead .row-header-cell {
    classes the template hands them. */
 .matrix-peek.p-popover {
   max-width: 36rem;
-}
-
-.matrix-peek-dialog {
-  width: min(48rem, 90vw);
 }
 
 /* The popover is a glance, so it caps its own height and scrolls; the pinned

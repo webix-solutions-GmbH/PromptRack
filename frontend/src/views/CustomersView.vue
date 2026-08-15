@@ -11,11 +11,13 @@ import DataTable from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
+import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import { customersApi, type Customer } from '../api/customers'
 import { ApiError } from '../api/client'
+import { formatDateTime } from '../lib/format'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
@@ -49,6 +51,31 @@ onMounted(load)
 async function reload() {
   await Promise.all([load(), auth.fetchCustomers()])
 }
+
+// --- archived filter (client-side — the list is never large enough to push
+// this to the API) --------------------------------------------------------
+
+type ArchivedFilter = 'exclude' | 'only' | 'all'
+
+const archivedFilter = ref<ArchivedFilter>('exclude')
+
+const archivedFilterOptions: { label: string; value: ArchivedFilter }[] = [
+  { label: 'Active', value: 'exclude' },
+  { label: 'Archived', value: 'only' },
+  { label: 'All', value: 'all' },
+]
+
+const visibleCustomers = computed(() => {
+  if (archivedFilter.value === 'all') return customers.value
+  if (archivedFilter.value === 'only') return customers.value.filter((c) => c.archived)
+  return customers.value.filter((c) => !c.archived)
+})
+
+const emptyMessage = computed(() =>
+  customers.value.length === 0
+    ? 'No workspaces yet — add one with "New workspace".'
+    : 'No workspaces match this filter.',
+)
 
 function describeContents(customer: Customer): string {
   const counts = customer.content
@@ -94,10 +121,10 @@ async function submitForm() {
     const input = { name: formName.value, description: formDescription.value || null }
     if (editing.value) {
       await customersApi.update(editing.value.id, input)
-      toast.add({ severity: 'success', summary: 'Workspace renamed', life: 3000 })
+      toast.add({ severity: 'success', summary: 'Workspace renamed', life: 5000 })
     } else {
       await customersApi.create(input)
-      toast.add({ severity: 'success', summary: 'Workspace created', life: 3000 })
+      toast.add({ severity: 'success', summary: 'Workspace created', life: 5000 })
     }
     dialogOpen.value = false
     await reload()
@@ -143,7 +170,6 @@ async function removeCustomer(customer: Customer) {
   busyId.value = customer.id
   try {
     await customersApi.remove(customer.id)
-    toast.add({ severity: 'success', summary: 'Workspace deleted', life: 3000 })
     await reload()
   } catch (err) {
     // The delete guard answers with a sentence ("holds 3 endpoints, 1 run…")
@@ -152,7 +178,7 @@ async function removeCustomer(customer: Customer) {
       severity: 'error',
       summary: 'Could not delete workspace',
       detail: err instanceof ApiError ? err.message : 'Unexpected error.',
-      life: 8000,
+      life: 5000,
     })
   } finally {
     busyId.value = null
@@ -175,9 +201,27 @@ async function removeCustomer(customer: Customer) {
 
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
-    <DataTable :value="customers" :loading="loading" data-key="id" class="table list-table">
-      <template #empty>No workspaces yet.</template>
-      <Column field="name" header="Name">
+    <div class="filter-row">
+      <span class="filter-label">Show</span>
+      <SelectButton
+        v-model="archivedFilter"
+        :options="archivedFilterOptions"
+        option-label="label"
+        option-value="value"
+        :allow-empty="false"
+        size="small"
+      />
+    </div>
+
+    <DataTable
+      :value="visibleCustomers"
+      :loading="loading"
+      data-key="id"
+      class="table list-table"
+      removable-sort
+    >
+      <template #empty>{{ emptyMessage }}</template>
+      <Column field="name" header="Name" sortable>
         <template #body="{ data }: { data: Customer }">
           <div class="name-cell">
             <span class="name">{{ data.name }}</span>
@@ -193,6 +237,9 @@ async function removeCustomer(customer: Customer) {
         <template #body="{ data }: { data: Customer }">
           <span class="contents">{{ describeContents(data) }}</span>
         </template>
+      </Column>
+      <Column field="created_at" header="Created" sortable>
+        <template #body="{ data }: { data: Customer }">{{ formatDateTime(data.created_at) }}</template>
       </Column>
       <Column header="" class="actions-column">
         <template #body="{ data }: { data: Customer }">
@@ -248,7 +295,11 @@ async function removeCustomer(customer: Customer) {
         <Message v-if="formError" severity="error" :closable="false">{{ formError }}</Message>
         <div class="dialog-actions">
           <Button type="button" label="Cancel" text @click="dialogOpen = false" />
-          <Button type="submit" label="Save" :loading="saving" />
+          <Button
+            type="submit"
+            :label="editing ? 'Save workspace' : 'Create workspace'"
+            :loading="saving"
+          />
         </div>
       </form>
     </Dialog>
@@ -257,36 +308,12 @@ async function removeCustomer(customer: Customer) {
 
 <style scoped>
 .page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
   max-width: 64rem;
 }
 
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.page-heading h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0 0 0.375rem;
-}
-
-.subtitle {
-  max-width: 48rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-  margin: 0;
-}
-
+/* Up to four tags can land in this cell (Base/active/default/archived) —
+   wrap them instead of overflowing the row. */
 .name-cell {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
   flex-wrap: wrap;
 }
 
@@ -304,40 +331,5 @@ async function removeCustomer(customer: Customer) {
 .contents {
   font-size: 0.8125rem;
   color: var(--p-text-muted-color);
-}
-
-.actions-column {
-  width: 1%;
-  white-space: nowrap;
-}
-
-.row-actions {
-  display: flex;
-  gap: 0.25rem;
-  justify-content: flex-end;
-}
-
-.dialog-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.field label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
 }
 </style>

@@ -33,7 +33,7 @@ import {
   type ToolChoice,
   type ToolMode,
 } from '../api/testCases'
-import { promptsApi, PROMPT_KINDS, type Prompt, type PromptKind } from '../api/prompts'
+import { promptsApi, kindLabel, PROMPT_KINDS, type Prompt, type PromptKind } from '../api/prompts'
 import { toolsetsApi, type Tool, type Toolset } from '../api/toolsets'
 import { ApiError } from '../api/client'
 import { collectToolNameCollisions, DEFAULT_MAX_TURNS, MAX_TURNS_LIMIT } from '../lib/tools'
@@ -285,7 +285,7 @@ async function createPrompt() {
     if (created.kind === 'system') form.systemPromptId = created.id
     else form.taskPromptId = created.id
     newPromptOpen.value = false
-    toast.add({ severity: 'success', summary: `Prompt "${created.name}" created`, life: 3000 })
+    toast.add({ severity: 'success', summary: `Prompt "${created.name}" created`, life: 5000 })
   } catch (err) {
     newPromptError.value = err instanceof ApiError ? err.message : 'Failed to create the prompt.'
   } finally {
@@ -391,11 +391,11 @@ async function save() {
   try {
     if (isNew.value) {
       const created = await testCasesApi.create(buildInput())
-      toast.add({ severity: 'success', summary: 'Test case created', life: 3000 })
+      toast.add({ severity: 'success', summary: 'Test case created', life: 5000 })
       await router.replace(`/test-cases/${created.id}`)
     } else if (testCaseId.value !== null) {
       applyTestCase(await testCasesApi.update(testCaseId.value, buildInput()))
-      toast.add({ severity: 'success', summary: 'Test case saved', life: 3000 })
+      toast.add({ severity: 'success', summary: 'Test case saved', life: 5000 })
     }
   } catch (err) {
     saveError.value = err instanceof ApiError ? err.message : 'Failed to save the test case.'
@@ -690,6 +690,7 @@ async function removeTestCase() {
 
         <div class="actions">
           <Button
+            v-if="auth.canWrite"
             type="submit"
             :label="isNew ? 'Create test case' : 'Save changes'"
             :loading="saving"
@@ -749,11 +750,11 @@ async function removeTestCase() {
       v-model:visible="promptViewOpen"
       modal
       :header="viewedPrompt?.name ?? 'Prompt'"
-      class="prompt-view-dialog"
+      class="view-dialog"
     >
       <div v-if="viewedPrompt" class="prompt-view">
         <Tag
-          :value="viewedPrompt.kind"
+          :value="kindLabel(viewedPrompt.kind)"
           :severity="viewedPrompt.kind === 'system' ? 'info' : 'secondary'"
         />
         <pre class="prompt-view-text">{{ viewedPrompt.content || '(empty draft)' }}</pre>
@@ -763,17 +764,10 @@ async function removeTestCase() {
 </template>
 
 <style scoped>
+/* Content-driven width; `display`/`flex-direction`/`gap` come from the
+ * global `.page` in `src/style.css`. */
 .page {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
   max-width: 72rem;
-}
-
-.page-heading h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0;
 }
 
 .editor {
@@ -848,20 +842,12 @@ async function removeTestCase() {
   min-width: 0;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
 .field-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
 }
 
-.field label,
-.field .label,
 .preview-sticky .label {
   font-size: 0.8125rem;
   font-weight: 500;
@@ -974,12 +960,6 @@ async function removeTestCase() {
   color: var(--p-text-muted-color);
 }
 
-.hint {
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-  margin: 0;
-}
-
 .hint.bordered {
   border: 1px dashed var(--p-content-border-color);
   border-radius: var(--p-content-border-radius);
@@ -1022,12 +1002,6 @@ async function removeTestCase() {
   font-size: 0.875rem;
 }
 
-.checkbox-option {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
 .offered-tools {
   list-style: none;
   margin: 0;
@@ -1038,35 +1012,13 @@ async function removeTestCase() {
   font-size: 0.75rem;
 }
 
-.mono {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  color: var(--p-text-color);
-}
-
 .actions {
   display: flex;
   gap: 0.5rem;
 }
 
-.danger-zone {
-  border-top: 1px solid var(--p-content-border-color);
-  padding-top: 1rem;
-}
-
-.dialog-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
 /* The dialog root is teleported and its width lives in `src/style.css`
-   (`.prompt-view-dialog`); everything inside it is rendered from this
+   (`.view-dialog`); everything inside it is rendered from this
    template, so it keeps the scope attribute and these rules apply. */
 .prompt-view {
   display: flex;

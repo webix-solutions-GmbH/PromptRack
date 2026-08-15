@@ -43,7 +43,7 @@ function submit() {
     :visible="visible"
     modal
     header="Commit draft"
-    class="commit-dialog"
+    class="form-dialog"
     @update:visible="(value) => emit('update:visible', value)"
   >
     <form class="dialog-form" @submit.prevent="submit">
@@ -68,40 +68,3 @@ function submit() {
     </form>
   </Dialog>
 </template>
-
-<style scoped>
-.commit-dialog {
-  width: 32rem;
-  max-width: 90vw;
-}
-
-.dialog-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.hint {
-  margin: 0;
-  font-size: 0.8125rem;
-  color: var(--p-text-muted-color);
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.field label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-</style>

@@ -183,23 +183,6 @@ function assistantParts(message: TranscriptMessage) {
   color: var(--p-text-muted-color);
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
-  padding: 0.1rem 0.45rem;
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-}
-
-.chip b {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-weight: 500;
-  color: var(--p-text-color);
-}
-
 .think-summary {
   cursor: pointer;
   font-size: 0.75rem;
@@ -253,10 +236,6 @@ function assistantParts(message: TranscriptMessage) {
 .tool-call-label {
   font-size: 0.75rem;
   font-weight: 500;
-}
-
-.mono {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
 }
 
 .tool-result-block {

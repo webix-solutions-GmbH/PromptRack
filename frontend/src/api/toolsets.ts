@@ -99,6 +99,18 @@ export type DiscoverToolsResult =
   | { ok: true; discovered: number; retired: number; tools: string[] }
   | { ok: false; error: string }
 
+/** The two kinds, spelled once: the create dialog's SelectButton, the editor's
+ * and the list's Tag all read from here rather than each writing `MCP` (or
+ * `mcp`, or `manual`) out again. */
+export const TOOLSET_KIND_OPTIONS: { label: string; value: ToolsetKind }[] = [
+  { label: 'Manual', value: 'manual' },
+  { label: 'MCP', value: 'mcp' },
+]
+
+export function toolsetKindLabel(kind: ToolsetKind): string {
+  return TOOLSET_KIND_OPTIONS.find((option) => option.value === kind)?.label ?? kind
+}
+
 export const toolsetsApi = {
   list: () => api.get<Toolset[]>('/toolsets'),
   get: (id: number) => api.get<ToolsetDetail>(`/toolsets/${id}`),

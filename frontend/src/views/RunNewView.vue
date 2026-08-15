@@ -29,9 +29,11 @@ import { endpointsApi, type Endpoint, type EndpointModel } from '../api/endpoint
 import { runsApi } from '../api/runs'
 import { testGroupsApi, type TestGroup } from '../api/testCases'
 import { ApiError } from '../api/client'
+import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 
 const CUSTOM = '__custom__'
 
@@ -282,6 +284,7 @@ async function submit() {
           <div class="field-header">
             <label for="run-model">Model *</label>
             <Button
+              v-if="auth.canWrite"
               type="button"
               label="Re-detect"
               text
@@ -340,10 +343,12 @@ async function submit() {
             :key="group.id"
             class="group-item"
             :class="{ disabled: group.test_case_count === 0 }"
+            :for="`run-group-${group.id}`"
           >
             <Checkbox
               :model-value="selectedGroupIds.includes(group.id)"
               :binary="true"
+              :input-id="`run-group-${group.id}`"
               :disabled="group.test_case_count === 0"
               @update:model-value="toggleGroup(group.id)"
             />
@@ -394,7 +399,7 @@ async function submit() {
 
       <Message v-if="submitError" severity="error" :closable="false">{{ submitError }}</Message>
 
-      <div>
+      <div v-if="auth.canWrite">
         <Button type="submit" label="Start run" :disabled="!canSubmit" :loading="submitting" />
       </div>
     </form>
@@ -403,31 +408,7 @@ async function submit() {
 
 <style scoped>
 .page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
   max-width: 42rem;
-}
-
-.page-heading h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0 0 0.375rem;
-}
-
-.subtitle {
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-  margin: 0;
-}
-
-.empty-state {
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
-  padding: 3rem 1.5rem;
-  text-align: center;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
 }
 
 .form {
@@ -446,13 +427,9 @@ async function submit() {
 }
 
 .field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
   min-width: 0;
 }
 
-.field label,
 .field-label {
   font-size: 0.8125rem;
   font-weight: 500;
@@ -464,12 +441,6 @@ async function submit() {
   align-items: baseline;
   justify-content: space-between;
   gap: 0.5rem;
-}
-
-.hint {
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-  margin: 0;
 }
 
 .hint.warn {

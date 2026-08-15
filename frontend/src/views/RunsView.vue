@@ -14,13 +14,15 @@ import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import type { DataTableRowClickEvent } from 'primevue/datatable'
 import Message from 'primevue/message'
-import Select from 'primevue/select'
+import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
-import { runsApi, type ArchivedFilter, type RunStatus, type RunView } from '../api/runs'
+import { runsApi, type ArchivedFilter, type RunView } from '../api/runs'
 import { ApiError } from '../api/client'
-import { formatDateTime } from '../lib/format'
+import SearchField from '../components/SearchField.vue'
+import { endpointLabel, excerpt, formatDateTime } from '../lib/format'
+import { RUN_STATUS_SEVERITY } from '../lib/runStatus'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
@@ -40,6 +42,7 @@ const runs = ref<RunView[]>([])
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 const archivedFilter = ref<ArchivedFilter>('exclude')
+const search = ref('')
 
 async function load() {
   loading.value = true
@@ -57,27 +60,33 @@ onMounted(load)
 watch(archivedFilter, load)
 
 const archivedOptions: { label: string; value: ArchivedFilter }[] = [
-  { label: 'Hidden', value: 'exclude' },
-  { label: 'Only archived', value: 'only' },
-  { label: 'Include archived', value: 'all' },
+  { label: 'Active', value: 'exclude' },
+  { label: 'Archived', value: 'only' },
+  { label: 'All', value: 'all' },
 ]
 
-const statusSeverity: Record<RunStatus, 'secondary' | 'info' | 'success' | 'danger'> = {
-  pending: 'secondary',
-  running: 'info',
-  completed: 'success',
-  failed: 'danger',
-}
-
 function endpointName(row: RunView): string {
-  return row.endpoint_snapshot?.name ?? '(deleted endpoint)'
+  return endpointLabel(row.endpoint_snapshot?.name)
 }
 
-function excerpt(value: string | null, max = 60): string {
-  if (!value) return '—'
-  const flat = value.replace(/\s+/g, ' ').trim()
-  return flat.length > max ? `${flat.slice(0, max)}…` : flat
-}
+// Client-side, over what identifies a run at a glance: its number, the model
+// it ran and the endpoint that served it. The archived filter stays a
+// server-side query, since archived runs are not loaded at all by default.
+const visibleRuns = computed(() => {
+  const needle = search.value.trim().toLowerCase()
+  if (needle === '') return runs.value
+  return runs.value.filter((row) =>
+    [`#${row.id}`, row.model_id, endpointName(row)].some((field) =>
+      field.toLowerCase().includes(needle),
+    ),
+  )
+})
+
+const emptyMessage = computed(() => {
+  if (search.value.trim() !== '') return 'No runs match this filter.'
+  if (archivedFilter.value === 'only') return 'No archived runs.'
+  return 'No runs yet — start one with "New run".'
+})
 
 // --- archive / unarchive / delete -----------------------------------------
 
@@ -130,8 +139,6 @@ async function removeRun(row: RunView) {
     busyRunId.value = null
   }
 }
-
-const hasRuns = computed(() => runs.value.length > 0)
 </script>
 
 <template>
@@ -152,41 +159,42 @@ const hasRuns = computed(() => runs.value.length > 0)
       />
     </div>
 
+    <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
+
     <div class="filter-row">
-      <label for="archived-filter">Archived</label>
-      <Select
-        id="archived-filter"
+      <SearchField v-model="search" placeholder="Search runs" />
+      <span class="filter-label">Show</span>
+      <SelectButton
         v-model="archivedFilter"
         :options="archivedOptions"
         option-label="label"
         option-value="value"
+        :allow-empty="false"
+        size="small"
       />
     </div>
 
-    <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
-
     <DataTable
-      :value="runs"
+      :value="visibleRuns"
       :loading="loading"
       data-key="id"
       class="table list-table row-nav"
+      removable-sort
       @row-click="onRowClick"
     >
-      <template #empty>
-        {{ hasRuns ? 'No runs match this filter.' : 'No runs yet — start one with "New run".' }}
-      </template>
-      <Column header="Run">
+      <template #empty>{{ emptyMessage }}</template>
+      <Column field="id" header="Run" sortable>
         <template #body="{ data }: { data: RunView }">
           <RouterLink :to="`/runs/${data.id}`" class="name-link">#{{ data.id }}</RouterLink>
         </template>
       </Column>
-      <Column header="Created">
+      <Column field="created_at" header="Created" sortable>
         <template #body="{ data }: { data: RunView }">{{ formatDateTime(data.created_at) }}</template>
       </Column>
       <Column header="Endpoint">
         <template #body="{ data }: { data: RunView }">{{ endpointName(data) }}</template>
       </Column>
-      <Column header="Model">
+      <Column field="model_id" header="Model" sortable>
         <template #body="{ data }: { data: RunView }">
           <span class="mono">{{ data.model_id }}</span>
         </template>
@@ -194,10 +202,10 @@ const hasRuns = computed(() => runs.value.length > 0)
       <Column header="Groups">
         <template #body="{ data }: { data: RunView }">{{ data.group_names.join(', ') || '—' }}</template>
       </Column>
-      <Column header="Status">
+      <Column field="status" header="Status" sortable>
         <template #body="{ data }: { data: RunView }">
           <div class="status-cell">
-            <Tag :severity="statusSeverity[data.status]" :value="data.status" />
+            <Tag :severity="RUN_STATUS_SEVERITY[data.status]" :value="data.status" />
             <Tag v-if="data.archived_at !== null" severity="warn" value="archived" />
           </div>
         </template>
@@ -209,20 +217,18 @@ const hasRuns = computed(() => runs.value.length > 0)
         <template #body="{ data }: { data: RunView }">
           <div v-if="auth.canWrite" class="row-actions">
             <Button
-              :icon="data.archived_at !== null ? 'pi pi-history' : 'pi pi-inbox'"
+              :label="data.archived_at !== null ? 'Unarchive' : 'Archive'"
               text
               size="small"
               :loading="busyRunId === data.id"
-              :aria-label="data.archived_at !== null ? 'Unarchive run' : 'Archive run'"
               @click="toggleArchive(data)"
             />
             <Button
-              icon="pi pi-trash"
+              label="Delete"
               text
               size="small"
               severity="danger"
               :loading="busyRunId === data.id"
-              aria-label="Delete run"
               @click="confirmDelete(data)"
             />
           </div>
@@ -233,73 +239,9 @@ const hasRuns = computed(() => runs.value.length > 0)
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.page-heading h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0 0 0.375rem;
-}
-
-.subtitle {
-  max-width: 48rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-  margin: 0;
-}
-
-.filter-row {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-}
-
-.filter-row label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
-.name-link {
-  font-weight: 500;
-  color: var(--p-text-color);
-  text-decoration: none;
-}
-
-.name-link:hover {
-  text-decoration: underline;
-}
-
-.mono {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-size: 0.8125rem;
-}
-
 .status-cell {
   display: flex;
   align-items: center;
   gap: 0.375rem;
-}
-
-.actions-column {
-  width: 1%;
-  white-space: nowrap;
-}
-
-.row-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.125rem;
 }
 </style>

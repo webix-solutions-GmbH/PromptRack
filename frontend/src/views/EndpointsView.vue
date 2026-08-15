@@ -3,7 +3,7 @@
 // a proxy, or a hosted API — plus an optional API key and free-text hardware
 // notes; creating/editing one is admin-only, since it holds credentials;
 // every signed-in user can still read the list to pick an endpoint for a run.
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
@@ -89,7 +89,6 @@ function emptyForm(): EndpointFormState {
 function openCreate() {
   form.value = emptyForm()
   formError.value = null
-  connectionResult.value = null
   dialogOpen.value = true
 }
 
@@ -107,7 +106,7 @@ async function submitForm() {
       notes: form.value.notes || null,
       is_global: form.value.is_global,
     })
-    toast.add({ severity: 'success', summary: 'Endpoint created', life: 3000 })
+    toast.add({ severity: 'success', summary: 'Endpoint created', life: 5000 })
     dialogOpen.value = false
     await load()
   } catch (err) {
@@ -120,29 +119,27 @@ async function submitForm() {
 // --- test connection, before the endpoint row exists ----------------------
 
 const testingConnection = ref(false)
-const connectionResult = ref<{ ok: true; latency_ms: number } | { ok: false; error: string } | null>(
-  null,
-)
-
-// A result answers a specific base_url/api_key pair — clear it the moment
-// either changes so a stale "Connection OK" can't be read as still true.
-watch([() => form.value.base_url, () => form.value.api_key], () => {
-  connectionResult.value = null
-})
 
 async function testConnection() {
-  connectionResult.value = null
   testingConnection.value = true
   try {
     const result = await endpointsApi.testConnection(form.value.base_url, form.value.api_key || null)
-    connectionResult.value = result.ok
-      ? { ok: true, latency_ms: result.latency_ms }
-      : { ok: false, error: result.error }
-  } catch (err) {
-    connectionResult.value = {
-      ok: false,
-      error: err instanceof ApiError ? err.message : 'Request failed unexpectedly.',
+    if (result.ok) {
+      toast.add({
+        severity: 'success',
+        summary: `Reachable — HTTP ${result.status} in ${result.latency_ms}ms`,
+        life: 5000,
+      })
+    } else {
+      toast.add({ severity: 'error', summary: 'Test connection failed', detail: result.error, life: 5000 })
     }
+  } catch (err) {
+    toast.add({
+      severity: 'error',
+      summary: 'Test connection failed',
+      detail: err instanceof ApiError ? err.message : 'Request failed unexpectedly.',
+      life: 5000,
+    })
   } finally {
     testingConnection.value = false
   }
@@ -169,10 +166,11 @@ async function testConnection() {
       :loading="loading"
       data-key="id"
       class="table list-table row-nav"
+      removable-sort
       @row-click="onRowClick"
     >
       <template #empty>No endpoints yet — add one with "New endpoint".</template>
-      <Column field="name" header="Name">
+      <Column field="name" header="Name" sortable>
         <template #body="{ data }: { data: Endpoint }">
           <div class="name-cell">
             <RouterLink :to="`/endpoints/${data.id}`" class="name-link">{{ data.name }}</RouterLink>
@@ -180,12 +178,12 @@ async function testConnection() {
           </div>
         </template>
       </Column>
-      <Column field="base_url" header="Base URL">
+      <Column field="base_url" header="Base URL" sortable>
         <template #body="{ data }: { data: Endpoint }">
           <span class="mono">{{ data.base_url }}</span>
         </template>
       </Column>
-      <Column field="gpu" header="GPU">
+      <Column field="gpu" header="GPU" sortable>
         <template #body="{ data }: { data: Endpoint }">{{ data.gpu ?? '—' }}</template>
       </Column>
       <Column header="Models">
@@ -249,13 +247,6 @@ async function testConnection() {
           Global — share this endpoint with every workspace
         </label>
 
-        <div v-if="connectionResult" class="connection-result">
-          <span v-if="connectionResult.ok" class="connection-ok">
-            <i class="pi pi-check-circle" /> Connection OK · {{ connectionResult.latency_ms }} ms
-          </span>
-          <Message v-else severity="warn" :closable="false">{{ connectionResult.error }}</Message>
-        </div>
-
         <Message v-if="formError" severity="error" :closable="false">{{ formError }}</Message>
         <div class="dialog-actions" :class="{ split: auth.canAdminister }">
           <Button
@@ -279,60 +270,6 @@ async function testConnection() {
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.page-heading h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0 0 0.375rem;
-}
-
-.subtitle {
-  max-width: 48rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-  margin: 0;
-}
-
-.name-cell {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.name-link {
-  font-weight: 500;
-  color: var(--p-text-color);
-  text-decoration: none;
-}
-
-.name-link:hover {
-  text-decoration: underline;
-}
-
-.mono {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-size: 0.8125rem;
-  color: var(--p-text-muted-color);
-}
-
-.dialog-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
 .field-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -344,46 +281,10 @@ async function testConnection() {
 }
 
 .field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
   /* Grid items default to min-width:auto, which lets an InputText's intrinsic
    * width push a three-column row wider than its track and bleed out of the
    * dialog. 0 lets the 1fr tracks actually constrain it. */
   min-width: 0;
-}
-
-.field label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
-.w-full {
-  width: 100%;
-}
-
-.checkbox-option {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  font-weight: 400;
-}
-
-.connection-ok {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-size: 0.8125rem;
-  color: var(--p-green-600, var(--p-green-500));
-}
-
-.dialog-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.5rem;
 }
 
 /* Only when the Test connection button actually renders (canAdminister) —

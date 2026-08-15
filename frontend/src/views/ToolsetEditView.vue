@@ -18,6 +18,8 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import {
   toolsetsApi,
+  TOOLSET_KIND_OPTIONS,
+  toolsetKindLabel,
   type Tool,
   type ToolsetDetail,
   type ToolsetInput,
@@ -39,11 +41,6 @@ const toolset = ref<ToolsetDetail | null>(null)
 const tools = ref<Tool[]>([])
 const loading = ref(true)
 const loadError = ref<string | null>(null)
-
-const kindOptions: { label: string; value: ToolsetKind }[] = [
-  { label: 'Manual', value: 'manual' },
-  { label: 'MCP', value: 'mcp' },
-]
 
 interface ToolsetFormState {
   name: string
@@ -147,7 +144,7 @@ async function save() {
   try {
     const updated = await toolsetsApi.update(toolsetId.value, buildInput())
     applyToolset(updated)
-    toast.add({ severity: 'success', summary: 'Toolset saved', life: 3000 })
+    toast.add({ severity: 'success', summary: 'Toolset saved', life: 5000 })
   } catch (err) {
     saveError.value = err instanceof ApiError ? err.message : 'Failed to save the toolset.'
   } finally {
@@ -168,18 +165,18 @@ async function discoverTools() {
         severity: 'success',
         summary: `Found ${result.discovered} tool${result.discovered === 1 ? '' : 's'}`,
         detail: result.retired > 0 ? `Disabled ${result.retired} that vanished` : undefined,
-        life: 4000,
+        life: 5000,
       })
       await refreshTools()
     } else {
-      toast.add({ severity: 'error', summary: 'Discovery failed', detail: result.error, life: 6000 })
+      toast.add({ severity: 'error', summary: 'Discovery failed', detail: result.error, life: 5000 })
     }
   } catch (err) {
     toast.add({
       severity: 'error',
       summary: 'Discovery failed',
       detail: err instanceof ApiError ? err.message : 'Request failed unexpectedly.',
-      life: 6000,
+      life: 5000,
     })
   } finally {
     discovering.value = false
@@ -194,7 +191,7 @@ function confirmDeleteToolset() {
   if (!toolset.value) return
   confirm.require({
     header: 'Delete toolset',
-    message: `Delete toolset "${toolset.value.name}" and its ${tools.value.length} tool(s)? Past runs keep their frozen copies.`,
+    message: `Delete toolset "${toolset.value.name}" and its ${tools.value.length} tool(s)? Past runs keep their own frozen copies.`,
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', text: true },
     accept: () => void removeToolset(),
@@ -270,10 +267,10 @@ async function submitTool() {
     }
     if (editingTool.value) {
       await toolsetsApi.updateTool(toolsetId.value, editingTool.value.id, input)
-      toast.add({ severity: 'success', summary: 'Tool saved', life: 3000 })
+      toast.add({ severity: 'success', summary: 'Tool saved', life: 5000 })
     } else {
       await toolsetsApi.createTool(toolsetId.value, input)
-      toast.add({ severity: 'success', summary: 'Tool added', life: 3000 })
+      toast.add({ severity: 'success', summary: 'Tool added', life: 5000 })
     }
     toolDialogOpen.value = false
     await refreshTools()
@@ -308,7 +305,7 @@ async function toggleToolEnabled(tool: Tool) {
 function confirmDeleteTool(tool: Tool) {
   confirm.require({
     header: 'Delete tool',
-    message: `Delete tool "${tool.name}"?`,
+    message: `Delete tool "${tool.name}"? This cannot be undone.`,
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', text: true },
     accept: () => void removeTool(tool),
@@ -342,7 +339,7 @@ async function removeTool(tool: Tool) {
         <div class="page-heading">
           <h1>
             {{ toolset.name }}
-            <Tag :value="toolset.kind === 'mcp' ? 'MCP' : 'manual'" :severity="toolset.kind === 'mcp' ? 'info' : 'secondary'" />
+            <Tag :value="toolsetKindLabel(toolset.kind)" :severity="toolset.kind === 'mcp' ? 'info' : 'secondary'" />
             <Tag v-if="toolset.is_global" value="Global" severity="info" />
           </h1>
           <p v-if="toolset.description" class="subtitle">{{ toolset.description }}</p>
@@ -373,7 +370,7 @@ async function removeTool(tool: Tool) {
           </div>
           <div class="field">
             <label>Kind</label>
-            <SelectButton v-model="form.kind" :options="kindOptions" option-label="label" option-value="value" />
+            <SelectButton v-model="form.kind" :options="TOOLSET_KIND_OPTIONS" option-label="label" option-value="value" />
           </div>
           <template v-if="form.kind === 'mcp'">
             <div class="field">
@@ -439,18 +436,25 @@ async function removeTool(tool: Tool) {
       <section class="panel">
         <div class="panel-header">
           <h2>Tools</h2>
-          <Button v-if="auth.canWrite" label="Add tool" size="small" outlined @click="openNewTool" />
+          <Button
+            v-if="auth.canWrite"
+            label="New tool"
+            icon="pi pi-plus"
+            size="small"
+            outlined
+            @click="openNewTool"
+          />
         </div>
 
-        <DataTable :value="tools" data-key="id" class="table list-table">
+        <DataTable :value="tools" :loading="loading" removable-sort data-key="id" class="table list-table">
           <template #empty>
             {{
               toolset.kind === 'mcp'
                 ? 'No tools yet — run Discover to import them from the server.'
-                : 'No tools yet — add one with "Add tool".'
+                : 'No tools yet — add one with "New tool".'
             }}
           </template>
-          <Column field="name" header="Name">
+          <Column field="name" header="Name" sortable>
             <template #body="{ data }: { data: Tool }">
               <div class="name-cell">
                 <span class="mono">{{ data.name }}</span>
@@ -520,7 +524,7 @@ async function removeTool(tool: Tool) {
         <Message v-if="toolFormError" severity="error" :closable="false">{{ toolFormError }}</Message>
         <div class="dialog-actions">
           <Button type="button" label="Cancel" text @click="toolDialogOpen = false" />
-          <Button type="submit" :label="editingTool ? 'Save tool' : 'Add tool'" :loading="savingTool" />
+          <Button type="submit" :label="editingTool ? 'Save tool' : 'Create tool'" :loading="savingTool" />
         </div>
       </form>
     </Dialog>
@@ -529,72 +533,21 @@ async function removeTool(tool: Tool) {
 
 <style scoped>
 .page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
   max-width: 56rem;
 }
 
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
+/* The heading carries a Tag beside the name, so it lays its children out on
+ * one line instead of taking the global's plain block flow. */
 .page-heading h1 {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0 0 0.25rem;
-}
-
-.subtitle {
-  max-width: 44rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-  margin: 0;
-}
-
-.panel {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  padding: 1.5rem;
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
 }
 
 .panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-
-.panel h2 {
-  font-size: 1.0625rem;
-  font-weight: 600;
-  margin: 0;
-}
-
-.dialog-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.field label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
 }
 
 .mono-input :deep(textarea) {
@@ -608,44 +561,8 @@ async function removeTool(tool: Tool) {
   margin: 0;
 }
 
-.hint {
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-  margin: 0;
-}
-
-.checkbox-option {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  font-weight: 400;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
 .dialog-actions.start {
   justify-content: flex-start;
-}
-
-.danger-zone {
-  border-top: 1px solid var(--p-content-border-color);
-  padding-top: 1rem;
-}
-
-.name-cell {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.mono {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-size: 0.875rem;
 }
 
 .description {
@@ -653,16 +570,5 @@ async function removeTool(tool: Tool) {
   font-size: 0.8125rem;
   color: var(--p-text-muted-color);
   margin-top: 0.125rem;
-}
-
-.actions-column {
-  width: 1%;
-  white-space: nowrap;
-}
-
-.row-actions {
-  display: flex;
-  gap: 0.25rem;
-  justify-content: flex-end;
 }
 </style>

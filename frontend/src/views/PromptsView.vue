@@ -10,8 +10,6 @@ import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
-import IconField from 'primevue/iconfield'
-import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import SelectButton from 'primevue/selectbutton'
@@ -21,6 +19,7 @@ import { useToast } from 'primevue/usetoast'
 import {
   promptsApi,
   describeVersionStatus,
+  kindLabel,
   PROMPT_KINDS,
   type Prompt,
   type PromptKind,
@@ -28,6 +27,7 @@ import {
 import { ApiError } from '../api/client'
 import { formatDateTime } from '../lib/format'
 import { useAuthStore } from '../stores/auth'
+import SearchField from '../components/SearchField.vue'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -38,7 +38,7 @@ const router = useRouter()
 // trigger the row's.
 function onRowClick(event: DataTableRowClickEvent) {
   const target = event.originalEvent.target as HTMLElement | null
-  if (target?.closest('a')) return
+  if (target?.closest('a, button')) return
   void router.push(`/prompts/${(event.data as Prompt).id}`)
 }
 
@@ -122,9 +122,9 @@ const visiblePrompts = computed(() => {
   )
 })
 
-function kindLabel(kind: PromptKind): string {
-  return PROMPT_KINDS.find((option) => option.value === kind)?.label ?? kind
-}
+const hasActiveFilters = computed(
+  () => nameFilter.value.trim() !== '' || kindFilter.value !== null || statusFilter.value !== 'all',
+)
 
 // --- create dialog -----------------------------------------------------
 
@@ -160,7 +160,7 @@ async function submitForm() {
       content: form.value.content,
       kind: form.value.kind,
     })
-    toast.add({ severity: 'success', summary: 'Prompt created', life: 3000 })
+    toast.add({ severity: 'success', summary: 'Prompt created', life: 5000 })
     dialogOpen.value = false
     await load()
   } catch (err) {
@@ -187,19 +187,7 @@ async function submitForm() {
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
     <div class="filter-row">
-      <IconField class="name-filter">
-        <InputIcon class="pi pi-search" />
-        <InputText v-model="nameFilter" placeholder="Search by name" size="small" />
-        <InputIcon
-          v-if="nameFilter !== ''"
-          class="pi pi-times clear-search"
-          role="button"
-          tabindex="0"
-          aria-label="Clear search"
-          @click="nameFilter = ''"
-          @keydown.enter="nameFilter = ''"
-        />
-      </IconField>
+      <SearchField v-model="nameFilter" placeholder="Search by name" />
       <span class="filter-label">Kind</span>
       <SelectButton
         v-model="kindFilter"
@@ -228,7 +216,9 @@ async function submitForm() {
       removable-sort
       @row-click="onRowClick"
     >
-      <template #empty>No prompts yet — add one with "New prompt".</template>
+      <template #empty>{{
+        hasActiveFilters ? 'No prompts match this filter.' : 'No prompts yet — add one with "New prompt".'
+      }}</template>
       <Column field="name" header="Name" sortable>
         <template #body="{ data }: { data: Prompt }">
           <div class="name-cell">
@@ -316,110 +306,12 @@ async function submitForm() {
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.page-heading h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0 0 0.375rem;
-}
-
-.subtitle {
-  max-width: 48rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-  margin: 0;
-}
-
-.name-cell {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.name-link {
-  font-weight: 500;
-  color: var(--p-text-color);
-  text-decoration: none;
-}
-
-.name-link:hover {
-  text-decoration: underline;
-}
-
-.dialog-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.field label,
-.field .label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
-.filter-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-}
-
-.filter-row > .filter-label:not(:first-child) {
-  margin-left: 0.5rem;
-}
-
-.filter-label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
-.name-filter :deep(input) {
-  width: 16rem;
-}
-
-.clear-search {
-  cursor: pointer;
-}
-
 .unused {
   color: var(--p-text-muted-color);
-}
-
-.hint {
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-  margin: 0;
 }
 
 .mono-input :deep(textarea) {
   font-family: var(--p-font-family-mono, ui-monospace, monospace);
   font-size: 0.8125rem;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
 }
 </style>

@@ -40,7 +40,7 @@ function isBusy(version: PromptVersion): boolean {
 </script>
 
 <template>
-  <DataTable :value="versions" data-key="id" class="table list-table">
+  <DataTable :value="versions" data-key="id" class="table list-table" removable-sort>
     <template #empty>No commits yet — save the draft and commit to start the history.</template>
     <Column header="Version">
       <template #body="{ data }: { data: PromptVersion }">
@@ -51,11 +51,11 @@ function isBusy(version: PromptVersion): boolean {
         </div>
       </template>
     </Column>
-    <Column field="message" header="Message" />
-    <Column header="Author">
+    <Column field="message" header="Message" sortable />
+    <Column field="created_by_name" header="Author" sortable>
       <template #body="{ data }: { data: PromptVersion }">{{ data.created_by_name ?? '—' }}</template>
     </Column>
-    <Column header="Date">
+    <Column field="created_at" header="Date" sortable>
       <template #body="{ data }: { data: PromptVersion }">{{ formatDateTime(data.created_at) }}</template>
     </Column>
     <Column header="" class="actions-column">
@@ -98,14 +98,4 @@ function isBusy(version: PromptVersion): boolean {
   font-weight: 600;
 }
 
-.actions-column {
-  width: 1%;
-  white-space: nowrap;
-}
-
-.row-actions {
-  display: flex;
-  gap: 0.25rem;
-  justify-content: flex-end;
-}
 </style>

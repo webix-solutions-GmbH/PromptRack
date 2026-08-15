@@ -17,9 +17,10 @@ import Message from 'primevue/message'
 import Tag from 'primevue/tag'
 import { customersApi, type CustomerCounts } from '../api/customers'
 import { describeVersionStatus, promptsApi, type Prompt } from '../api/prompts'
-import { runsApi, type RunStatus, type RunView } from '../api/runs'
+import { runsApi, type RunView } from '../api/runs'
 import { ApiError } from '../api/client'
-import { formatDateTime } from '../lib/format'
+import { endpointLabel, formatDateTime } from '../lib/format'
+import { RUN_STATUS_SEVERITY } from '../lib/runStatus'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
@@ -42,10 +43,6 @@ function isDrifted(prompt: Prompt): boolean {
   )
 }
 
-function endpointName(run: RunView): string {
-  return run.endpoint_snapshot?.name ?? '(deleted endpoint)'
-}
-
 async function load() {
   loading.value = true
   loadError.value = null
@@ -66,13 +63,6 @@ async function load() {
 }
 
 onMounted(load)
-
-const statusSeverity: Record<RunStatus, 'secondary' | 'info' | 'success' | 'danger'> = {
-  pending: 'secondary',
-  running: 'info',
-  completed: 'success',
-  failed: 'danger',
-}
 
 const countTiles = computed(() => {
   const c = counts.value
@@ -103,7 +93,7 @@ const countTiles = computed(() => {
     <section class="two-col">
       <div class="panel">
         <h2>Deployed ≠ head</h2>
-        <p v-if="!loading && driftedPrompts.length === 0" class="empty-text">
+        <p v-if="!loading && driftedPrompts.length === 0" class="empty-state">
           Every deployed prompt matches what was last verified.
         </p>
         <ul v-else class="entry-list">
@@ -116,15 +106,15 @@ const countTiles = computed(() => {
 
       <div class="panel">
         <h2>Recent runs</h2>
-        <p v-if="!loading && recentRuns.length === 0" class="empty-text">
+        <p v-if="!loading && recentRuns.length === 0" class="empty-state">
           No runs yet — start one from <RouterLink to="/runs/new">New run</RouterLink>.
         </p>
         <ul v-else class="entry-list">
           <li v-for="run in recentRuns" :key="run.id" class="entry run-entry">
             <RouterLink :to="`/runs/${run.id}`" class="entry-name">#{{ run.id }}</RouterLink>
             <span class="mono">{{ run.model_id }}</span>
-            <span class="entry-detail">@ {{ endpointName(run) }}</span>
-            <Tag :severity="statusSeverity[run.status]" :value="run.status" />
+            <span class="entry-detail">@ {{ endpointLabel(run.endpoint_snapshot?.name) }}</span>
+            <Tag :severity="RUN_STATUS_SEVERITY[run.status]" :value="run.status" />
             <span class="entry-detail">{{ formatDateTime(run.created_at) }}</span>
           </li>
         </ul>
@@ -134,12 +124,6 @@ const countTiles = computed(() => {
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
 h1 {
   font-size: 1.5rem;
   font-weight: 600;
@@ -195,27 +179,6 @@ h1 {
   }
 }
 
-.panel {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 1.25rem;
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
-}
-
-.panel h2 {
-  margin: 0;
-  font-size: 0.9375rem;
-  font-weight: 600;
-}
-
-.empty-text {
-  margin: 0;
-  font-size: 0.8125rem;
-  color: var(--p-text-muted-color);
-}
-
 .entry-list {
   display: flex;
   flex-direction: column;
@@ -240,10 +203,5 @@ h1 {
 
 .entry-detail {
   color: var(--p-text-muted-color);
-}
-
-.mono {
-  font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-size: 0.75rem;
 }
 </style>
