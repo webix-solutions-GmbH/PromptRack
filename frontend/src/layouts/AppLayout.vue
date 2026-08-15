@@ -19,6 +19,7 @@ import Menu from 'primevue/menu'
 import { useAuthStore } from '../stores/auth'
 import { useThemeStore, type ThemeMode } from '../stores/theme'
 import { versionApi, type Version } from '../api/version'
+import BrandMark from '../components/BrandMark.vue'
 
 type NavItem = { label: string; to?: string; icon: string; admin?: boolean }
 type NavSection = { label: string | null; items: NavItem[] }
@@ -144,13 +145,6 @@ function toggleThemeMenu(event: Event) {
   themeMenu.value?.toggle(event)
 }
 
-// The mark's strokes are drawn near-black; on a dark topbar they'd vanish,
-// so a second copy (scripts/make-dark-logo.py) remaps them toward white
-// while leaving the green accent and checkmark untouched.
-const logoSrc = computed(() =>
-  theme.resolved === 'dark' ? '/brand/promptrack-mark-dark-128.png' : '/brand/promptrack-mark-128.png',
-)
-
 // Collapsed to an icon rail, persisted per device (not per user — same
 // reasoning as the theme mode above) so there's no flash on load.
 const NAV_COLLAPSED_KEY = 'promptrack-nav-collapsed'
@@ -186,11 +180,13 @@ const currentThemeLabel = computed(
   </div>
   <div v-else class="app-shell">
     <header class="app-topbar">
-      <!-- The 1254px master carries a wide transparent margin that shrinks the
-           glyph to a smudge at this size; this copy is trimmed to the artwork
-           and resized to 128px tall (2x), 15 KB against the master's 565 KB. -->
-      <img :src="logoSrc" alt="" class="app-logo" />
-      <span class="app-title">PromptRack</span>
+      <!-- Mark and wordmark are one unit, so they get one gap of their own
+           (tighter than the topbar's) and the spacer below pushes everything
+           else away from the pair rather than from the title alone. -->
+      <RouterLink to="/" class="app-brand" aria-label="PromptRack — dashboard">
+        <BrandMark :size="32" />
+        <span class="app-title">PromptRack</span>
+      </RouterLink>
       <div class="topbar-spacer" />
       <Select
         :model-value="auth.activeCustomer?.id"
@@ -361,15 +357,29 @@ const currentThemeLabel = computed(
   background: var(--p-content-background);
 }
 
-.app-logo {
-  height: 2rem;
-  width: auto;
-  display: block;
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  text-decoration: none;
+  color: inherit;
+  /* Sits in the topbar's own 0.5rem gap, so it needs a little of its own to
+     keep the workspace select from crowding the wordmark on narrow windows. */
+  margin-right: 0.25rem;
+  border-radius: var(--p-border-radius-sm, 4px);
+}
+
+.app-brand:focus-visible {
+  outline: 2px solid var(--p-primary-color);
+  outline-offset: 3px;
 }
 
 .app-title {
   font-weight: 600;
   font-size: 1.05rem;
+  /* The mark's five strokes already lean; letting the wordmark sit tight
+     against them reads as one lockup rather than an icon beside a word. */
+  letter-spacing: -0.01em;
 }
 
 .app-body {

@@ -19,14 +19,11 @@
         }
       } catch (e) {}
     </script>
-    <!-- favicon.svg and the rack PNG below are not the same artwork (see
-         docs/superpowers/specs/2026-08-14-endpoints-rename-and-global-base-design.md
-         section 4's verification note) — the PNG is the current brand mark,
-         so it is listed first as the primary icon; the SVG stays as a
-         scalable fallback for browsers that pick the first `rel="icon"` they
-         support. -->
-    <link rel="icon" type="image/png" sizes="128x128" href="/brand/promptrack-mark-128.png" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Its own 32px file rather than `/logo.png`: the mark's five strokes sit
+         a pixel or two apart at this size, and letting the browser downscale
+         the big one closes the gaps into a grey block. This copy had the bars
+         thinned before the downscale so they stay open. -->
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PromptRack</title>
   </head>

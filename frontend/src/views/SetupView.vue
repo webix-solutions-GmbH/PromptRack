@@ -12,6 +12,7 @@ import Message from 'primevue/message'
 import Card from 'primevue/card'
 import { ApiError } from '../api/client'
 import { useAuthStore } from '../stores/auth'
+import BrandMark from '../components/BrandMark.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -48,7 +49,9 @@ async function submit() {
 <template>
   <div class="auth-page">
     <Card class="auth-card">
-      <template #title>PromptRack</template>
+      <template #title>
+        <span class="auth-brand"><BrandMark :size="32" />PromptRack</span>
+      </template>
       <template #subtitle>Create the administrator account</template>
       <template #content>
         <form class="auth-form" @submit.prevent="submit">
@@ -103,6 +106,15 @@ async function submit() {
 .auth-card {
   width: 100%;
   max-width: 22rem;
+}
+
+/* Same lockup in LoginView and InviteAcceptView — these three screens
+ * duplicate their frame rather than share a layout, and this follows suit. */
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  letter-spacing: -0.01em;
 }
 
 .auth-form {

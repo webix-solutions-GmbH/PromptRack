@@ -1,9 +1,22 @@
-# PromptRack
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/logo-dark.png" />
+    <img src="frontend/public/logo.png" alt="PromptRack" width="80" />
+  </picture>
+</p>
 
-Git for your customers' prompts, plus the evidence that they still work. Keep the system
-prompts behind the AI solutions you sold in one versioned library, then prove which model
-runs them well enough — invoice intake, document extraction, an agent over a company's
-RAG — and on what hardware. Any OpenAI-compatible endpoint, local or hosted, in one matrix.
+<h1 align="center">PromptRack</h1>
+
+<p align="center">
+  Git for your customers' prompts, plus the evidence that they still work.<br/>
+</p>
+
+---
+
+Keep the system prompts behind the AI solutions you sold in one versioned library, then
+prove which model runs them well enough — invoice intake, document extraction, an agent
+over a company's RAG — and on what hardware. Any OpenAI-compatible endpoint, local or
+hosted, in one matrix.
 
 ## Features
 

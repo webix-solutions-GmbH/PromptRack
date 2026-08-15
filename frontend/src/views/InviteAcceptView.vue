@@ -27,6 +27,7 @@ import { invitesApi, type InviteOfferView } from '../api/invites'
 import { ROLE_LABELS } from '../lib/roles'
 import { formatDateTime } from '../lib/format'
 import { useAuthStore } from '../stores/auth'
+import BrandMark from '../components/BrandMark.vue'
 
 const props = defineProps<{ token: string }>()
 
@@ -109,7 +110,9 @@ async function submit() {
 <template>
   <div class="auth-page">
     <Card class="auth-card">
-      <template #title>PromptRack</template>
+      <template #title>
+        <span class="auth-brand"><BrandMark :size="32" />PromptRack</span>
+      </template>
       <template #subtitle>
         <template v-if="state === 'valid'">You've been invited</template>
         <template v-else-if="state === 'loading'">Checking your invite…</template>
@@ -205,6 +208,15 @@ async function submit() {
 .auth-card {
   width: 100%;
   max-width: 22rem;
+}
+
+/* Same lockup in LoginView and SetupView — these three screens
+ * duplicate their frame rather than share a layout, and this follows suit. */
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  letter-spacing: -0.01em;
 }
 
 .auth-form,
