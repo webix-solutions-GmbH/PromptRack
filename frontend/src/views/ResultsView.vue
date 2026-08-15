@@ -418,14 +418,30 @@ function handleRatingChange(payload: {
   color: var(--p-text-muted-color);
 }
 
+/* `border-collapse: collapse` makes browsers drop `border-radius` entirely,
+ * which left this table square-cornered next to the .list-table DataTables.
+ * Separate borders with zero spacing render identically while letting the
+ * radius clip; the head cells round their own top corners since the thead
+ * background would otherwise paint over them. */
 .picker-table {
   width: 100%;
-  max-height: 20rem;
-  overflow: auto;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   border: 1px solid var(--p-content-border-color);
   border-radius: var(--p-content-border-radius);
   font-size: 0.8125rem;
+}
+
+.picker-table thead th:first-child {
+  border-top-left-radius: calc(var(--p-content-border-radius) - 1px);
+}
+
+.picker-table thead th:last-child {
+  border-top-right-radius: calc(var(--p-content-border-radius) - 1px);
+}
+
+.picker-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .picker-table thead {
