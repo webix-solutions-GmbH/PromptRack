@@ -20,10 +20,10 @@ import { useAuthStore } from '../stores/auth'
 import { useThemeStore, type ThemeMode } from '../stores/theme'
 import { versionApi, type Version } from '../api/version'
 
-type NavItem = { label: string; to?: string; icon: string }
+type NavItem = { label: string; to?: string; icon: string; admin?: boolean }
 type NavSection = { label: string | null; items: NavItem[] }
 
-const sections: NavSection[] = [
+const allSections: NavSection[] = [
   { label: null, items: [{ label: 'Dashboard', to: '/', icon: 'pi-home' }] },
   {
     label: 'Suite',
@@ -51,6 +51,10 @@ const sections: NavSection[] = [
     items: [
       { label: 'Workspaces', to: '/workspaces', icon: 'pi-briefcase' },
       { label: 'MCP', to: '/mcp', icon: 'pi-share-alt' },
+      // Last in the group, and admin-only — unlike its two neighbours, which
+      // stay ungated on purpose: a workspace is `Writer`-creatable and every
+      // role holds its own API tokens.
+      { label: 'Users', to: '/users', icon: 'pi-users', admin: true },
     ],
   },
 ]
@@ -58,6 +62,16 @@ const sections: NavSection[] = [
 const auth = useAuthStore()
 const router = useRouter()
 const theme = useThemeStore()
+
+// Admin-only items are dropped from the nav rather than rendered disabled:
+// the app's rule is to never offer a control a role cannot use, and an empty
+// section is impossible here since every group has at least one ungated item.
+const sections = computed<NavSection[]>(() =>
+  allSections.map((section) => ({
+    ...section,
+    items: section.items.filter((item) => !item.admin || auth.canAdminister),
+  })),
+)
 
 // AppLayout is the app's one always-mounted root (App.vue renders it
 // unconditionally; the `v-if="!auth.user"` below only swaps its template),

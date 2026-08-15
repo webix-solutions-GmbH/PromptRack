@@ -12,9 +12,10 @@ repository convention: the request boundary decides where the unit of work ends
 """
 
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.policy import Role, parse_role
@@ -44,6 +45,22 @@ async def count_users(session: AsyncSession) -> int:
     return await session.scalar(select(func.count()).select_from(User)) or 0
 
 
+async def count_admins(session: AsyncSession, *, exclude_disabled: bool = True) -> int:
+    """How many administrators this install has.
+
+    Disabled accounts are left out by default because the question every caller
+    is really asking is "how many admins can still sign in": a deactivated
+    admin cannot, so counting them as the last remaining one would let an
+    install lock itself out while appearing protected. Only the exact stored
+    value counts — anything else is not an admin (:func:`parse_role` degrades
+    it to viewer), so no parsing is needed to ask this in SQL.
+    """
+    statement = select(func.count()).select_from(User).where(User.role == "admin")
+    if exclude_disabled:
+        statement = statement.where(User.disabled_at.is_(None))
+    return await session.scalar(statement) or 0
+
+
 async def signup_open(session: AsyncSession) -> bool:
     """Whether the bootstrap sign-up is still available.
 
@@ -67,6 +84,15 @@ async def lock_bootstrap(session: AsyncSession) -> None:
 
 async def get_user(session: AsyncSession, user_id: int) -> User | None:
     return await session.get(User, user_id)
+
+
+async def list_users(session: AsyncSession) -> list[User]:
+    """Every account, oldest first — the admin page's whole table.
+
+    Ordered by id rather than by name so the first account, the one the app's
+    bootstrap made an administrator, stays at the top where it explains itself.
+    """
+    return list((await session.scalars(select(User).order_by(User.id))).all())
 
 
 async def find_user_by_email(session: AsyncSession, email: str) -> User | None:
@@ -146,6 +172,35 @@ async def update_user(session: AsyncSession, user_id: int, values: Mapping[str, 
     if not values:
         return
     await session.execute(update(User).where(User.id == user_id).values(**values))
+
+
+async def set_role(session: AsyncSession, user_id: int, role: Role) -> None:
+    """Named rather than inlined as an :func:`update_user` call, so the refusal
+    rules in front of it (:func:`~app.auth.policy.is_self`,
+    :func:`~app.auth.policy.would_remove_last_admin`) have one obvious thing to
+    guard and the call site reads as the intent it is.
+    """
+    await update_user(session, user_id, {"role": role})
+
+
+async def set_disabled(session: AsyncSession, user_id: int, disabled_at: datetime | None) -> None:
+    """Deactivates (a timestamp) or reactivates (``None``) an account.
+
+    The timestamp alone is the state — see `app.models.auth.User.disabled_at`.
+    Revoking the user's live sessions is the caller's second step rather than
+    part of this one: the write and the sign-out belong to the same request,
+    but only one of them is a change to the row.
+    """
+    await update_user(session, user_id, {"disabled_at": disabled_at})
+
+
+async def delete_user(session: AsyncSession, user_id: int) -> None:
+    """Really deletes the row. Sessions and API tokens go with it (`CASCADE`);
+    what the account authored does not — `prompt_versions.created_by`,
+    `prompts.deployed_by` and both `user_invites` columns are `SET NULL`, so
+    history survives its author and simply becomes unattributed.
+    """
+    await session.execute(delete(User).where(User.id == user_id))
 
 
 async def get_active_customer_id(session: AsyncSession, user_id: int) -> int | None:

@@ -20,8 +20,13 @@
 // request as before.
 import { defineStore } from 'pinia'
 import { api } from '../api/client'
+import type { Role } from '../lib/roles'
 
-export type Role = 'admin' | 'member' | 'viewer'
+// Re-exported rather than restated: `lib/roles.ts` owns the role vocabulary,
+// mirroring `backend/app/auth/policy.py`. Importers that had this from the
+// store keep working, and there is still only one list to correct when a role
+// is added to the column.
+export type { Role } from '../lib/roles'
 
 export interface AuthUser {
   id: number
@@ -44,7 +49,10 @@ export interface CustomerOption {
   is_base: boolean
 }
 
-interface MeResponse {
+/** Exported so `api/invites.ts` can type redemption's response as the thing
+ * `applyMe` takes, rather than describing this shape a second time — the
+ * invite-accept route answers with exactly what `/auth/me` does. */
+export interface MeResponse {
   user: AuthUser
   active_customer: ActiveCustomer | null
   can_write: boolean

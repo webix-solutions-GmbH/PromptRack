@@ -12,6 +12,8 @@ import TestCasesView from '../views/TestCasesView.vue'
 import TestCaseEditView from '../views/TestCaseEditView.vue'
 import CustomersView from '../views/CustomersView.vue'
 import McpView from '../views/McpView.vue'
+import UsersView from '../views/UsersView.vue'
+import InviteAcceptView from '../views/InviteAcceptView.vue'
 import RunsView from '../views/RunsView.vue'
 import RunNewView from '../views/RunNewView.vue'
 import RunDetailView from '../views/RunDetailView.vue'
@@ -22,6 +24,10 @@ declare module 'vue-router' {
   interface RouteMeta {
     /** Reachable while signed out. Everything else requires a session. */
     public?: boolean
+    /** Admin-only. Optimistic like the rest of this guard — the API is the
+     * real boundary; this only keeps the SPA from rendering a page whose
+     * every request would come back 403. */
+    admin?: boolean
   }
 }
 
@@ -117,6 +123,22 @@ const router = createRouter({
       component: McpView,
     },
     {
+      path: '/users',
+      name: 'users',
+      component: UsersView,
+      meta: { admin: true },
+    },
+    // Public: whoever opens an invite link has no account yet. The guard
+    // below still sends a *signed-in* visitor home from here — redeeming an
+    // invite while signed in as someone else is not a coherent action.
+    {
+      path: '/invite/:token',
+      name: 'invite-accept',
+      component: InviteAcceptView,
+      props: true,
+      meta: { public: true },
+    },
+    {
       path: '/runs/new',
       name: 'run-new',
       component: RunNewView,
@@ -155,8 +177,14 @@ router.beforeEach(async (to) => {
   }
 
   if (auth.user) {
-    // Signed in: /login and /setup have nothing left to offer.
-    if (to.name === 'login' || to.name === 'setup') return { name: 'home' }
+    // Signed in: /login, /setup and an invite link have nothing left to
+    // offer — an invite creates an account, which this visitor already has.
+    if (to.name === 'login' || to.name === 'setup' || to.name === 'invite-accept') {
+      return { name: 'home' }
+    }
+    // An admin-only page is redirected rather than rendered-then-empty: every
+    // request it makes would come back 403.
+    if (to.meta.admin && !auth.canAdminister) return { name: 'home' }
     return true
   }
 

@@ -60,11 +60,17 @@ class TokenOwner:
 
 
 async def resolve_token(session: AsyncSession, raw: str) -> TokenOwner | None:
-    """The (unrevoked, unexpired) owner of a raw token, or `None`.
+    """The (unrevoked, unexpired, active) owner of a raw token, or `None`.
 
     Bumps `last_used_at` and commits — mirrors `app.auth.sessions.resolve_session`:
     this runs from a guard, strictly before any endpoint work, so the only
     thing there is to commit is that bump.
+
+    A **deactivated** owner resolves to `None`, which is what makes
+    deactivation cut everything: an MCP client running under that account dies
+    with it, without a single token row being touched. Together with
+    `resolve_session` this is the whole blast radius of `users.disabled_at` —
+    every `Actor` in the app is built by one of the two.
     """
     row = (
         await session.execute(
@@ -78,6 +84,8 @@ async def resolve_token(session: AsyncSession, raw: str) -> TokenOwner | None:
 
     token, user = row
     now = utc_now()
+    if user.disabled_at is not None:
+        return None
     if token.revoked_at is not None:
         return None
     if token.expires_at is not None and token.expires_at <= now:

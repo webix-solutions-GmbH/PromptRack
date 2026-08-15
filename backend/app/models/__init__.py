@@ -5,7 +5,7 @@ Alembic's `env.py` (it imports `app.models.base`, and that imports this package
 first) autogenerates against.
 """
 
-from app.models.auth import ApiToken, Session, User, UserRole
+from app.models.auth import ApiToken, Session, User, UserInvite, UserRole
 from app.models.base import Base
 from app.models.customers import Customer
 from app.models.endpoints import Endpoint, EndpointModel, EndpointModelSource
@@ -55,5 +55,6 @@ __all__ = [
     "Toolset",
     "ToolsetKind",
     "User",
+    "UserInvite",
     "UserRole",
 ]

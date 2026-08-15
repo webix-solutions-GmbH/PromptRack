@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.customers import router as customers_router
 from app.api.endpoints import router as endpoints_router
+from app.api.invites import router as invites_router
 from app.api.mocks import router as mocks_router
 from app.api.prompts import router as prompts_router
 from app.api.results import router as results_matrix_router
@@ -13,6 +14,7 @@ from app.api.test_cases import router as test_cases_router
 from app.api.test_groups import router as test_groups_router
 from app.api.tokens import router as tokens_router
 from app.api.toolsets import router as toolsets_router
+from app.api.users import router as users_router
 from app.api.version import router as version_router
 from app.auth.oidc import oidc_configured
 from app.auth.oidc import router as oidc_router
@@ -29,6 +31,8 @@ async def health() -> dict[str, str]:
 router.include_router(version_router)
 router.include_router(auth_router)
 router.include_router(tokens_router)
+router.include_router(users_router)
+router.include_router(invites_router)
 router.include_router(customers_router)
 router.include_router(endpoints_router)
 router.include_router(prompts_router)

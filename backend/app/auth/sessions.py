@@ -86,6 +86,13 @@ async def resolve_session(session: AsyncSession, raw: str) -> User | None:
     :func:`purge_expired_sessions` — deleting it here would turn every
     unauthenticated request into a write.
 
+    A **deactivated** account resolves to ``None`` too. Deactivation already
+    deletes the user's session rows, so this is the belt to that suspenders —
+    but it is where the rule actually lives: together with
+    :func:`app.auth.tokens.resolve_token` these are the only two functions that
+    turn a credential into an identity, so no guard, route or MCP tool
+    downstream needs a check of its own.
+
     Commits when it slides the window. Safe because this runs as a guard,
     strictly before any endpoint work: the only thing there can be to commit is
     the slide itself.
@@ -103,6 +110,8 @@ async def resolve_session(session: AsyncSession, raw: str) -> User | None:
 
     session_row, user = row
     if session_row.expires_at <= now:
+        return None
+    if user.disabled_at is not None:
         return None
 
     if session_row.expires_at - now < SESSION_TTL - SESSION_REFRESH_AFTER:

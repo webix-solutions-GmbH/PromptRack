@@ -172,6 +172,7 @@ ALL_TABLES = [
     "users",
     "sessions",
     "api_tokens",
+    "user_invites",
 ]
 
 

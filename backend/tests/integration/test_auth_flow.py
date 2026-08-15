@@ -23,6 +23,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import tokens as token_store
 from app.auth import users as user_store
 from app.auth.guards import Admin, CurrentScope, CurrentUser, Writer
 from app.auth.passwords import hash_password
@@ -230,6 +231,70 @@ class TestLogin:
         assert (await client.get("/api/auth/me")).status_code == 401
 
 
+class TestDeactivation:
+    """`users.disabled_at` cuts everything, and does it in two functions.
+
+    `resolve_session` and `resolve_token` are the only places a credential
+    becomes an identity, so checking there is what makes every guard, route and
+    MCP tool downstream correct without a check of its own. Login is the one
+    deliberate exception, refusing *after* the password check.
+    """
+
+    async def test_an_existing_session_stops_resolving(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        # Deactivation deletes the session rows too; this is the rule behind
+        # that belt, and what a cookie copied out beforehand runs into.
+        user_id = await make_user(session, "member@example.com", "member")
+        await login(client, "member@example.com")
+        assert (await client.get("/api/auth/me")).status_code == 200
+
+        await user_store.set_disabled(session, user_id, utc_now())
+        await session.commit()
+        assert (await client.get("/api/auth/me")).status_code == 401
+
+    async def test_an_api_token_stops_resolving(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        # Which is what kills an MCP client running under the account, without
+        # a single token row being touched.
+        user_id = await make_user(session, "member@example.com", "member")
+        _, raw = await token_store.create_token(
+            session, user_id=user_id, name="mcp", expires_at=None
+        )
+        await session.commit()
+        headers = {"x-api-key": raw}
+        assert (await client.get("/api/probe/signed-in", headers=headers)).status_code == 200
+
+        await user_store.set_disabled(session, user_id, utc_now())
+        await session.commit()
+        assert (await client.get("/api/probe/signed-in", headers=headers)).status_code == 401
+
+    async def test_login_says_so_but_only_after_the_password_check(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        # Refusing before the check would turn the form into an oracle for
+        # which accounts are deactivated; refusing after reaches nobody but the
+        # person who already holds the credential — and they need to learn that
+        # retrying will not help.
+        user_id = await make_user(session, "member@example.com", "member")
+        await user_store.set_disabled(session, user_id, utc_now())
+        await session.commit()
+
+        wrong = await client.post(
+            "/api/auth/login", json={"email": "member@example.com", "password": "nope-nope-nope"}
+        )
+        assert wrong.status_code == 401
+        assert wrong.json()["message"] == "Wrong email address or password."
+
+        correct = await client.post(
+            "/api/auth/login", json={"email": "member@example.com", "password": PASSWORD}
+        )
+        assert correct.status_code == 403
+        assert correct.json()["message"] == "This account has been deactivated."
+        assert client.cookies.get(SESSION_COOKIE_NAME) is None
+
+
 class TestGuards:
     @pytest.mark.parametrize(
         ("role", "write_status", "admin_status"),
@@ -272,6 +337,40 @@ class TestGuards:
         assert (await client.get("/api/probe/write")).json()["message"] == (
             "Your account is read-only."
         )
+
+
+class TestOidcStatus:
+    """Reports the identity provider, admin-only and read-only.
+
+    Mounted unconditionally, unlike `/api/auth/oidc/*`: the question it answers
+    is whether OIDC is configured, which a route that only exists when it is
+    could not.
+    """
+
+    async def test_reports_an_install_without_sso(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        await make_user(session, "admin@example.com", "admin")
+        await login(client, "admin@example.com")
+
+        body = (await client.get("/api/auth/oidc-status")).json()
+        assert body["configured"] is False
+        assert body["issuer"] is None
+        assert body["client_id"] is None
+        assert body["secret_set"] is False
+        # Stored comma-separated, sent as the list it means.
+        assert body["scopes"] == ["openid", "profile", "email"]
+        # Through `parse_role`, so the page shows the role a provisioned
+        # account will actually get.
+        assert body["default_role"] == "member"
+
+    @pytest.mark.parametrize("role", ["member", "viewer"])
+    async def test_an_issuer_url_is_not_for_everyone(
+        self, client: AsyncClient, session: AsyncSession, role: Role
+    ) -> None:
+        await make_user(session, f"{role}@example.com", role)
+        await login(client, f"{role}@example.com")
+        assert (await client.get("/api/auth/oidc-status")).status_code == 403
 
 
 class TestWorkspace:
