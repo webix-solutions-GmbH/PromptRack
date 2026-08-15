@@ -58,6 +58,7 @@ from app.scope import Scope
 from app.services.attribution import VersionRef, match_version
 from app.services.llm_info import LlmInfo, probe_llm_info, serialize_llm_info
 from app.services.message_assembly import assert_user_message
+from app.services.params import merge_params, parse_params_json
 from app.services.tool_config import assert_tool_config
 from app.services.tool_loop import SnapshotTool, ToolDefinition, serialize_tools_snapshot
 
@@ -101,7 +102,12 @@ async def create_run_record(
     comment: str | None = None,
     probe: LlmInfoProbe | None = None,
 ) -> CreatedRun:
-    """Creates a run and materializes one `run_results` row per test case."""
+    """Creates a run and materializes one `run_results` row per test case.
+
+    `params` is this run's **overrides** over the endpoint's `default_params`,
+    not the whole of what it sends: the two are merged below, and a `None` value
+    here unsets a default rather than sending a null (`app.services.params`).
+    """
     unique_group_ids = list(dict.fromkeys(group_ids))
     if not unique_group_ids:
         raise RunCreateError("Select at least one test group.")
@@ -109,6 +115,12 @@ async def create_run_record(
     endpoint = await get_endpoint(scope, session, endpoint_id)
     if endpoint is None:
         raise RunCreateError("Endpoint not found.")
+
+    # The snapshot point for parameters. The endpoint's defaults are read once,
+    # here, and only the merged result is frozen below — so editing those
+    # defaults afterwards can no more change what this run sends (or resends on
+    # Resume) than editing a prompt can change what it asked.
+    merged_params = merge_params(parse_params_json(endpoint.default_params), params)
 
     groups = await list_test_groups_by_ids(scope, session, unique_group_ids)
     if not groups:
@@ -138,7 +150,7 @@ async def create_run_record(
             endpoint_id=endpoint.id,
             endpoint_snapshot=_endpoint_snapshot(endpoint),
             model_id=model_id,
-            params=json.dumps(dict(params)) if params else None,
+            params=json.dumps(merged_params) if merged_params else None,
             llm_info=serialize_llm_info(info),
             comment=cleaned_comment or None,
             group_names=json.dumps([group.name for group in groups]),
@@ -336,11 +348,16 @@ def _endpoint_snapshot(endpoint: Endpoint) -> str:
     business holding a secret — while `base_url` is kept because "which endpoint
     produced these numbers" is part of the answer. Execution still reads the
     live endpoint row, so a moved endpoint does not break Resume.
+
+    `platform` comes along because it is what makes the frozen `runs.params`
+    readable later: `reasoning_effort` and `chat_template_kwargs` are only
+    recognisable as knobs once you know which server was being asked.
     """
     return json.dumps(
         {
             "name": endpoint.name,
             "base_url": endpoint.base_url,
+            "platform": endpoint.platform,
             "cpu": endpoint.cpu,
             "ram": endpoint.ram,
             "gpu": endpoint.gpu,

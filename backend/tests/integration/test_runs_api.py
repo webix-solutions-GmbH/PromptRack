@@ -21,7 +21,7 @@ from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.main import app
-from app.repos.endpoints import create_endpoint
+from app.repos.endpoints import create_endpoint, update_endpoint
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt, delete_prompt
 from app.repos.runs import list_run_results, rate_result
@@ -124,7 +124,7 @@ class TestRunCrud:
                 "endpoint_id": endpoint_id,
                 "model_id": "  qwen3:8b  ",
                 "group_ids": [group_id],
-                "temperature": 0.2,
+                "params": {"temperature": 0.2},
                 "comment": "baseline",
             },
         )
@@ -202,6 +202,62 @@ class TestRunCrud:
         assert result["system_prompt_version_id"] == system_version.id
         # Never committed, so the badge reads "dirty" rather than a version.
         assert result["task_prompt_version_id"] is None
+
+    async def test_run_params_are_merged_over_the_endpoints_defaults(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """The wire half of the two-level merge.
+
+        The request carries only the *overrides*; what the run view echoes is
+        the merged object that was frozen — including a default the request
+        unset with a null, which must be gone rather than null.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await make_fixture(scope, session)
+        await update_endpoint(
+            scope,
+            session,
+            endpoint_id,
+            {"default_params": json.dumps({"temperature": 0.2, "top_p": 0.9})},
+        )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        created = await client.post(
+            "/api/runs",
+            json={
+                "endpoint_id": endpoint_id,
+                "model_id": "qwen3:8b",
+                "group_ids": [group_id],
+                "params": {"temperature": 0.7, "seed": 7, "top_p": None},
+            },
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["params"] == {"temperature": 0.7, "seed": 7}
+
+    async def test_a_param_the_run_sets_itself_is_refused(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """A param named `messages` would not tune the request, it would
+        replace it — refused by name, with the name in the message.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await make_fixture(scope, session)
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        refused = await client.post(
+            "/api/runs",
+            json={
+                "endpoint_id": endpoint_id,
+                "model_id": "qwen3:8b",
+                "group_ids": [group_id],
+                "params": {"messages": []},
+            },
+        )
+        assert refused.status_code == 422, refused.text
+        assert "messages" in refused.json()["message"]
 
     async def test_creating_a_run_with_no_groups_is_refused(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace

@@ -66,6 +66,7 @@ from app.scope import Scope
 from app.services.llm import LlmError, ToolCall, stream_chat
 from app.services.mcp_client import call_mcp_tool
 from app.services.message_assembly import assert_user_message, system_message, user_message
+from app.services.params import strip_reserved
 from app.services.run_events import (
     Aborted,
     Delta,
@@ -213,7 +214,13 @@ def _parse_params(raw: str | None) -> dict[str, Any] | None:
         parsed = json.loads(raw)
     except ValueError:
         return None
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    # The frozen column is validated on the way in, so this only ever fires on
+    # a run frozen before that rule existed or edited in the database directly.
+    # Last chance to keep a stored parameter from replacing the run's own
+    # messages or tools.
+    return strip_reserved(parsed)
 
 
 def _error_message(exc: BaseException) -> str:

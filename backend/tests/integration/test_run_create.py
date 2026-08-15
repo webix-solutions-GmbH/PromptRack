@@ -29,7 +29,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.repos.endpoints import create_endpoint, list_endpoint_models
+from app.repos.endpoints import create_endpoint, list_endpoint_models, update_endpoint
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt, delete_prompt, update_prompt
 from app.repos.runs import list_run_results, list_runs
@@ -238,6 +238,7 @@ async def test_records_the_run_row_and_the_model_sighting(
     assert json.loads(run.endpoint_snapshot) == {
         "name": "test-box",
         "base_url": "http://127.0.0.1:9/v1",
+        "platform": "generic",
         "cpu": "EPYC 7443P",
         "ram": None,
         "gpu": "RTX 6000 Ada",
@@ -257,6 +258,9 @@ async def test_records_the_run_row_and_the_model_sighting(
 
 
 async def test_no_params_and_no_comment_stay_null(session: AsyncSession, scope: Scope):
+    """An endpoint with no defaults and a run with no overrides: nothing to
+    merge, so the column stays null rather than holding an empty object.
+    """
     fixture = await _seed(session, scope)
 
     created = await create_run_record(
@@ -275,6 +279,104 @@ async def test_no_params_and_no_comment_stay_null(session: AsyncSession, scope: 
     assert run.params is None
     assert run.comment is None
     assert run.llm_info is None
+
+
+# ---------------------------------------------------------------------------
+# Parameters: two levels merged once, then frozen
+# ---------------------------------------------------------------------------
+
+
+async def _set_endpoint_params(
+    session: AsyncSession, scope: Scope, endpoint_id: int, params: dict
+) -> None:
+    """Rewrites an endpoint's defaults (and platform) the way the editor does."""
+    await update_endpoint(
+        scope,
+        session,
+        endpoint_id,
+        {"platform": "vllm", "default_params": json.dumps(params)},
+    )
+    # A bulk UPDATE: the instance this session holds has to be re-read.
+    session.expire_all()
+
+
+async def test_freezes_the_endpoint_defaults_merged_with_the_runs_own_params(
+    session: AsyncSession, scope: Scope
+):
+    """The three things a run's overrides can do to a default, in one run.
+
+    `temperature` is overridden, `seed` is added, and the nested
+    `chat_template_kwargs` is unset by a null — which is dropped rather than
+    sent, since a null on the wire is a value, not an omission.
+    """
+    fixture = await _seed(session, scope)
+    await _set_endpoint_params(
+        session,
+        scope,
+        fixture.endpoint_id,
+        {
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+    )
+
+    created = await create_run_record(
+        scope,
+        session,
+        endpoint_id=fixture.endpoint_id,
+        model_id="qwen3-32b",
+        group_ids=[fixture.group_id],
+        params={"temperature": 0.7, "seed": 7, "chat_template_kwargs": None},
+        probe=_no_probe,
+    )
+
+    [run] = await list_runs(scope, session)
+    assert run.id == created.run_id
+    assert json.loads(run.params) == {"temperature": 0.7, "top_p": 0.9, "seed": 7}
+    # The platform travels with the run too: `top_p` and a
+    # `chat_template_kwargs` that once was are only readable as knobs once the
+    # server they were meant for is named.
+    assert json.loads(run.endpoint_snapshot)["platform"] == "vllm"
+
+
+async def test_editing_the_endpoint_defaults_does_not_rewrite_a_past_runs_params(
+    session: AsyncSession, scope: Scope
+):
+    """The snapshot invariant, applied to parameters.
+
+    The merge happens once, at creation; `runs.params` is byte-for-byte what
+    went on the wire. An endpoint retuned afterwards must not change what a past
+    run sent, or what resuming it would send.
+    """
+    fixture = await _seed(session, scope)
+    await _set_endpoint_params(
+        session, scope, fixture.endpoint_id, {"temperature": 0.2, "top_p": 0.9}
+    )
+
+    created = await create_run_record(
+        scope,
+        session,
+        endpoint_id=fixture.endpoint_id,
+        model_id="qwen3-32b",
+        group_ids=[fixture.group_id],
+        params={"seed": 7},
+        probe=_no_probe,
+    )
+    frozen = {"temperature": 0.2, "top_p": 0.9, "seed": 7}
+    [before] = await list_runs(scope, session)
+    assert json.loads(before.params) == frozen
+
+    await _set_endpoint_params(
+        session,
+        scope,
+        fixture.endpoint_id,
+        {"temperature": 1.0, "top_k": 40, "reasoning_effort": "high"},
+    )
+
+    [after] = await list_runs(scope, session)
+    assert after.id == created.run_id
+    assert json.loads(after.params) == frozen
 
 
 async def _run_once(session: AsyncSession, scope: Scope, fixture: Fixture):

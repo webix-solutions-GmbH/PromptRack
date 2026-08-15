@@ -21,6 +21,8 @@ export interface EndpointSnapshot {
   cpu?: string | null
   ram?: string | null
   gpu?: string | null
+  /** Absent on a run older than this column. */
+  platform?: string | null
 }
 
 export interface LlmInfo {
@@ -154,8 +156,10 @@ export interface RunCreateInput {
   endpoint_id: number
   model_id: string
   group_ids: number[]
-  temperature?: number | null
-  max_tokens?: number | null
+  /** Extra request-body params sent verbatim, merged over the endpoint's
+   * `default_params` (this run's keys win). A `null` value unsets an
+   * endpoint default for that key rather than sending it. */
+  params?: Record<string, unknown> | null
   comment?: string | null
 }
 

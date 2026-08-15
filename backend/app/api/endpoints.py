@@ -25,15 +25,17 @@ workspace still has a run to finish against it (`EndpointInUseError`), the same
 shape `app.api.toolsets` gives its cascade guard.
 """
 
+import json
 import re
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.guards import Admin, CurrentScope, CurrentUser, DbSession, Writer
-from app.models import Endpoint, EndpointModel, EndpointModelSource
+from app.models import Endpoint, EndpointModel, EndpointModelSource, EndpointPlatform
 from app.repos.customers import NotBaseWorkspaceError
 from app.repos.endpoints import (
     EndpointInUseError,
@@ -50,6 +52,7 @@ from app.repos.endpoints import (
 )
 from app.scope import Scope
 from app.services.discovery import DISCOVER_TIMEOUT_S, TEST_TIMEOUT_S, probe_models
+from app.services.params import ParamsError, parse_params_json, validate_params
 
 router = APIRouter(prefix="/endpoints", tags=["endpoints"])
 
@@ -66,6 +69,13 @@ class EndpointView(BaseModel):
     name: str
     base_url: str
     has_api_key: bool
+    #: A catalog key, not a credential — drives the frontend's parameter
+    #: suggestions and round-trips freely, unlike `api_key`.
+    platform: EndpointPlatform
+    #: Request-body params merged under every run's own overrides. Content,
+    #: not a credential, so it is parsed back to a dict rather than hidden the
+    #: way `api_key` is.
+    default_params: dict[str, Any] | None
     cpu: str | None
     ram: str | None
     gpu: str | None
@@ -89,6 +99,8 @@ class EndpointWriteRequest(BaseModel):
     name: str = Field(min_length=1)
     base_url: str = Field(min_length=1)
     api_key: str | None = None
+    platform: EndpointPlatform = "generic"
+    default_params: dict[str, Any] | None = None
     cpu: str | None = None
     ram: str | None = None
     gpu: str | None = None
@@ -96,6 +108,16 @@ class EndpointWriteRequest(BaseModel):
     #: Refused outside Base by `assert_base_workspace`, from inside the
     #: repository — see `app.repos.endpoints`.
     is_global: bool = False
+
+    @field_validator("default_params")
+    @classmethod
+    def _validate_default_params(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        try:
+            return validate_params(value, allow_null_values=False)
+        except ParamsError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("name")
     @classmethod
@@ -216,6 +238,8 @@ def _to_view(
         name=endpoint.name,
         base_url=endpoint.base_url,
         has_api_key=bool(endpoint.api_key),
+        platform=endpoint.platform,
+        default_params=parse_params_json(endpoint.default_params),
         cpu=endpoint.cpu,
         ram=endpoint.ram,
         gpu=endpoint.gpu,
@@ -309,6 +333,8 @@ async def create_endpoint_route(
             name=body.name,
             base_url=body.base_url,
             api_key=body.api_key or None,
+            platform=body.platform,
+            default_params=json.dumps(body.default_params) if body.default_params else None,
             cpu=body.cpu,
             ram=body.ram,
             gpu=body.gpu,
@@ -350,6 +376,15 @@ async def update_endpoint_route(
     # every save. Omitting it has to mean "leave it as it is".
     if "is_global" in body.model_fields_set:
         values["is_global"] = body.is_global
+    # Content, not credentials, but patch-like all the same: both default to a
+    # value ("generic", None) that a client unaware of them must not stamp
+    # over a row that already has something set.
+    if "platform" in body.model_fields_set:
+        values["platform"] = body.platform
+    if "default_params" in body.model_fields_set:
+        values["default_params"] = (
+            json.dumps(body.default_params) if body.default_params else None
+        )
 
     try:
         await update_endpoint(scope, session, endpoint_id, values)

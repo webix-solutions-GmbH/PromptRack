@@ -10,6 +10,7 @@ plan names.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 
@@ -381,6 +382,149 @@ class TestEndpointCrud:
 
         assert (await client.get(f"/api/endpoints/{endpoint_a.id}")).status_code == 404
         assert (await client.delete(f"/api/endpoints/{endpoint_a.id}")).status_code == 404
+
+
+class TestEndpointPlatformAndParams:
+    """`platform` and `default_params` — a catalog key and a request-body
+    params object, both content rather than credentials, so unlike `api_key`
+    they round-trip through the view instead of being hidden."""
+
+    async def test_creating_with_platform_and_nested_default_params(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_id)
+        await login(client, "admin@example.com")
+
+        created = await client.post(
+            "/api/endpoints",
+            json={
+                "name": "vLLM box",
+                "base_url": "http://10.0.0.5:8000/v1",
+                "platform": "vllm",
+                "default_params": {
+                    "temperature": 0.2,
+                    "chat_template_kwargs": {"enable_thinking": False},
+                },
+            },
+        )
+        assert created.status_code == 201, created.text
+        endpoint_id = created.json()["id"]
+
+        # View returns platform and the parsed dict.
+        assert created.json()["platform"] == "vllm"
+        assert created.json()["default_params"] == {
+            "temperature": 0.2,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+
+        # And the stored columns, not just the view.
+        session.expire_all()
+        stored = await get_endpoint(scope, session, endpoint_id)
+        assert stored is not None
+        assert stored.platform == "vllm"
+        assert json.loads(stored.default_params) == {
+            "temperature": 0.2,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+
+    async def test_creating_without_the_fields_defaults_to_generic_with_no_params(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_id)
+        await login(client, "admin@example.com")
+
+        created = await client.post(
+            "/api/endpoints", json={"name": "box", "base_url": "http://x/v1"}
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["platform"] == "generic"
+        assert created.json()["default_params"] is None
+
+        session.expire_all()
+        stored = await get_endpoint(scope, session, created.json()["id"])
+        assert stored is not None
+        assert stored.platform == "generic"
+        assert stored.default_params is None
+
+    async def test_a_put_omitting_both_fields_leaves_them_untouched(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint = await create_endpoint(
+            scope,
+            session,
+            name="box",
+            base_url="http://x/v1",
+            platform="ollama",
+            default_params=json.dumps({"temperature": 0.5}),
+        )
+        endpoint_id = endpoint.id
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_id)
+        await login(client, "admin@example.com")
+
+        updated = await client.put(
+            f"/api/endpoints/{endpoint_id}",
+            json={"name": "renamed", "base_url": "http://x/v1"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["platform"] == "ollama"
+        assert updated.json()["default_params"] == {"temperature": 0.5}
+
+        session.expire_all()
+        stored = await get_endpoint(scope, session, endpoint_id)
+        assert stored is not None
+        assert stored.platform == "ollama"
+        assert json.loads(stored.default_params) == {"temperature": 0.5}
+
+    async def test_a_put_sending_default_params_null_clears_it(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint = await create_endpoint(
+            scope,
+            session,
+            name="box",
+            base_url="http://x/v1",
+            default_params=json.dumps({"temperature": 0.5}),
+        )
+        endpoint_id = endpoint.id
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_id)
+        await login(client, "admin@example.com")
+
+        updated = await client.put(
+            f"/api/endpoints/{endpoint_id}",
+            json={"name": "box", "base_url": "http://x/v1", "default_params": None},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["default_params"] is None
+
+        session.expire_all()
+        stored = await get_endpoint(scope, session, endpoint_id)
+        assert stored is not None
+        assert stored.default_params is None
+
+    async def test_a_reserved_key_in_default_params_is_refused_with_a_named_message(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint = await create_endpoint(scope, session, name="box", base_url="http://x/v1")
+        endpoint_id = endpoint.id
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", customer_id)
+        await login(client, "admin@example.com")
+
+        response = await client.put(
+            f"/api/endpoints/{endpoint_id}",
+            json={"name": "box", "base_url": "http://x/v1", "default_params": {"tools": []}},
+        )
+        assert response.status_code == 422
+        assert "tools" in response.text
 
 
 class TestEndpointModels:

@@ -12,6 +12,12 @@
 // the stored key is left alone, send `null`/`""` to clear it deliberately, send
 // a value to replace it. So a caller must not spread a form's empty string into
 // the body, or every save wipes the key.
+//
+// `platform` and `default_params` are content, not credentials — they round-trip
+// freely on both `POST` and `PUT`, unlike `api_key`. `default_params` is a free
+// JSON object merged with a run's own `params` at run creation (the run's keys
+// win); see `frontend/src/lib/paramCatalog.ts` for the per-platform suggestions
+// shown in the UI.
 //   GET    /api/endpoints/{id}/models     -> EndpointModel[]  (loaded first)
 //   POST   /api/endpoints/{id}/models      { model_id } -> EndpointModel  (manual
 //                                            add; an upsert, so a model already
@@ -29,6 +35,11 @@
 // distinction the old Next.js buttons made.
 import { api } from './client'
 
+/** Drives which suggestions `paramCatalog.ts` offers for this endpoint's
+ * default and per-run params. `generic` is the default and imposes no
+ * suggestions beyond the common OpenAI-compatible set. */
+export type EndpointPlatform = 'generic' | 'openai' | 'ollama' | 'vllm' | 'lmstudio'
+
 export interface Endpoint {
   id: number
   name: string
@@ -39,6 +50,10 @@ export interface Endpoint {
   ram: string | null
   gpu: string | null
   notes: string | null
+  platform: EndpointPlatform
+  /** Extra request-body params merged into every run against this endpoint,
+   * overridden per key by that run's own `params`. */
+  default_params: Record<string, unknown> | null
   /** Shared with every workspace by the Base workspace that owns it. */
   is_global: boolean
   /** Whether *this* workspace owns the row — false only for a global endpoint
@@ -60,6 +75,10 @@ export interface EndpointInput {
   ram?: string | null
   gpu?: string | null
   notes?: string | null
+  platform?: EndpointPlatform
+  /** Patch-like on `PUT`: omit to keep the stored value, a dict to replace it
+   * wholesale, `null` to clear it. */
+  default_params?: Record<string, unknown> | null
   /** Refused by the API outside the Base workspace. Patch-like on `PUT`: omit
    * to leave the stored flag alone, since it defaults to `false` and a caller
    * that does not know about sharing must not un-share the row on every save. */

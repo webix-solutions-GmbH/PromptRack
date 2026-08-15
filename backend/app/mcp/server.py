@@ -144,6 +144,7 @@ from app.services.attribution import VersionRef, head_version, is_dirty
 from app.services.executor import execute_run, run_in_background
 from app.services.llm_info import parse_llm_info
 from app.services.message_assembly import NoUserMessageError
+from app.services.params import ParamsError, parse_params_json, validate_params
 from app.services.run_create import RunCreateError, create_run_record
 from app.services.run_lock import is_run_executing
 from app.services.tool_config import ToolConfigError, assert_tool_config, normalize_max_turns
@@ -405,6 +406,8 @@ async def list_endpoints_tool(ctx: Context, customer: CustomerArg = None) -> dic
                     "ram": endpoint.ram,
                     "gpu": endpoint.gpu,
                     "notes": endpoint.notes,
+                    "platform": endpoint.platform,
+                    "default_params": parse_params_json(endpoint.default_params),
                     # Shared from Base, so an agent can tell "this box is the
                     # consultancy's" from "this box is this engagement's"
                     # without a second call.
@@ -1345,9 +1348,28 @@ async def create_run_tool(
         ),
     ] = None,
     temperature: Annotated[
-        float | None, Field(description="Optional; 0-2. Omitted means the server default.")
+        float | None,
+        Field(
+            description="Optional. Shorthand for \"temperature\" inside params; omitted means "
+            "the server default. Refused if also given inside params."
+        ),
     ] = None,
-    max_tokens: Annotated[int | None, Field(description="Optional completion limit.")] = None,
+    max_tokens: Annotated[
+        int | None,
+        Field(
+            description='Optional completion limit. Shorthand for "max_tokens" inside params; '
+            "refused if also given inside params."
+        ),
+    ] = None,
+    params: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description="Extra request-body parameters sent verbatim, e.g. "
+            '{"top_k": 20, "reasoning_effort": "low"}. Merged over the endpoint\'s '
+            "default_params (see list_endpoints), with these values winning per key. A null "
+            "value unsets an endpoint default rather than sending null."
+        ),
+    ] = None,
     comment: Annotated[
         str | None, Field(description='Note describing the conditions, e.g. "Q4_K_M, 8k ctx".')
     ] = None,
@@ -1383,15 +1405,22 @@ async def create_run_tool(
                     f"models ({names})."
                 )
 
-        params: dict[str, Any] = {}
+        named: dict[str, Any] = {}
         if temperature is not None:
-            if not 0 <= temperature <= 2:
-                raise McpToolError('"temperature" must be between 0 and 2.')
-            params["temperature"] = temperature
+            named["temperature"] = temperature
         if max_tokens is not None:
-            if max_tokens < 1:
-                raise McpToolError('"max_tokens" must be a positive whole number.')
-            params["max_tokens"] = max_tokens
+            named["max_tokens"] = max_tokens
+
+        try:
+            cleaned = validate_params(params, allow_null_values=True) if params is not None else {}
+        except ParamsError as exc:
+            raise McpToolError(str(exc)) from exc
+
+        both = sorted(set(named) & set(cleaned))
+        if both:
+            raise McpToolError(
+                f'"{both[0]}" was given both as an argument and inside "params".'
+            )
 
         try:
             created = await create_run_record(
@@ -1400,7 +1429,7 @@ async def create_run_tool(
                 endpoint_id=endpoint_row.id,
                 model_id=model_id,
                 group_ids=group_ids,
-                params=params or None,
+                params={**named, **cleaned} or None,
                 comment=comment,
             )
         except (

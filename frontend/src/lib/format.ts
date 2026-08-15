@@ -89,10 +89,15 @@ export function endpointLabel(name: string | null | undefined): string {
   return name ?? '(deleted endpoint)'
 }
 
-/** Renders a run's `params` (temperature/max_tokens) for display. */
+/** Renders a run's `params` (the merged endpoint-default + per-run overrides
+ * actually sent) for display. Non-primitive values (nested objects/arrays,
+ * e.g. vLLM's `chat_template_kwargs`) are JSON-stringified rather than
+ * rendered as `[object Object]`. */
 export function formatParams(params: Record<string, unknown> | null): string {
   if (!params) return 'server defaults'
   const entries = Object.entries(params)
   if (entries.length === 0) return 'server defaults'
-  return entries.map(([key, value]) => `${key}=${String(value)}`).join(', ')
+  const render = (value: unknown): string =>
+    typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value)
+  return entries.map(([key, value]) => `${key}=${render(value)}`).join(', ')
 }

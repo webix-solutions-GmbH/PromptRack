@@ -13,7 +13,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
-import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
@@ -22,6 +21,7 @@ import { endpointsApi, type Endpoint, type EndpointModel } from '../api/endpoint
 import { runsApi } from '../api/runs'
 import { testGroupsApi, type TestGroup } from '../api/testCases'
 import { ApiError } from '../api/client'
+import ParamsEditor from '../components/ParamsEditor.vue'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
@@ -39,8 +39,7 @@ const endpointId = ref<number | null>(null)
 const modelChoice = ref('')
 const customModel = ref('')
 const selectedGroupIds = ref<number[]>([])
-const temperature = ref<number | null>(null)
-const maxTokens = ref<number | null>(null)
+const paramOverrides = ref<Record<string, unknown> | null>(null)
 const comment = ref('')
 
 const submitting = ref(false)
@@ -223,8 +222,7 @@ async function submit() {
       endpoint_id: endpointId.value,
       model_id: resolvedModelId.value,
       group_ids: selectedGroupIds.value,
-      temperature: temperature.value,
-      max_tokens: maxTokens.value,
+      params: paramOverrides.value,
       comment: comment.value.trim() || null,
     })
     await router.push(`/runs/${created.id}`)
@@ -353,30 +351,13 @@ async function submit() {
         </div>
       </div>
 
-      <div class="field-row">
-        <div class="field">
-          <label for="run-temperature">Temperature</label>
-          <InputNumber
-            id="run-temperature"
-            v-model="temperature"
-            :min="0"
-            :max="2"
-            :step="0.1"
-            :max-fraction-digits="2"
-            placeholder="server default"
-            show-buttons
-          />
-        </div>
-        <div class="field">
-          <label for="run-max-tokens">Max tokens</label>
-          <InputNumber
-            id="run-max-tokens"
-            v-model="maxTokens"
-            :min="1"
-            placeholder="server default"
-            show-buttons
-          />
-        </div>
+      <div class="field">
+        <span class="label">Parameters</span>
+        <ParamsEditor
+          v-model="paramOverrides"
+          :platform="selectedEndpoint?.platform ?? 'generic'"
+          :defaults="selectedEndpoint?.default_params ?? null"
+        />
       </div>
 
       <div class="field">

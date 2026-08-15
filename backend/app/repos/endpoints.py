@@ -21,7 +21,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import Insert, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Customer, Endpoint, EndpointModel, Run
+from app.models import Customer, Endpoint, EndpointModel, EndpointPlatform, Run
 from app.repos.customers import assert_base_workspace, assert_same_customer
 from app.repos.scoped import apply_where, utc_now
 from app.scope import Scope, scope_values, where_scoped, where_visible
@@ -80,6 +80,8 @@ async def create_endpoint(
     name: str,
     base_url: str,
     api_key: str | None = None,
+    platform: EndpointPlatform = "generic",
+    default_params: str | None = None,
     cpu: str | None = None,
     ram: str | None = None,
     gpu: str | None = None,
@@ -92,6 +94,8 @@ async def create_endpoint(
         name=name,
         base_url=base_url,
         api_key=api_key,
+        platform=platform,
+        default_params=default_params,
         cpu=cpu,
         ram=ram,
         gpu=gpu,

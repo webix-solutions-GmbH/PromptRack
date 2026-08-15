@@ -14,13 +14,23 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Password from 'primevue/password'
+import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
-import { endpointsApi, type Endpoint } from '../api/endpoints'
+import { endpointsApi, type Endpoint, type EndpointPlatform } from '../api/endpoints'
 import { ApiError } from '../api/client'
 import { formatDateTime } from '../lib/format'
+import { PARAM_CATALOG } from '../lib/paramCatalog'
 import { useAuthStore } from '../stores/auth'
+
+/** Options for the platform `Select` — value is the catalog key, label its
+ * `PlatformCatalog.label`. Built from the catalog itself so a new platform
+ * added there needs no matching change here. */
+const platformOptions = (Object.keys(PARAM_CATALOG) as EndpointPlatform[]).map((key) => ({
+  label: PARAM_CATALOG[key].label,
+  value: key,
+}))
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -65,6 +75,7 @@ interface EndpointFormState {
   ram: string
   gpu: string
   notes: string
+  platform: EndpointPlatform
   is_global: boolean
 }
 
@@ -82,6 +93,7 @@ function emptyForm(): EndpointFormState {
     ram: '',
     gpu: '',
     notes: '',
+    platform: 'generic',
     is_global: false,
   }
 }
@@ -104,6 +116,7 @@ async function submitForm() {
       ram: form.value.ram || null,
       gpu: form.value.gpu || null,
       notes: form.value.notes || null,
+      platform: form.value.platform,
       is_global: form.value.is_global,
     })
     toast.add({ severity: 'success', summary: 'Endpoint created', life: 5000 })
@@ -175,6 +188,7 @@ async function testConnection() {
           <div class="name-cell">
             <RouterLink :to="`/endpoints/${data.id}`" class="name-link">{{ data.name }}</RouterLink>
             <Tag v-if="data.is_global" value="Global" severity="info" />
+            <Tag v-if="data.platform !== 'generic'" :value="data.platform" severity="secondary" />
           </div>
         </template>
       </Column>
@@ -223,6 +237,17 @@ async function testConnection() {
             placeholder="optional"
             input-class="w-full"
           />
+        </div>
+        <div class="field">
+          <label for="endpoint-platform">Platform</label>
+          <Select
+            id="endpoint-platform"
+            v-model="form.platform"
+            :options="platformOptions"
+            option-label="label"
+            option-value="value"
+          />
+          <p class="hint">Drives which parameter suggestions the endpoint's editor page offers.</p>
         </div>
         <div class="field-row three">
           <div class="field">

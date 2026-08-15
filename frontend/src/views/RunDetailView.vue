@@ -46,6 +46,8 @@ const baseUrl = ref<string | null>(null)
 const cpu = ref<string | null>(null)
 const ram = ref<string | null>(null)
 const gpu = ref<string | null>(null)
+/** Absent on a run frozen before the platform/params feature landed. */
+const platform = ref<string | null>(null)
 const modelId = ref('')
 const params = ref<Record<string, unknown> | null>(null)
 const llmInfo = ref<{ server: string | null; version: string | null; details: Record<string, string> } | null>(
@@ -88,6 +90,7 @@ async function load() {
     cpu.value = run.endpoint_snapshot?.cpu ?? null
     ram.value = run.endpoint_snapshot?.ram ?? null
     gpu.value = run.endpoint_snapshot?.gpu ?? null
+    platform.value = run.endpoint_snapshot?.platform ?? null
     modelId.value = run.model_id
     params.value = run.params
     llmInfo.value = run.llm_info
@@ -415,7 +418,10 @@ const totalDuration = computed(() =>
               <Tag :severity="RUN_STATUS_SEVERITY[runStatus]" :value="runStatus" />
               <Tag v-if="archivedAt !== null" severity="warn" value="archived" />
             </h1>
-            <p class="mono-line">{{ modelId }} @ {{ endpointName }}</p>
+            <p class="mono-line">
+              {{ modelId }} @ {{ endpointName }}
+              <Tag v-if="platform" severity="secondary" :value="platform" />
+            </p>
           </div>
 
           <div v-if="auth.canWrite" class="header-actions">

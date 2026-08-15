@@ -11,14 +11,31 @@ import DataTable from 'primevue/datatable'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Password from 'primevue/password'
+import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
-import { endpointsApi, type Endpoint, type EndpointInput, type EndpointModel } from '../api/endpoints'
+import {
+  endpointsApi,
+  type Endpoint,
+  type EndpointInput,
+  type EndpointModel,
+  type EndpointPlatform,
+} from '../api/endpoints'
 import { ApiError } from '../api/client'
+import ParamsEditor from '../components/ParamsEditor.vue'
 import { formatDateTime } from '../lib/format'
+import { PARAM_CATALOG } from '../lib/paramCatalog'
 import { useAuthStore } from '../stores/auth'
+
+/** Options for the platform `Select` — same construction as the create
+ * dialog's, kept here rather than shared since each file already imports
+ * `PARAM_CATALOG` for its own reason (this one also feeds `ParamsEditor`). */
+const platformOptions = (Object.keys(PARAM_CATALOG) as EndpointPlatform[]).map((key) => ({
+  label: PARAM_CATALOG[key].label,
+  value: key,
+}))
 
 const props = defineProps<{ id: string }>()
 const endpointId = computed(() => Number(props.id))
@@ -47,6 +64,8 @@ interface EndpointFormState {
   ram: string
   gpu: string
   notes: string
+  platform: EndpointPlatform
+  default_params: Record<string, unknown> | null
   is_global: boolean
 }
 
@@ -58,6 +77,8 @@ const form = ref<EndpointFormState>({
   ram: '',
   gpu: '',
   notes: '',
+  platform: 'generic',
+  default_params: null,
   is_global: false,
 })
 
@@ -74,6 +95,8 @@ function applyEndpoint(row: Endpoint) {
     ram: row.ram ?? '',
     gpu: row.gpu ?? '',
     notes: row.notes ?? '',
+    platform: row.platform,
+    default_params: row.default_params,
     is_global: row.is_global,
   }
   clearApiKey.value = false
@@ -117,6 +140,11 @@ function buildInput(): EndpointInput {
     ram: form.value.ram || null,
     gpu: form.value.gpu || null,
     notes: form.value.notes || null,
+    // The route treats both patch-like (omitted = keep the stored value, same
+    // as `api_key`), but this form knows the fields and edits them, so it
+    // always sends them — that is what lets clearing the editor clear the row.
+    platform: form.value.platform,
+    default_params: form.value.default_params,
   }
   if (clearApiKey.value) {
     input.api_key = null
@@ -331,6 +359,17 @@ async function removeEndpoint() {
                 Remove the stored key on save
               </label>
             </div>
+            <div class="field">
+              <label for="endpoint-platform">Platform</label>
+              <Select
+                id="endpoint-platform"
+                v-model="form.platform"
+                :options="platformOptions"
+                option-label="label"
+                option-value="value"
+              />
+              <p class="hint">Drives which parameter suggestions the default-parameters editor below offers.</p>
+            </div>
             <div class="field-row three">
               <div class="field">
                 <label for="endpoint-cpu">CPU</label>
@@ -353,6 +392,15 @@ async function removeEndpoint() {
               <Checkbox v-model="form.is_global" binary input-id="endpoint-is-global" />
               Global — share this endpoint with every workspace
             </label>
+
+            <div class="field">
+              <span class="label">Default parameters</span>
+              <p class="hint">
+                Extra request-body params sent on every run against this endpoint, merged under
+                that run's own params (the run's keys win).
+              </p>
+              <ParamsEditor v-model="form.default_params" :platform="form.platform" />
+            </div>
 
             <p class="hint">
               Created {{ formatDateTime(endpoint.created_at) }} · Updated

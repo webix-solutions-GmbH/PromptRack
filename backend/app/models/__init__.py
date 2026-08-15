@@ -8,7 +8,7 @@ first) autogenerates against.
 from app.models.auth import ApiToken, Session, User, UserInvite, UserRole
 from app.models.base import Base
 from app.models.customers import Customer
-from app.models.endpoints import Endpoint, EndpointModel, EndpointModelSource
+from app.models.endpoints import Endpoint, EndpointModel, EndpointModelSource, EndpointPlatform
 from app.models.prompts import Prompt, PromptKind, PromptVersion
 from app.models.runs import (
     RatedVia,
@@ -36,6 +36,7 @@ __all__ = [
     "Endpoint",
     "EndpointModel",
     "EndpointModelSource",
+    "EndpointPlatform",
     "Prompt",
     "PromptKind",
     "PromptVersion",

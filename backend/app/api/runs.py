@@ -63,6 +63,7 @@ from app.repos.scoped import utc_now
 from app.scope import CrossCustomerError, Scope
 from app.services.executor import execute_run, run_in_background
 from app.services.message_assembly import NoUserMessageError
+from app.services.params import ParamsError, validate_params
 from app.services.run_create import RunCreateError, create_run_record
 from app.services.run_events import (
     NDJSON_MEDIA_TYPE,
@@ -187,17 +188,22 @@ class RunDetailView(RunView):
 class RunCreateRequest(BaseModel):
     """The new-run form. `group_ids` selects what to run, the rest is how.
 
-    `temperature`/`max_tokens` are spelled out rather than taken as a free
-    `params` object: an empty input has to be *omitted* from the request body
-    so the endpoint keeps its own default, and a bare passthrough would send
-    `null` instead.
+    `params` is a raw passthrough object — whatever key/value pairs this
+    provider takes, sent verbatim — and it is this run's *overrides* over the
+    endpoint's own `default_params`, which run creation merges them with. Only
+    the structural rules in `app.services.params` apply; no value is
+    range-checked here, because the provider is the authority on its own
+    vocabulary.
+
+    A `null` value is therefore meaningful rather than an omission: it unsets
+    one of the endpoint's defaults for this run. The merge drops it afterwards,
+    so a null never reaches the wire.
     """
 
     endpoint_id: int
     model_id: str = Field(min_length=1)
     group_ids: list[int] = Field(min_length=1)
-    temperature: float | None = None
-    max_tokens: int | None = None
+    params: dict[str, Any] | None = None
     comment: str | None = None
 
     @field_validator("model_id")
@@ -208,27 +214,17 @@ class RunCreateRequest(BaseModel):
             raise ValueError("Select or enter a model.")
         return cleaned
 
-    @field_validator("temperature")
+    @field_validator("params")
     @classmethod
-    def _valid_temperature(cls, value: float | None) -> float | None:
-        if value is not None and not 0 <= value <= 2:
-            raise ValueError("Temperature must be between 0 and 2.")
-        return value
-
-    @field_validator("max_tokens")
-    @classmethod
-    def _valid_max_tokens(cls, value: int | None) -> int | None:
-        if value is not None and value < 1:
-            raise ValueError("Max tokens must be a positive whole number.")
-        return value
-
-    def params(self) -> dict[str, Any] | None:
-        params: dict[str, Any] = {}
-        if self.temperature is not None:
-            params["temperature"] = self.temperature
-        if self.max_tokens is not None:
-            params["max_tokens"] = self.max_tokens
-        return params or None
+    def _valid_params(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        try:
+            return validate_params(value, allow_null_values=True)
+        except ParamsError as exc:
+            # A 422 with the refusal's own sentence, like every other field
+            # rule in this module — the shape the client already reads.
+            raise ValueError(str(exc)) from exc
 
 
 class RatingRequest(BaseModel):
@@ -366,7 +362,7 @@ async def create_run_endpoint(
             endpoint_id=body.endpoint_id,
             model_id=body.model_id,
             group_ids=body.group_ids,
-            params=body.params(),
+            params=body.params,
             comment=body.comment,
         )
     except CrossCustomerError as exc:

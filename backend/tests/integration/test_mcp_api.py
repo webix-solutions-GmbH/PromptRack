@@ -115,7 +115,15 @@ async def test_mcp_endpoint(
     # A byte-identical group name in both workspaces: what name resolution
     # must never cross.
     await create_test_group(globex, session, name="Invoices")
-    await create_endpoint(acme, session, name="Spark", base_url=DEAD_ENDPOINT, api_key=None)
+    await create_endpoint(
+        acme,
+        session,
+        name="Spark",
+        base_url=DEAD_ENDPOINT,
+        api_key=None,
+        platform="vllm",
+        default_params=json.dumps({"temperature": 0.1, "top_k": 40}),
+    )
     await session.commit()
 
     async with app.router.lifespan_context(app):
@@ -589,3 +597,97 @@ async def test_mcp_endpoint(
             failed, payload = await call(client, viewer, "list_test_groups", {"customer": "Acme"})
             assert not failed
             assert payload["groups"]
+
+            # --- list_endpoints surfaces platform + default_params -----------
+            failed, payload = await call(client, token, "list_endpoints", {"customer": "Acme"})
+            assert not failed
+            spark = next(e for e in payload["endpoints"] if e["name"] == "Spark")
+            assert spark["platform"] == "vllm"
+            assert spark["default_params"] == {"temperature": 0.1, "top_k": 40}
+
+            # --- create_run params: merged with the endpoint's defaults ------
+            failed, payload = await call(
+                client,
+                token,
+                "create_run",
+                {
+                    "customer": "Acme",
+                    "endpoint": "Spark",
+                    "model": "qwen3:8b",
+                    "groups": ["Invoices"],
+                    "params": {"temperature": 0.4, "top_k": None, "seed": 7},
+                },
+            )
+            assert not failed
+            params_run_id = payload["run"]["id"]
+
+            failed, payload = await call(
+                client, token, "get_run", {"customer": "Acme", "run_id": params_run_id}
+            )
+            assert not failed
+            # The run's own params win over the endpoint default (temperature),
+            # a null unsets a default (top_k) rather than sending one, and a
+            # brand-new key merges in untouched (seed).
+            assert payload["run"]["params"] == {"temperature": 0.4, "seed": 7}
+
+            # Naming the same key both as the shorthand argument and inside
+            # params is refused rather than picking one silently.
+            failed, message = await call(
+                client,
+                token,
+                "create_run",
+                {
+                    "customer": "Acme",
+                    "endpoint": "Spark",
+                    "model": "qwen3:8b",
+                    "groups": ["Invoices"],
+                    "temperature": 0.5,
+                    "params": {"temperature": 0.2},
+                },
+            )
+            assert failed
+            assert '"temperature"' in message and "params" in message
+
+            # The named shorthand alone still works, merging with the
+            # endpoint's own defaults exactly like a "params" override would.
+            failed, payload = await call(
+                client,
+                token,
+                "create_run",
+                {
+                    "customer": "Acme",
+                    "endpoint": "Spark",
+                    "model": "qwen3:8b",
+                    "groups": ["Invoices"],
+                    "max_tokens": 256,
+                },
+            )
+            assert not failed
+            named_run_id = payload["run"]["id"]
+
+            failed, payload = await call(
+                client, token, "get_run", {"customer": "Acme", "run_id": named_run_id}
+            )
+            assert not failed
+            assert payload["run"]["params"] == {
+                "temperature": 0.1,
+                "top_k": 40,
+                "max_tokens": 256,
+            }
+
+            # A reserved key inside params is refused by name, same as it
+            # would be through the API or the UI.
+            failed, message = await call(
+                client,
+                token,
+                "create_run",
+                {
+                    "customer": "Acme",
+                    "endpoint": "Spark",
+                    "model": "qwen3:8b",
+                    "groups": ["Invoices"],
+                    "params": {"messages": []},
+                },
+            )
+            assert failed
+            assert '"messages"' in message

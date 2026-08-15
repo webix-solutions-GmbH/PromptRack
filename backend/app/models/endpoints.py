@@ -11,6 +11,12 @@ from app.models.base import Base
 #: How a model came to be recorded on an endpoint.
 EndpointModelSource = Literal["discovered", "manual", "run"]
 
+#: Which inference platform serves an endpoint. A **catalog key**, not an
+#: adapter: nothing about the protocol changes, it only selects which request
+#: parameters the editor suggests. `generic` is the default and suggests the
+#: common OpenAI set.
+EndpointPlatform = Literal["generic", "openai", "ollama", "vllm", "lmstudio"]
+
 
 class Endpoint(Base):
     """An OpenAI-compatible endpoint: a base URL, an optional API key, and
@@ -48,6 +54,11 @@ class Endpoint(Base):
     name: Mapped[str]
     base_url: Mapped[str]
     api_key: Mapped[str | None]
+    #: Which platform serves this endpoint — a catalog key that drives the
+    #: parameter suggestions in the editor, never a translation layer.
+    platform: Mapped[EndpointPlatform] = mapped_column(Text, server_default="generic")
+    #: JSON object of request-body params merged under every run's own params.
+    default_params: Mapped[str | None]
     cpu: Mapped[str | None]
     ram: Mapped[str | None]
     gpu: Mapped[str | None]
