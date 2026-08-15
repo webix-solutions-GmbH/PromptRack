@@ -4,7 +4,8 @@
 // which hold credentials and stay admin-only): every writer can start a new
 // prompt or edit a draft.
 import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
+import type { DataTableRowClickEvent } from 'primevue/datatable'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -30,6 +31,16 @@ import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
 const toast = useToast()
+const router = useRouter()
+
+// The whole row is the click target; real links inside a cell (the name, the
+// "N test cases" filter link) keep their own destinations and must not also
+// trigger the row's.
+function onRowClick(event: DataTableRowClickEvent) {
+  const target = event.originalEvent.target as HTMLElement | null
+  if (target?.closest('a')) return
+  void router.push(`/prompts/${(event.data as Prompt).id}`)
+}
 
 const prompts = ref<Prompt[]>([])
 const loading = ref(true)
@@ -213,8 +224,9 @@ async function submitForm() {
       :value="visiblePrompts"
       :loading="loading"
       data-key="id"
-      class="table list-table"
+      class="table list-table row-nav"
       removable-sort
+      @row-click="onRowClick"
     >
       <template #empty>No prompts yet — add one with "New prompt".</template>
       <Column field="name" header="Name" sortable>
@@ -387,6 +399,10 @@ async function submitForm() {
 }
 
 .clear-search {
+  cursor: pointer;
+}
+
+.row-nav :deep(.p-datatable-tbody > tr) {
   cursor: pointer;
 }
 
