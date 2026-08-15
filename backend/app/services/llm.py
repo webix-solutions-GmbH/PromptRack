@@ -1,6 +1,6 @@
 """A streaming client for OpenAI-compatible `/chat/completions` endpoints.
 
-Port of `git show master:src/lib/llm.ts`. Raw HTTP (httpx) and hand-rolled SSE
+Port of `git show legacy-nextjs:src/lib/llm.ts`. Raw HTTP (httpx) and hand-rolled SSE
 parsing, no vendor SDK: the whole point of this app is that *any* endpoint —
 vLLM, Ollama, LM Studio, a hosted frontier API — can be measured side by side,
 and the providers differ in exactly the places an SDK would hide:

@@ -1,6 +1,6 @@
 """Wire format for the NDJSON stream produced by `POST /api/runs/{id}/execute`.
 
-Port of `git show master:src/lib/run-events.ts`. One event per line, each a
+Port of `git show legacy-nextjs:src/lib/run-events.ts`. One event per line, each a
 JSON object with a `type` — a plain `Content-Type: application/x-ndjson` body
 rather than SSE, because the client is a `fetch` reader and not an
 `EventSource`, and NDJSON survives a proxy that would otherwise reframe SSE.

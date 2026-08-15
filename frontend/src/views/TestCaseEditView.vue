@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Test case create/edit — the port of the old prompt editor
-// (`git show master:src/components/prompts/prompt-editor.tsx`) under the
+// (`git show legacy-nextjs:src/components/prompts/prompt-editor.tsx`) under the
 // prompt-kinds terminology: a test case holds no prompt text of its own. It
 // references up to two prompt *assets* by slot — a `system`-kind prompt sent
 // as the system message and a `task`-kind prompt sent at the head of the user

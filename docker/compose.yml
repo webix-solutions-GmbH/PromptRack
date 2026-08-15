@@ -1,4 +1,4 @@
-# Pinned for the same reason as docker-compose.dev.yml: without it Compose
+# Pinned for the same reason as compose.dev.yml: without it Compose
 # names the project after the directory, and renaming the checkout orphans
 # `pgdata` — which here is the production database.
 name: promptrack
@@ -23,13 +23,15 @@ services:
     networks:
       - promptrack
 
-  # Service name stays `modelfit` (not `promptrack`) so an existing reverse
-  # proxy pointed at `modelfit:<port>` for the old deployment keeps working
-  # against this one — see root CLAUDE.local.md's rename notes. Everything
-  # else (Postgres role/database, volumes, network) uses the new name.
-  modelfit:
-    build: .
-    container_name: modelfit
+  # The app: SPA + API + MCP on one port.
+  #
+  # Runs the image built and pushed by .github/workflows/docker.yml. Pass
+  # `-f docker/compose.build.yml` as well to build locally instead. While the
+  # repo is private the GHCR package is too, so the host needs
+  # `docker login ghcr.io` with a read:packages PAT.
+  promptrack:
+    image: ghcr.io/philphilphil/promptrack:${PROMPTRACK_TAG:-main}
+    container_name: promptrack
     restart: unless-stopped
     depends_on:
       postgres:
@@ -69,7 +71,7 @@ services:
 
     # If you front the app with a reverse proxy that runs in its own compose
     # stack, join that stack's network here and reach the app as
-    # `modelfit:8000`:
+    # `promptrack:8000`:
     #
     # networks:
     #   - promptrack

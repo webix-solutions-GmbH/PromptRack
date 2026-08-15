@@ -26,7 +26,7 @@ subprocess sidesteps the question entirely — the same reason `scripts/dev.sh`
 shells out to `uv run alembic upgrade head` instead of importing alembic.
 
 Every table is truncated before each test, mirroring the old Node suite's
-`beforeEach` (`git show master:tests/integration/setup.ts`).
+`beforeEach` (`git show legacy-nextjs:tests/integration/setup.ts`).
 """
 
 from __future__ import annotations

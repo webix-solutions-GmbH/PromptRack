@@ -68,7 +68,8 @@ make run                # postgres in docker, migrations, backend on :8077, fron
 The first account created becomes the administrator, and sign-up closes behind it; there
 are no seeded users and no default password. Create a customer workspace next — everything
 else belongs to one. Settings: [`.env.example`](.env.example). Production:
-`docker compose up -d --build`, one container serving the API, the SPA and MCP.
+`docker login ghcr.io` (the image is private while the repo is), then `make docker-up` —
+one container serving the API, the SPA and MCP.
 
 ## Concepts
 

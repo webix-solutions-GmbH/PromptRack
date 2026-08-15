@@ -1,6 +1,6 @@
 """Schema behavior only a real Postgres can show: the FK actions Task 1.1
 declared, and `timestamptz`/`bool`/`double precision` round-tripping through
-asyncpg. Ports `git show master:tests/integration/schema.test.ts` onto the
+asyncpg. Ports `git show legacy-nextjs:tests/integration/schema.test.ts` onto the
 pivot's renamed tables.
 
 Deletions go through the repository layer (`delete_run`, `delete_toolset`,

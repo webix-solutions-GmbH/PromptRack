@@ -1,4 +1,4 @@
-"""The results matrix — pure, ported from `git show master:src/lib/compare.ts`.
+"""The results matrix — pure, ported from `git show legacy-nextjs:src/lib/compare.ts`.
 
 `/results` has two pivots and this module holds both, plus the parsing of the
 selection that picks between them:

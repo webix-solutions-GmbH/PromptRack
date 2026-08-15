@@ -1,5 +1,5 @@
 // Pure client-side helpers for tool/function calling in the test case
-// editor — ported from `git show master:src/lib/tools.ts`, trimmed to what
+// editor — ported from `git show legacy-nextjs:src/lib/tools.ts`, trimmed to what
 // the editor's preview needs (the request-building half stays server-side,
 // in the run executor a later task adds). Kept free of any API import so it
 // stays trivially unit-testable and can preview exactly what the backend's

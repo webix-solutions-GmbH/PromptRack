@@ -4,7 +4,7 @@ Reading an endpoint needs only a signed-in actor (the new-run page needs every
 role to see the list), writing one is `Admin` (it holds an API key), and
 `POST /discover` sits in between at `Writer` — it only reads model ids back,
 and every writer needs it on the new-run page, exactly the split
-`git show master:src/app/api/machines/[id]/discover/route.ts` and
+`git show legacy-nextjs:src/app/api/machines/[id]/discover/route.ts` and
 `.../test/route.ts` made.
 
 The stored `api_key` is never round-tripped back to the client: an endpoint view

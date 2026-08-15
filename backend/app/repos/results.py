@@ -1,4 +1,4 @@
-"""Cross-entity reads for `/results` — ported from `master:src/db/repo/results.ts`.
+"""Cross-entity reads for `/results` — ported from `legacy-nextjs:src/db/repo/results.ts`.
 
 Each pivot gets exactly the rows it uses: run mode fetches the results of the
 selected runs, model mode fetches the results of the selected (endpoint, model)

@@ -4,7 +4,7 @@
     cd backend && uv run python scripts/import_legacy_sqlite.py \\
         --sqlite ../docs/app.db --customer Webix [--dry-run]
 
-The old app (`master`: Next.js/Drizzle/SQLite) and this one differ by the whole
+The old app (tagged `legacy-nextjs`: Next.js/Drizzle/SQLite) and this one differ by the whole
 domain-model pivot, so this is a *translation*, not a copy:
 
 * `system_prompts` -> `prompts` (the versioned asset), one row each.

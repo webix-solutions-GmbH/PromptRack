@@ -1,4 +1,4 @@
-# Development database only. Production compose (Task 6.3) is docker-compose.yml.
+# Development database only. Production compose is compose.yml.
 #
 # `name` is pinned rather than left to default: Compose otherwise derives the
 # project name from the directory, so the named volume below becomes

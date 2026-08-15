@@ -6,7 +6,7 @@ read the measurements back — instead of retyping someone else's prompts into
 the web UI by hand. The point is that the interesting test cases already exist
 in other repositories: a customer's own agent repo is where the job is defined.
 
-Ported from `git show master:src/lib/mcp/*` with the pivot's renames, and with
+Ported from `git show legacy-nextjs:src/lib/mcp/*` with the pivot's renames, and with
 the hand-rolled JSON-RPC layer replaced by the official Python SDK's
 `MCPServer` (the ergonomic FastMCP surface). Four things that were code in the
 old server are now the SDK's job: protocol negotiation, `tools/list` schemas

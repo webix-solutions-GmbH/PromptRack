@@ -1,7 +1,7 @@
 """Best-effort probing of an OpenAI-compatible endpoint for metadata about the
 server and the model a run is about to measure.
 
-Ported from `git show master:src/lib/llm-info.ts`, called from
+Ported from `git show legacy-nextjs:src/lib/llm-info.ts`, called from
 `app.services.run_create` **outside** the transaction (it is a network call,
 and a transaction must never wait on one) and frozen onto `runs.llm_info` —
 same invariant as the endpoint snapshot: a past run never changes.

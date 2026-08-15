@@ -1,6 +1,6 @@
 """Which customer workspace one MCP call runs in.
 
-Ported from `git show master:src/lib/mcp/customer.ts`, unchanged in substance.
+Ported from `git show legacy-nextjs:src/lib/mcp/customer.ts`, unchanged in substance.
 
 The MCP server is stateless by design — no session id is issued, so there is
 nowhere to "switch workspace" between calls and the workspace has to arrive

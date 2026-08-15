@@ -3,7 +3,7 @@
 `assert_tool_config` itself needs a scoped session (it resolves toolset ids
 into their live tools), so it is exercised end to end in
 `tests/integration/test_test_cases_api.py` instead. `collect_tool_name_collisions`
-is ported from `git show master:src/lib/tools.test.ts`'s
+is ported from `git show legacy-nextjs:src/lib/tools.test.ts`'s
 `collectToolNameCollisions` cases; `normalize_max_turns` from the same file's
 `normalizeMaxTurns` cases, adapted for an already-`int` wire type (see the
 module docstring).

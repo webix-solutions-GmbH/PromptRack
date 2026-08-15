@@ -1,6 +1,6 @@
 """The advisory lock that keeps one run from executing twice.
 
-Ports `git show master:tests/integration/run-lock.test.ts`. Nothing here is
+Ports `git show legacy-nextjs:tests/integration/run-lock.test.ts`. Nothing here is
 mockable: the whole point of `pg_try_advisory_lock` is that Postgres, not this
 process, is what makes the claim exclusive — a second app process has to lose
 the race just as a second call inside one process does, and `pg_locks` has to

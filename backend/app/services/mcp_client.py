@@ -5,7 +5,7 @@ hand-rolled JSON-RPC layer. A toolset is configured exactly like an endpoint —
 URL plus optional auth headers — so the deployed container needs nothing baked
 in: an Odoo or websearch MCP server runs as its own container on the same
 network and is reached by URL. Port of
-`git show master:src/lib/mcp-client.ts`.
+`git show legacy-nextjs:src/lib/mcp-client.ts`.
 
 Connections are not pooled: one is opened per operation and always closed
 again, which keeps lifecycle and failure handling trivial for a sequential,

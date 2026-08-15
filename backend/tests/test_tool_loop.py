@@ -1,7 +1,7 @@
 """`app.services.tool_loop` — metric aggregation and the agentic loop itself.
 
 The `aggregate` half is a direct port of
-`git show master:src/lib/tool-loop.test.ts`: every case there pins one of the
+`git show legacy-nextjs:src/lib/tool-loop.test.ts`: every case there pins one of the
 reasons the aggregation is not a plain sum (ttft comes from the first turn
 only, the throughput denominator is the sum of the per-turn generation
 windows, a turn with no ttft is pure generation), so each keeps a test here.
@@ -159,7 +159,7 @@ async def run(streamer: ScriptedStreamer, **overrides: Any):
 
 
 # ---------------------------------------------------------------------------
-# aggregate — ported from master:src/lib/tool-loop.test.ts
+# aggregate — ported from legacy-nextjs:src/lib/tool-loop.test.ts
 # ---------------------------------------------------------------------------
 
 

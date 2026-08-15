@@ -9,12 +9,12 @@ same tool name would only ever let the model see one of the two definitions.
 (Task 4.3) — so a test case saved through this API can never be one a run
 would later refuse.
 
-Ported from `git show master:src/lib/tools.ts` (`collectToolNameCollisions`,
+Ported from `git show legacy-nextjs:src/lib/tools.ts` (`collectToolNameCollisions`,
 `normalizeMaxTurns`, `DEFAULT_MAX_TURNS`, `MAX_TURNS_LIMIT`) and the two call
 sites that used to duplicate the "no enabled tools" / collision rule:
-`git show master:src/lib/mcp/tools-authoring.ts`'s `assertToolConfig` (checked
+`git show legacy-nextjs:src/lib/mcp/tools-authoring.ts`'s `assertToolConfig` (checked
 from toolset refs, before resolving them) and
-`git show master:src/lib/run-create.ts`'s inline version (checked from an
+`git show legacy-nextjs:src/lib/run-create.ts`'s inline version (checked from an
 already-resolved tool snapshot). This module checks from toolset ids, which
 both callers can produce.
 

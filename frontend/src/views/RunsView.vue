@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Runs list — each run executed the test cases of one or more groups against
-// one endpoint and model. Port of `git show master:src/app/runs/page.tsx`,
+// one endpoint and model. Port of `git show legacy-nextjs:src/app/runs/page.tsx`,
 // trimmed to what `GET /api/runs` actually returns: the backend's `RunView`
 // (`backend/app/api/runs.py`) carries no per-run result/rating aggregates
 // (the old `listRunSummaries` computed those with SQL joins that have no

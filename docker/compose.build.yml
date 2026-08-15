@@ -1,0 +1,12 @@
+# Override that adds the build stanza back onto compose.yml, for a local
+# build instead of pulling the published GHCR image:
+#
+#   docker compose -f docker/compose.yml -f docker/compose.build.yml --env-file .env up -d --build
+#
+# `context: ..` is relative to this file's directory, i.e. the repo root.
+name: promptrack
+services:
+  promptrack:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile

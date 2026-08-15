@@ -1,5 +1,5 @@
 """The results matrix, database-free — ported from
-`git show master:src/lib/compare.test.ts`.
+`git show legacy-nextjs:src/lib/compare.test.ts`.
 
 Every case there survives under the pivoted names (`prompts` → `test_cases`,
 the frozen system message → the three frozen texts), because what each one pins

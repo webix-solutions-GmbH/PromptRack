@@ -11,7 +11,7 @@ export function formatDateTime(value: string | number | Date): string {
 }
 
 /** Compact wall-clock duration: `840ms`, `3.4s`, `1m 12s`. Port of
- * `git show master:src/lib/format.ts`'s `formatDuration`. */
+ * `git show legacy-nextjs:src/lib/format.ts`'s `formatDuration`. */
 export function formatDuration(ms: number | null | undefined): string {
   if (typeof ms !== 'number' || !Number.isFinite(ms)) return '—'
   if (ms < 1000) return `${Math.round(ms)}ms`

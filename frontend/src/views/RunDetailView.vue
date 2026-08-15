@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Run detail: header + live-streaming result list. Port of
-// `git show master:src/components/runs/run-detail.tsx` (the NDJSON driver
+// `git show legacy-nextjs:src/components/runs/run-detail.tsx` (the NDJSON driver
 // and its event-to-state patching) and `src/app/runs/[id]/page.tsx` (the
 // header fields), renamed for the pivot's terminology and adding version
 // attribution per spec §"Workflow & UI" ("run detail and results cells show

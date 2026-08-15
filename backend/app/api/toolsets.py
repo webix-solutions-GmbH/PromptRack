@@ -13,7 +13,7 @@ instead), and write-only/patch-like on `PUT` — omit to leave the stored value
 untouched, send `""`/`null` to clear it, send a value to replace it. `mcp_url`
 is not a credential and is returned and replaced like any other field.
 Switching `kind` to `manual` always clears both, mirroring
-`git show master:src/actions/toolsets.ts`'s `toolsetFields`.
+`git show legacy-nextjs:src/actions/toolsets.ts`'s `toolsetFields`.
 
 A **global** toolset (`is_global`, settable only in the Base workspace) reads
 from every workspace and writes from none but its own, explicitly refused by

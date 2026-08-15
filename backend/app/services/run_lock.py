@@ -1,6 +1,6 @@
 """One execution per run, across processes — a Postgres advisory lock.
 
-Ported from `git show master:src/lib/run-lock.ts`. The lock lives on a
+Ported from `git show legacy-nextjs:src/lib/run-lock.ts`. The lock lives on a
 **dedicated connection held for the whole run**, and that is the point: it dies
 with the connection, so a crashed process releases it exactly the way an
 in-memory set would have vanished (rows left `running` are reclaimed to

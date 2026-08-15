@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The conversation a tool run actually had: assistant turns, the calls they
 // asked for, what each tool returned, and per-turn metrics. Port of
-// `git show master:src/components/runs/tool-transcript.tsx`.
+// `git show legacy-nextjs:src/components/runs/tool-transcript.tsx`.
 //
 // Rendered from the stored/streamed transcript rather than re-derived, so it
 // shows what happened even after the toolset behind it has been edited or

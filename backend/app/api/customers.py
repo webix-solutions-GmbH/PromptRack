@@ -4,7 +4,7 @@ Listing and switching are already covered by `/api/auth/me` and
 `/api/auth/switch-customer`; this router is the workspace *management*
 surface — create, rename, archive and the guarded delete — which is why every
 mutation but delete is `Writer` and delete alone is `Admin`, exactly the split
-`git show master:src/actions/customers.ts` used.
+`git show legacy-nextjs:src/actions/customers.ts` used.
 """
 
 from datetime import datetime

@@ -1,7 +1,7 @@
 // Reasoning models (Qwen, DeepSeek R1, ...) prefix their answer with a
 // `<think>...</think>` block streamed as plain content. For display we split
 // it off so the UI can tuck it behind a collapsed toggle. Byte-for-byte port
-// of `git show master:src/lib/thinking.ts` — kept pure so the run detail
+// of `git show legacy-nextjs:src/lib/thinking.ts` — kept pure so the run detail
 // view can call it on every streamed delta with no round trip.
 
 export interface SplitThinkingResult {

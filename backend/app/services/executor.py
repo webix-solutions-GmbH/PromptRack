@@ -1,6 +1,6 @@
 """Executing a run: every still-pending row, one after the other.
 
-Port of `git show master:src/lib/run-executor.ts`. Four invariants carried
+Port of `git show legacy-nextjs:src/lib/run-executor.ts`. Four invariants carried
 over unchanged, because they are what makes an interrupted run recoverable
 rather than corrupt:
 

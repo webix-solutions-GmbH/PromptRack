@@ -7,7 +7,7 @@
 // wrapper is `POST /runs/{id}/execute`: it streams NDJSON (one JSON object
 // per line, `Content-Type: application/x-ndjson`), so `executeRun` below
 // does its own `fetch` + `ReadableStream` reader — port of
-// `git show master:src/components/runs/run-detail.tsx`'s `start()`.
+// `git show legacy-nextjs:src/components/runs/run-detail.tsx`'s `start()`.
 import { ApiError } from './client'
 import { api } from './client'
 import type { ToolChoice, ToolMode } from './testCases'

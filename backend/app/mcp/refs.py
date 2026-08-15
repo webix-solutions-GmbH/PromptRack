@@ -1,6 +1,6 @@
 """Referring to a row by name, and refusing the ambiguous ones.
 
-Ported from `git show master:src/lib/mcp/args.ts`, minus everything the Python
+Ported from `git show legacy-nextjs:src/lib/mcp/args.ts`, minus everything the Python
 SDK already does: FastMCP validates and coerces a tool's arguments against the
 signature's type hints, so the old `requireString` / `optionalInteger` family
 has no work left to do. What does *not* come for free is the part that made the

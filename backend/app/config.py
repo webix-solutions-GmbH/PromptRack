@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # Dev fallback so a fresh clone works with nothing else configured —
-    # mirrors the old Node app's DEV_DATABASE_URL and docker-compose.dev.yml.
+    # mirrors the old Node app's DEV_DATABASE_URL and docker/compose.dev.yml.
     database_url: str = "postgres://promptrack:dev@127.0.0.1:5433/promptrack"
 
     # Max size of the async connection pool. Must exceed the number of runs
@@ -45,8 +45,9 @@ class Settings(BaseSettings):
     session_secret: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
 
     # "development" (the default, matching a fresh clone with nothing else
-    # configured) or "production" — the latter is what `docker-entrypoint.sh`
-    # (Task 6.3) sets. Mirrors the old Node app's `NODE_ENV`; used only by
+    # configured) or "production" — the latter is baked into the image at
+    # build time by `docker/Dockerfile`'s `ENV`, not set at container start.
+    # Mirrors the old Node app's `NODE_ENV`; used only by
     # `app.api.mocks.mocks_enabled` today.
     environment: str = "development"
     # Forces the mock LLM / mock MCP routes on even when `environment` is
@@ -58,7 +59,7 @@ class Settings(BaseSettings):
     @classmethod
     def _asyncpg_scheme(cls, v: str) -> str:
         """Accept the `postgres://`/`postgresql://` form used elsewhere in the
-        stack (.env.example, docker-compose) and normalize it to the asyncpg
+        stack (.env.example, docker/compose.yml) and normalize it to the asyncpg
         driver SQLAlchemy's async engine requires.
         """
         if v.startswith("postgres://"):

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // One test case's result inside a run: its frozen inputs, its outcome, its
-// manual verdict. Port of `git show master:src/components/runs/result-card.tsx`,
+// manual verdict. Port of `git show legacy-nextjs:src/components/runs/result-card.tsx`,
 // renamed for the pivot's terminology (prompt -> test case) and carrying what
 // the old app never had: the run's **three** frozen texts shown apart — the
 // system prompt, the task prompt and the case's own content — each prompt with

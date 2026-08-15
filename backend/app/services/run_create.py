@@ -1,6 +1,6 @@
 """Creating a run, independent of how it was asked for.
 
-Ported from `git show master:src/lib/run-create.ts` with the pivot's renames
+Ported from `git show legacy-nextjs:src/lib/run-create.ts` with the pivot's renames
 (prompt group -> test group, prompt -> test case, system prompt -> prompt) and
 one addition: version **attribution**.
 

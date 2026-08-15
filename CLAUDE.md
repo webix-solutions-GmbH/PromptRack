@@ -5,12 +5,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Environment
 
 Backend: Python 3.12+, dependencies and virtualenv managed by `uv` (`backend/pyproject.toml`).
-Frontend: Node 22+, npm.
+Frontend: Node 22+, npm. Two stacks, two languages, one repo, and they share no
+tooling, package manager, test runner or formatting rules — check which directory you're
+in before assuming a convention from one carries over to the other.
+
+Both are recent major versions whose API surface a training snapshot may get wrong:
+SQLAlchemy 2.0's async API is not 1.x with `await` sprinkled on, Pydantic v2 is not v1
+with new imports, and PrimeVue 4 / Vue 3's Composition API are not what an older doc
+assumes. Read the neighboring code in the file you're editing before writing something
+novel — it already establishes the pattern this codebase wants.
 
 ## Commands
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d          # postgres:17-alpine on 127.0.0.1:5433
+docker compose -f docker/compose.dev.yml up -d           # postgres:17-alpine on 127.0.0.1:5433
 cd backend && uv run alembic upgrade head                 # apply migrations
 cd backend && uv run uvicorn app.main:app --reload --port 8077   # http://localhost:8077
 cd frontend && npm install && npm run dev                  # http://localhost:5177, proxies /api
@@ -22,7 +30,6 @@ make run                             # db (waits for healthy) + migrations + bot
 cd backend && uv run pytest                                 # pure suite, no database
 cd backend && uv run pytest tests/test_llm.py                # single test file
 cd backend && uv run pytest tests/integration                # throwaway postgres in docker, port 55432
-scripts/test-integration.sh                                  # same, from the repo root
 cd backend && uv run ruff check .                            # lint
 
 cd frontend && npm run build          # vue-tsc -b && vite build; catches type errors too
@@ -32,10 +39,12 @@ cd backend && uv run alembic revision --autogenerate -m "..."  # write a migrati
 ```
 
 Everything reads `DATABASE_URL` (`backend/app/config.py`, `Settings`, pydantic-settings —
-field names map case-insensitively to env vars). `docker-compose.dev.yml` brings up
+field names map case-insensitively to env vars). `docker/compose.dev.yml` brings up
 Postgres on `127.0.0.1:5433`; `backend/tests/integration/conftest.py` provisions its own
 throwaway Postgres on `55432` (docker, tmpfs data) unless `TEST_DATABASE_URL` is set, so
-the integration suite never touches the dev database. `.env.example` at the repo root
+the integration suite never touches the dev database — it applies the committed
+migrations to that database itself and tears the container down again once the suite
+finishes. `.env.example` at the repo root
 documents every variable (`app/config.py`'s `Settings`, pydantic-settings, reads a `.env`
 file plus the process environment); every field has a working dev default, so a fresh
 clone runs with no `.env` at all until you need to change something.
@@ -47,11 +56,18 @@ and recreate a column instead), so a rename needs the generated file hand-edited
 `op.alter_column`/`op.rename_table` the same way `drizzle-kit generate` needed a real
 terminal for the equivalent case in the old stack.
 
-Git: branch is `rewrite`, built on top of `master` (the retired Next.js/TypeScript
-implementation, kept for reference — see "This is a rewrite" below). One remote:
-`origin` is GitHub (`philphilphil/PromptRack`, private, renamed from `modelfit`; note the
-capitalisation — the lowercase URL only resolves through GitHub's redirect). `rewrite`
-tracks `origin/rewrite`.
+Git: default branch is `main`. One remote: `origin` is GitHub
+(`philphilphil/PromptRack`, private, renamed from `modelfit`; note the capitalisation —
+the lowercase URL only resolves through GitHub's redirect). `rewrite` (the branch this
+rewrite was developed on, now a few commits behind `main`) and `platform-evolution` (an
+unmerged line of further work) still exist alongside `main`. The `master` branch — the
+retired Next.js/TypeScript implementation "This is a rewrite" below describes as a
+`git show`-able reference — no longer exists as a ref, but its commits are not lost: the
+rewrite was built on top of the old app in place, so `master`'s last commit, `be8ad76`, is
+an ancestor of `main` and its tree is still readable with `git show be8ad76:<path>` in any
+clone. It is also tagged `legacy-nextjs` locally (deliberately not pushed), so `git show
+legacy-nextjs:<path>` is the convenient form in this checkout — same commit, just a
+friendlier name that only exists here.
 
 ## What this is
 
@@ -98,15 +114,18 @@ See "Prompt versioning" below.
 
 ### This is a rewrite
 
-The app used to be a Next.js/TypeScript/Drizzle monolith (still on `master`, referenced
-below as "the old app"). This branch is a from-scratch rewrite to FastAPI + SQLAlchemy +
-Vue, done alongside a domain-model pivot: `system_prompts` → `prompts` (the versioned
-asset), the old `prompts` (input + expected output) → `test_cases`, `prompt_groups` →
-`test_groups`, `prompt_toolsets` → `test_case_toolsets`. Old code is a *behavioral*
-reference, not a structural one — `git show master:<path>` to read it, never check it out
-into this tree. Every service module that ports old logic says so in its docstring with
-the exact old path (e.g. `Port of git show master:src/lib/llm.ts`), which is the fastest
-way to find the reference for anything below. See
+The app used to be a Next.js/TypeScript/Drizzle monolith, referenced below as "the old
+app". `main` (developed on the now-superseded `rewrite` branch) is a from-scratch rewrite
+to FastAPI + SQLAlchemy + Vue, done alongside a domain-model pivot: `system_prompts` →
+`prompts` (the versioned asset), the old `prompts` (input + expected output) →
+`test_cases`, `prompt_groups` → `test_groups`, `prompt_toolsets` → `test_case_toolsets`.
+Old code is kept only as a *behavioral* reference, not a structural one, readable via
+`git show legacy-nextjs:<path>` rather than checked out into this tree — `legacy-nextjs`
+is the locally-tagged commit `be8ad76`, the old app's last commit before the rewrite
+deleted `src/` (see the Git paragraph above for why the tag, not a branch name, is what
+resolves it now). Every service module that ports old logic says so in its docstring with
+the exact old path via that tag (e.g. `Port of git show legacy-nextjs:src/lib/llm.ts`),
+which is the fastest way to find the reference for anything below. See
 `docs/superpowers/plans/2026-08-13-rewrite-fastapi-vue.md` for the phased implementation
 plan and `docs/superpowers/specs/2026-08-13-prompt-versioning-pivot-design.md` for the
 versioning design itself.
@@ -775,7 +794,7 @@ precisely so it can live here), `test_policy.py`, `test_passwords.py`, `test_tok
 (the token crypto's pure half — resolving a raw token needs a database),
 `test_discovery.py`, `test_llm_info.py`, `test_mocks.py`, `test_health.py`.
 
-`cd backend && uv run pytest tests/integration` (or `scripts/test-integration.sh`) runs
+`cd backend && uv run pytest tests/integration` (or `make test-integration`) runs
 against the scratch Postgres described above, with a single event loop for the whole
 session (`asyncio_default_fixture_loop_scope = "session"` in `pyproject.toml`) because the
 suites share one database and one engine bound to whichever loop was running at import
@@ -814,31 +833,62 @@ gated by `mocks_enabled()` — dev, or `ENABLE_MOCKS=true` in production; the re
 
 ## Deployment
 
-Two-stage `Dockerfile`: `node:22-alpine` builds `frontend/` and only the compiled
+Docker-related files live under `docker/` (the build context is still the repo root —
+only the files moved): `docker/Dockerfile`, `docker/entrypoint.sh`, `docker/compose.yml`
+(production), `docker/compose.build.yml` (a local-build override) and
+`docker/compose.dev.yml` (the dev Postgres already covered under Commands above).
+
+Two-stage `docker/Dockerfile`: `node:22-alpine` builds `frontend/` and only the compiled
 `dist/` crosses into the backend image (no `node`/`npm` in the final image); the backend
 stage (`ghcr.io/astral-sh/uv:python3.12-bookworm-slim`) installs from the committed
 `backend/uv.lock` (`uv sync --frozen --no-dev`), copies in `app/`, `alembic/` and the
 built SPA as `static/` — the same directory `app/main.py`'s SPA-fallback route already
 checks for and no-ops on when absent, so dev behaviour (vite's own dev server) is
 unaffected. `ENVIRONMENT=production` is baked into the image, which is what makes the
-mock routes 404 unless `ENABLE_MOCKS=true` is also set. `docker-entrypoint.sh` refuses to
+mock routes 404 unless `ENABLE_MOCKS=true` is also set. `docker/entrypoint.sh` refuses to
 start without `DATABASE_URL`, then runs `alembic upgrade head` before handing off to
-`uvicorn` — a broken migration stops the container rather than serving a half-migrated
-database, since statements are applied verbatim.
+`uvicorn` — `set -e` means a broken migration stops the container rather than serving a
+half-migrated database, since statements are applied verbatim.
 
-`docker-compose.yml` bundles a `postgres:17-alpine` service (`--encoding=UTF8
+`docker/compose.yml` bundles a `postgres:17-alpine` service (`--encoding=UTF8
 --lc-collate=C --lc-ctype=C`, since prompt/test-case content can carry Unicode Tags) the
 app waits for via `depends_on: condition: service_healthy`; state lives in the named
 volume `pgdata`. `POSTGRES_PASSWORD` is required in `.env`; `DATABASE_URL` optionally
-overrides the bundled database with an external one. `docker compose up -d --build`
-serves the SPA + API + MCP on one port (`127.0.0.1:8000` by default — change the port
-mapping or front it with a reverse proxy to expose it further).
+overrides the bundled database with an external one. The app is published on
+`127.0.0.1:8000` by default — change the port mapping or front it with a reverse proxy to
+expose it further.
 
-The compose **service and container are named `modelfit`**, not `promptrack`, on
-purpose: a live deployment's reverse proxy already points at `modelfit:<port>` from the
-old app (see `CLAUDE.local.md`, gitignored, for that deployment's specifics), and keeping
-the name means the rewrite can replace the old container without touching proxy config.
-Everything else — the Postgres role/database (`promptrack`), the volume (`pgdata`), the
-compose network (`promptrack`) — uses the new name, since none of it carries continuity
-constraints from the old `agentval`/`amv_` naming (this is a fresh database with no data
-to preserve, unlike the rename the old app went through in place).
+**Both compose files pin `name: promptrack`.** Without it Compose derives the project
+name from the directory it's invoked from, and the move into `docker/` would otherwise
+rename the project and orphan the existing `promptrack_pgdata` /
+`promptrack-dev-pgdata` volumes on the next `up` — pinning the name is what keeps them
+attached across the move. **Every `compose.yml` command also passes `--env-file .env` and
+is run from the repo root**: Compose derives its project directory from the compose
+file's location, so from `docker/` it would otherwise miss the repo-root `.env` entirely
+and fail on `POSTGRES_PASSWORD`. `compose.dev.yml` needs no `--env-file` — its password
+is hardcoded `dev` and it reads nothing from the environment.
+
+`docker/compose.yml` only has an `image:` stanza — it pulls
+`ghcr.io/philphilphil/promptrack:${PROMPTRACK_TAG:-main}` rather than building. Deploy is
+`docker compose -f docker/compose.yml --env-file .env pull` then `... up -d`, or
+`make docker-up`, which wraps both. `docker/compose.build.yml` is the override that adds
+`build:` back for a local build instead: `-f docker/compose.yml -f
+docker/compose.build.yml --env-file .env up -d --build`, or `make docker-build`. While
+the repo is private the GHCR package is private too, so a deployment host needs
+`docker login ghcr.io` with a `read:packages` PAT before either target's `pull`/`up` will
+succeed.
+
+`.github/workflows/docker.yml` builds and pushes the image on every push to `main`, on
+`v*` tags, and on manual dispatch — `linux/amd64` only. It authenticates with the
+built-in `GITHUB_TOKEN` (no configured secret) and tags the image with the branch name,
+`sha-<short>`, and, on a version tag, the semver plus `latest`. The image name is
+hardcoded lowercase (`ghcr.io/philphilphil/promptrack`) rather than interpolated from
+`github.repository`, because that variable is mixed-case (`philphilphil/PromptRack`) and
+GHCR rejects uppercase in image names outright. It passes
+`PROMPTRACK_COMMIT=${{ github.sha }}` into the `ARG` the Dockerfile already declares, so
+`GET /api/version` reports the exact commit a running container was built from. It
+deliberately runs no tests before pushing — a known gap, not an oversight, so don't
+assume a `main` push through this workflow was verified.
+
+This project is developed against a self-hosted deployment, so a change that touches
+Docker, compose or migrations should say what it was actually tested on.

@@ -1,6 +1,6 @@
 """Cross-workspace isolation, against a real Postgres.
 
-Ports the old suite's core (`git show master:tests/integration/workspaces.test.ts`)
+Ports the old suite's core (`git show legacy-nextjs:tests/integration/workspaces.test.ts`)
 onto the pivot's renamed tables and repository functions: a byte-identical
 test case in two workspaces must never collapse into one row, a write naming
 another workspace's row is refused rather than silently landing there, and a

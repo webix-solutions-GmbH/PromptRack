@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // New run: pick an endpoint + model, pick which test-case groups to run, and
-// go. Port of `git show master:src/components/runs/new-run-form.tsx` (model
+// go. Port of `git show legacy-nextjs:src/components/runs/new-run-form.tsx` (model
 // detection: probe on endpoint select, auto-select a single loaded model,
 // degrade to a warning + previously-seen models, discard a slow probe's
 // answer for an endpoint the user has since switched away from) plus the

@@ -1,6 +1,6 @@
 """`app.services.llm` — SSE parsing, metric math and the HTTP client.
 
-A direct port of `git show master:src/lib/llm.test.ts`: every fixture there
+A direct port of `git show legacy-nextjs:src/lib/llm.test.ts`: every fixture there
 encodes a provider quirk this client exists to absorb (where usage arrives,
 how tool-call fragments are keyed, where a network read may cut a line), so
 each of them keeps a test here. No database and no socket — the stream
