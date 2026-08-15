@@ -2,6 +2,8 @@
 //
 //   GET    /api/invites          -> InviteView[]   (pending first, then spent)
 //   POST   /api/invites           CreateInviteRequest -> CreatedInviteView (201)
+//                                  (the raw token, not an assembled link — the
+//                                   caller builds the link from its own origin)
 //   DELETE /api/invites/{id}      -> (204; 409 if the invite was already used)
 //
 // and the public redemption half, which lives in backend/app/auth/router.py
@@ -17,7 +19,8 @@
 // the address in advance, and whoever opens the link first supplies their own.
 // The raw token comes back exactly once, on the `POST` that mints it — the
 // same one-time reveal an API token gets — so `GET` can only ever show the
-// display prefix.
+// display prefix. The caller (`UsersView`) assembles the copyable link from
+// `window.location.origin` plus that token.
 //
 // Redemption is called from `InviteAcceptView` through this module rather than
 // through the auth store, since it runs before there is a user; the store's
@@ -43,10 +46,13 @@ export interface InviteView {
   redeemed_by_name: string | null
 }
 
-/** Only the `POST` response carries the link — never stored (only its hash
- * is), never returned again by `GET`. Shown to the admin exactly once. */
+/** Only the `POST` response carries the raw token — never stored (only its
+ * hash is), never returned again by `GET`. Shown to the admin exactly once.
+ * The server hands back the token, not an assembled link: `window.location`
+ * is the host the admin is looking at, and behind the dev proxy or a reverse
+ * proxy that is not the same host as the backend's own `request.base_url`. */
 export interface CreatedInviteView extends InviteView {
-  url: string
+  token: string
 }
 
 export interface CreateInviteRequest {

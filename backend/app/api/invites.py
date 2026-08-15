@@ -19,7 +19,7 @@ exist.
 from datetime import datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.api.users import role_or_400
@@ -36,11 +36,6 @@ router = APIRouter(prefix="/invites", tags=["invites"])
 #: A link that lets a stranger create an account should not sit in an inbox for
 #: a year — this ceiling is far shorter than an API token's, deliberately.
 MAX_EXPIRY_DAYS = 90
-
-#: The client route the link points at (`InviteAcceptView`), appended to the
-#: request's own base URL so the same deployment behind any hostname hands out
-#: a link that works.
-INVITE_PATH = "/invite/"
 
 InviteStatus = Literal["pending", "redeemed", "revoked", "expired"]
 
@@ -70,9 +65,13 @@ class InviteView(BaseModel):
 
 
 class CreatedInviteView(InviteView):
-    #: The full link — present exactly once, only on the response to `POST`.
-    #: Never stored (only its hash is) and never returned again by `GET`.
-    url: str
+    #: The raw secret — present exactly once, only on the response to `POST`.
+    #: Never stored (only its hash is) and never returned again by `GET`. The
+    #: frontend assembles the full link from `window.location.origin`, since
+    #: that is the host the admin is looking at; the backend's own
+    #: `request.base_url` is the wrong host behind the dev proxy or a reverse
+    #: proxy that rewrites `Host`.
+    token: str
 
 
 class CreateInviteRequest(BaseModel):
@@ -115,16 +114,6 @@ def _view(invite: UserInvite, now: datetime, names: dict[int, str]) -> InviteVie
     )
 
 
-def _invite_url(request: Request, raw: str) -> str:
-    """The link an admin copies, absolute so it can be pasted anywhere.
-
-    Built from the request's own base URL rather than from configuration:
-    there is no canonical-hostname setting in this app, and the host the admin
-    is looking at is the host the invitee will use.
-    """
-    return f"{str(request.base_url).rstrip('/')}{INVITE_PATH}{raw}"
-
-
 # --------------------------------------------------------------------------
 # Endpoints
 # --------------------------------------------------------------------------
@@ -150,7 +139,7 @@ async def list_invites(actor: Admin, session: DbSession) -> list[InviteView]:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_invite(
-    body: CreateInviteRequest, actor: Admin, session: DbSession, request: Request
+    body: CreateInviteRequest, actor: Admin, session: DbSession
 ) -> CreatedInviteView:
     now = utc_now()
     invite, raw = await invite_store.create_invite(
@@ -161,9 +150,7 @@ async def create_invite(
     )
     await session.commit()
     names = await user_store.list_display_names(session, [invite.created_by])
-    return CreatedInviteView(
-        **_view(invite, now, names).model_dump(), url=_invite_url(request, raw)
-    )
+    return CreatedInviteView(**_view(invite, now, names).model_dump(), token=raw)
 
 
 @router.delete("/{invite_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -67,11 +67,6 @@ async def signed_in_admin(client: AsyncClient, session: AsyncSession) -> int:
     return admin_id
 
 
-def token_of(url: str) -> str:
-    """The raw token out of the one-time link."""
-    return url.rsplit("/", 1)[-1]
-
-
 async def mint(client: AsyncClient, role: str = "member", **body: object) -> dict[str, object]:
     response = await client.post("/api/invites", json={"role": role, **body})
     assert response.status_code == 201, response.text
@@ -85,8 +80,8 @@ class TestCreateInvite:
         await signed_in_admin(client, session)
 
         created = await mint(client, "viewer")
-        raw = token_of(str(created["url"]))
-        assert str(created["url"]).endswith(f"/invite/{raw}")
+        raw = str(created["token"])
+        assert raw
         assert raw.startswith("pri_")
         assert created["role"] == "viewer"
         assert created["status"] == "pending"
@@ -101,7 +96,7 @@ class TestCreateInvite:
         # And `GET` never shows it again.
         listed = (await client.get("/api/invites")).json()
         assert listed[0]["id"] == created["id"]
-        assert "url" not in listed[0]
+        assert "token" not in listed[0]
 
     async def test_expiry_defaults_to_a_week_and_is_bounded(
         self, client: AsyncClient, session: AsyncSession
@@ -146,7 +141,7 @@ class TestRedeemInvite:
     ) -> None:
         admin_id = await signed_in_admin(client, session)
         created = await mint(client, "viewer")
-        raw = token_of(str(created["url"]))
+        raw = str(created["token"])
 
         offered = await invitee.get(f"/api/auth/invite/{raw}")
         assert offered.status_code == 200, offered.text
@@ -184,7 +179,7 @@ class TestRedeemInvite:
         self, client: AsyncClient, invitee: AsyncClient, session: AsyncSession
     ) -> None:
         await signed_in_admin(client, session)
-        raw = token_of(str((await mint(client))["url"]))
+        raw = str((await mint(client))["token"])
         first = await invitee.post(
             f"/api/auth/invite/{raw}/accept",
             json={"email": "first@example.com", "password": INVITEE_PASSWORD},
@@ -212,7 +207,7 @@ class TestRedeemInvite:
         commit, re-reads a row that is already redeemed, and is refused.
         """
         await signed_in_admin(client, session)
-        raw = token_of(str((await mint(client))["url"]))
+        raw = str((await mint(client))["token"])
 
         async def accept(email: str) -> int:
             transport = ASGITransport(app=app)
@@ -231,7 +226,7 @@ class TestRedeemInvite:
         self, client: AsyncClient, invitee: AsyncClient, session: AsyncSession
     ) -> None:
         await signed_in_admin(client, session)
-        raw = token_of(str((await mint(client))["url"]))
+        raw = str((await mint(client))["token"])
         await session.execute(
             update(UserInvite).values(expires_at=utc_now() - timedelta(seconds=1))
         )
@@ -250,7 +245,7 @@ class TestRedeemInvite:
     ) -> None:
         await signed_in_admin(client, session)
         created = await mint(client)
-        raw = token_of(str(created["url"]))
+        raw = str(created["token"])
         assert (await client.delete(f"/api/invites/{created['id']}")).status_code == 204
 
         assert (await invitee.get(f"/api/auth/invite/{raw}")).status_code == 410
@@ -276,7 +271,7 @@ class TestRedeemInvite:
         self, client: AsyncClient, invitee: AsyncClient, session: AsyncSession
     ) -> None:
         await signed_in_admin(client, session)
-        raw = token_of(str((await mint(client))["url"]))
+        raw = str((await mint(client))["token"])
 
         refused = await invitee.post(
             f"/api/auth/invite/{raw}/accept",
@@ -293,7 +288,7 @@ class TestRedeemInvite:
         self, client: AsyncClient, invitee: AsyncClient, session: AsyncSession
     ) -> None:
         await signed_in_admin(client, session)
-        raw = token_of(str((await mint(client))["url"]))
+        raw = str((await mint(client))["token"])
         refused = await invitee.post(
             f"/api/auth/invite/{raw}/accept",
             json={"email": "new@example.com", "password": "short"},
@@ -310,7 +305,7 @@ class TestRevokeInvite:
         # make the list lie about what happened.
         await signed_in_admin(client, session)
         created = await mint(client)
-        raw = token_of(str(created["url"]))
+        raw = str(created["token"])
         await invitee.post(
             f"/api/auth/invite/{raw}/accept",
             json={"email": "new@example.com", "password": INVITEE_PASSWORD},

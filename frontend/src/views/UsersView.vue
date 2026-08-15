@@ -204,9 +204,17 @@ const formExpiresInDays = ref<number | null>(DEFAULT_EXPIRY_DAYS)
 const formError = ref<string | null>(null)
 const saving = ref(false)
 
-// The link the API just minted — held only in memory, shown once, and never
-// refetchable: only its hash is stored, so no route can return it again.
+// The invite the API just minted — held only in memory, shown once, and
+// never refetchable: only its hash is stored, so no route can return it
+// again.
 const createdInvite = ref<CreatedInviteView | null>(null)
+
+// Built from the browser's own origin rather than returned by the server:
+// behind the dev proxy or a reverse proxy, `window.location.origin` is the
+// host the admin is looking at, which is not necessarily the backend's own.
+const createdInviteUrl = computed(() =>
+  createdInvite.value ? `${window.location.origin}/invite/${createdInvite.value.token}` : '',
+)
 
 function openCreate() {
   formRole.value = 'member'
@@ -435,7 +443,7 @@ onMounted(() => {
                 It grants <strong>{{ ROLE_LABELS[createdInvite.role] }}</strong> and expires
                 {{ formatDateTime(createdInvite.expires_at) }}.
               </p>
-              <CopyBlock :code="createdInvite.url" />
+              <CopyBlock :code="createdInviteUrl" />
               <div class="dialog-actions">
                 <Button label="I've copied it" text @click="dismissReveal" />
               </div>
