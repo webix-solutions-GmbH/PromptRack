@@ -47,9 +47,12 @@ import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import type { DataTableRowClickEvent } from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
+import IconField from 'primevue/iconfield'
+import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Panel from 'primevue/panel'
+import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
@@ -179,6 +182,37 @@ const flatRows = computed(() =>
     group_name: groupNameById.value.get(testCase.group_id) ?? `#${testCase.group_id}`,
   })),
 )
+
+// --- flat-view filters (same shapes as /prompts) --------------------------
+
+const titleFilter = ref('')
+// 0 is "all groups": a real id is never 0, and unlike `null` it is a value
+// PrimeVue's Select will actually display instead of showing the placeholder.
+const ALL_GROUPS = 0
+const groupFilter = ref<number>(ALL_GROUPS)
+const toolModeFilter = ref<TestCase['tool_mode'] | null>(null)
+
+const groupFilterOptions = computed(() => [
+  { label: 'All groups', value: ALL_GROUPS },
+  ...groups.value.map((group) => ({ label: group.name, value: group.id })),
+])
+
+const toolModeFilterOptions: { label: string; value: TestCase['tool_mode'] | null }[] = [
+  { label: 'All', value: null },
+  { label: 'none', value: 'none' },
+  { label: 'definitions', value: 'definitions' },
+  { label: 'execute', value: 'execute' },
+]
+
+const visibleFlatRows = computed(() => {
+  const query = titleFilter.value.trim().toLowerCase()
+  return flatRows.value.filter(
+    (row) =>
+      (groupFilter.value === ALL_GROUPS || row.group_id === groupFilter.value) &&
+      (toolModeFilter.value === null || row.tool_mode === toolModeFilter.value) &&
+      (query === '' || row.title.toLowerCase().includes(query)),
+  )
+})
 
 const visibleGroups = computed(() =>
   soloGroupId.value === null
@@ -402,8 +436,41 @@ async function removeCase(testCase: TestCase) {
     </div>
 
     <template v-if="viewMode === 'flat'">
+      <div class="filter-row">
+        <IconField class="name-filter">
+          <InputIcon class="pi pi-search" />
+          <InputText v-model="titleFilter" placeholder="Search by title" size="small" />
+          <InputIcon
+            v-if="titleFilter !== ''"
+            class="pi pi-times clear-search"
+            role="button"
+            tabindex="0"
+            aria-label="Clear search"
+            @click="titleFilter = ''"
+            @keydown.enter="titleFilter = ''"
+          />
+        </IconField>
+        <span class="filter-label">Group</span>
+        <Select
+          v-model="groupFilter"
+          :options="groupFilterOptions"
+          option-label="label"
+          option-value="value"
+          size="small"
+          class="group-filter"
+        />
+        <span class="filter-label">Tools</span>
+        <SelectButton
+          v-model="toolModeFilter"
+          :options="toolModeFilterOptions"
+          option-label="label"
+          option-value="value"
+          :allow-empty="false"
+          size="small"
+        />
+      </div>
       <DataTable
-        :value="flatRows"
+        :value="visibleFlatRows"
         data-key="id"
         sort-field="group_name"
         :sort-order="1"
@@ -465,6 +532,19 @@ async function removeCase(testCase: TestCase) {
       >
         <template #header>
           <div class="group-title">
+            <!-- Panel's own toggler sits after the action buttons on the far
+                 right; a disclosure chevron reads left of the name, so the
+                 built-in one is hidden (CSS below) and this one drives the
+                 same collapsed state. -->
+            <button
+              type="button"
+              class="group-toggle"
+              :aria-expanded="isExpanded(group.id)"
+              :title="isExpanded(group.id) ? 'Collapse group' : 'Expand group'"
+              @click="setExpanded(group.id, !isExpanded(group.id))"
+            >
+              <i class="pi" :class="isExpanded(group.id) ? 'pi-chevron-down' : 'pi-chevron-right'" />
+            </button>
             <button
               v-if="soloGroupId === null"
               type="button"
@@ -657,6 +737,47 @@ async function removeCase(testCase: TestCase) {
   align-items: baseline;
   gap: 0.625rem;
   min-width: 0;
+}
+
+/* The disclosure chevron left of the name replaces Panel's built-in toggle
+ * button, which can only render on the far right after the action buttons. */
+.group-toggle {
+  background: none;
+  border: none;
+  padding: 0.125rem;
+  cursor: pointer;
+  color: var(--p-text-muted-color);
+  font-size: 0.8125rem;
+  align-self: center;
+}
+
+.group-panel :deep(.p-panel-header .p-panel-toggle-button) {
+  display: none;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.filter-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--p-text-muted-color);
+}
+
+.name-filter :deep(input) {
+  width: 16rem;
+}
+
+.clear-search {
+  cursor: pointer;
+}
+
+.group-filter {
+  min-width: 12rem;
 }
 
 .group-name {

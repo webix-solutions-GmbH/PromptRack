@@ -766,7 +766,7 @@ async function removeTestCase() {
 .page {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1rem;
   max-width: 72rem;
 }
 
@@ -779,15 +779,16 @@ async function removeTestCase() {
 .editor {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1rem;
 }
 
-/* The app's section idiom, same as `PromptEditView`'s panels. */
+/* The app's section idiom, same as `PromptEditView`'s panels — tightened a
+ * step here so the whole form fits a laptop screen with less scrolling. */
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  padding: 1.5rem;
+  gap: 0.75rem;
+  padding: 1rem;
   border: 1px solid var(--p-content-border-color);
   border-radius: var(--p-content-border-radius);
 }
@@ -799,7 +800,7 @@ async function removeTestCase() {
 }
 
 .panel h2 {
-  font-size: 1.0625rem;
+  font-size: 0.9375rem;
   font-weight: 600;
   margin: 0;
 }
@@ -807,13 +808,13 @@ async function removeTestCase() {
 .columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 2rem;
+  gap: 1.5rem;
 }
 
 .column {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.75rem;
   min-width: 0;
 }
 
@@ -850,7 +851,7 @@ async function removeTestCase() {
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: 0.25rem;
 }
 
 .field-row {
