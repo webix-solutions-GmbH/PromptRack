@@ -28,9 +28,12 @@ if oidc_configured(_settings):
 
 app.include_router(api_router, prefix="/api")
 
-# After the API router, so a concrete `/api/...` route always wins; `/api/mcp`
-# is not one of them, and this app authenticates itself (see
-# `app.mcp.server.McpAuthMiddleware`) rather than through the FastAPI guards.
+# `POST /mcp`, registered between the API router and the SPA catch-all below.
+# It lives outside `/api` because the SPA has a settings page at the same path:
+# the route is POST-only, so a browser's `GET /mcp` partial-matches here,
+# Starlette keeps searching, and the catch-all serves the shell. This app
+# authenticates itself (see `app.mcp.server.McpAuthMiddleware`) rather than
+# through the FastAPI guards.
 mount_mcp(app)
 
 # Task 6.3: the production image bakes the built SPA in here as `static/`

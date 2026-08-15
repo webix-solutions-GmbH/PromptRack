@@ -1,4 +1,4 @@
-"""`/api/mcp` end to end: real app, real Postgres, real JSON-RPC over HTTP.
+"""`/mcp` end to end: real app, real Postgres, real JSON-RPC over HTTP.
 
 The pure half of the MCP server (reference resolution, workspace precedence,
 the registry and the read-only gate) lives in `tests/test_mcp.py`. What only a
@@ -65,7 +65,7 @@ async def rpc(
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     response = await client.post(
-        "/api/mcp",
+        "/mcp",
         json=payload,
         headers={**MCP_HEADERS, "x-api-key": token, **(headers or {})},
     )
@@ -122,7 +122,7 @@ async def test_mcp_endpoint(
         async with AsyncClient(transport=transport, base_url="http://testserver") as client:
             # --- auth -------------------------------------------------------
             anonymous = await client.post(
-                "/api/mcp",
+                "/mcp",
                 json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
                 headers=MCP_HEADERS,
             )
@@ -130,7 +130,7 @@ async def test_mcp_endpoint(
             assert anonymous.headers["www-authenticate"].startswith("Bearer")
 
             bearer = await client.post(
-                "/api/mcp",
+                "/mcp",
                 json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
                 headers={**MCP_HEADERS, "authorization": f"Bearer {token}"},
             )

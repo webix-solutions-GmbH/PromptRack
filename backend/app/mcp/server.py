@@ -154,9 +154,11 @@ from app.services.tool_config import ToolConfigError, assert_tool_config, normal
 logger = logging.getLogger(__name__)
 
 #: Where the endpoint lives. One path, registered as a plain route on the
-#: FastAPI app (not a mount), so `POST /api/mcp` is answered directly instead of
-#: redirecting to `/api/mcp/` the way a `Mount` would.
-MCP_PATH = "/api/mcp"
+#: FastAPI app (not a mount), so `POST /mcp` is answered directly instead of
+#: redirecting to `/mcp/` the way a `Mount` would. The path is shared with the
+#: SPA's own `/mcp` settings route, which is why the route is POST-only — see
+#: `mount_mcp`.
+MCP_PATH = "/mcp"
 
 SERVER_NAME = "promptrack"
 SERVER_VERSION = "0.1.0"
@@ -1804,12 +1806,19 @@ async def mcp_lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def mount_mcp(app: FastAPI) -> None:
-    """Registers `POST /api/mcp` on the FastAPI app.
+    """Registers `POST /mcp` on the FastAPI app.
 
-    A plain `Route` rather than `app.mount()`: a mount would only match
-    `/api/mcp/` and answer the documented path with a 307 redirect, which not
-    every MCP client follows on a POST.
+    A plain `Route` rather than `app.mount()`: a mount would only match `/mcp/`
+    and answer the documented path with a 307 redirect, which not every MCP
+    client follows on a POST.
+
+    **POST-only, deliberately.** The SPA has a client-side settings route at the
+    same path, so `GET /mcp` has to reach the catch-all in `app.main` and serve
+    the shell: a browser opening the URL gets the management page, an MCP client
+    POSTs the protocol to it. Starlette answers a path match with the wrong
+    method as `Match.PARTIAL` and keeps looking for a full match, so the
+    catch-all's GET wins instead of this route 405ing it.
     """
     app.router.routes.append(
-        Route(MCP_PATH, endpoint=McpAuthMiddleware(_mcp_asgi_app), name="mcp")
+        Route(MCP_PATH, endpoint=McpAuthMiddleware(_mcp_asgi_app), methods=["POST"], name="mcp")
     )

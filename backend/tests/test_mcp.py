@@ -419,7 +419,7 @@ def _ctx(actor: Actor | None, arguments: dict[str, Any] | None = None) -> Any:
         {
             "type": "http",
             "method": "POST",
-            "path": "/api/mcp",
+            "path": "/mcp",
             "headers": [],
             "query_string": b"",
             "state": state,

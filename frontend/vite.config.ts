@@ -20,6 +20,18 @@ export default defineConfig({
         target: `http://localhost:${API_PORT}`,
         changeOrigin: true,
       },
+      // `/mcp` is two things at one URL: the endpoint an MCP client POSTs the
+      // protocol to, and the SPA's own settings page a browser opens. The
+      // backend draws that line by registering its route POST-only and letting
+      // GET fall through to the SPA catch-all; in dev the proxy has to draw it
+      // instead, since vite would otherwise hand every `/mcp` request to the
+      // backend and the page would never load. Returning a path from `bypass`
+      // serves that file instead of proxying, `undefined` proxies as usual.
+      '/mcp': {
+        target: `http://localhost:${API_PORT}`,
+        changeOrigin: true,
+        bypass: (req) => (req.method === 'GET' ? '/index.html' : undefined),
+      },
     },
   },
 })

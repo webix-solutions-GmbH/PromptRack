@@ -1,4 +1,4 @@
-"""The MCP server this app exposes at `/api/mcp` (see `app.mcp.server`).
+"""The MCP server this app exposes at `POST /mcp` (see `app.mcp.server`).
 
 `app.main` imports exactly these two: the lifespan that runs the streamable
 HTTP session manager, and the function that registers the route.

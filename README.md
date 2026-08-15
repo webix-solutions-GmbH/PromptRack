@@ -15,7 +15,7 @@ RAG — and on what hardware. Any OpenAI-compatible endpoint, local or hosted, i
 | **Model fitness** | Test cases are the customer's real work, not a leaderboard. Rate each answer good / meh / bad against the expected output; the verdict is per job, not in general. |
 | **Hardware sizing** | Every result names the machine that produced it, with TTFT, duration, tokens and tok/s. If a small model does the job, a Mac Mini may be enough — but it has to be measured. |
 | **Agents, not just chat** | A test case can offer tools and really execute them, looping until the model answers, so an invoice agent is evaluated as the agent it will be. |
-| **MCP server** | `POST /api/mcp` — an agent pushes prompts, test cases and runs in from outside and reads the measurements back. The interesting test cases already exist in the repo that defines the job. |
+| **MCP server** | `POST /mcp` — an agent pushes prompts, test cases and runs in from outside and reads the measurements back. The interesting test cases already exist in the repo that defines the job. |
 
 ## What it can test
 
@@ -75,7 +75,7 @@ no usage data.
 ## MCP API
 
 ```bash
-claude mcp add --transport http promptrack https://promptrack.example.com/api/mcp \
+claude mcp add --transport http promptrack https://promptrack.example.com/mcp \
   --header "x-api-key: prk_…" --header "x-customer: Acme GmbH"
 ```
 

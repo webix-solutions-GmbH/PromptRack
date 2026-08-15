@@ -141,7 +141,7 @@ versioning design itself.
   (`require_admin`). There is no client-side route "protection" beyond a
   `router.beforeEach` guard in `frontend/src/router/index.ts` that keeps the SPA from
   rendering a page it cannot use — the API enforces the real boundary.
-- **MCP is mounted in the same process**, not a separate service: `POST /api/mcp`
+- **MCP is mounted in the same process**, not a separate service: `POST /mcp`
   (`backend/app/mcp/server.py`, the official `mcp` Python SDK, FastMCP, streamable HTTP,
   stateless). See "This app as an MCP server" below.
 
@@ -622,16 +622,22 @@ to the next customer.
 
 ### This app as an MCP server
 
-`POST /api/mcp` (`backend/app/mcp/server.py`) lets an agent author the evaluation from
+`POST /mcp` (`backend/app/mcp/server.py`) lets an agent author the evaluation from
 outside: push another project's real prompts and test cases in, start a run, read the
 measurements back — the interesting test cases already exist in other repos.
 
 - **The official `mcp` Python SDK**, FastMCP, streamable HTTP, **stateless** (no session
   id — every POST is independent, which is what lets the auth middleware and the
   workspace precedence chain both be per-request rather than per-connection state).
-  Mounted as a route (`mount_mcp`, `MCP_PATH = "/api/mcp"`) rather than a sub-application,
+  Mounted as a route (`mount_mcp`, `MCP_PATH = "/mcp"`) rather than a sub-application,
   because a mount only matches the path with a trailing slash and would 307-redirect the
-  documented one.
+  documented one. The route is **POST-only**, and that is what lets the path be shared with
+  the SPA's own `/mcp` settings page: Starlette answers a path match with the wrong method
+  as `Match.PARTIAL` and keeps searching, so a browser's `GET /mcp` falls through to the
+  SPA catch-all in `app/main.py` and gets the management page, while an MCP client POSTs
+  the protocol to the same URL. In dev the vite proxy draws the same line the other way
+  round (`frontend/vite.config.ts`: `/mcp` is proxied to the backend except for GET, which
+  is bypassed to `index.html`).
 - **Auth** (`McpAuthMiddleware`, an ASGI middleware wrapping the SDK's own app) reads a
   per-user API token from `x-api-key` before `Authorization: Bearer` (see the Auth
   section above); a session cookie is accepted too. A refusal is a plain HTTP 401 with a

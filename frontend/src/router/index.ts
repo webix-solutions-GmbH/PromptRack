@@ -11,6 +11,7 @@ import PromptEditView from '../views/PromptEditView.vue'
 import TestCasesView from '../views/TestCasesView.vue'
 import TestCaseEditView from '../views/TestCaseEditView.vue'
 import CustomersView from '../views/CustomersView.vue'
+import McpView from '../views/McpView.vue'
 import RunsView from '../views/RunsView.vue'
 import RunNewView from '../views/RunNewView.vue'
 import RunDetailView from '../views/RunDetailView.vue'
@@ -109,6 +110,11 @@ const router = createRouter({
       path: '/workspaces',
       name: 'workspaces',
       component: CustomersView,
+    },
+    {
+      path: '/mcp',
+      name: 'mcp',
+      component: McpView,
     },
     {
       path: '/runs/new',

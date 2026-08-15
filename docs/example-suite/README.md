@@ -29,10 +29,10 @@ Skipping step 1 entirely still leaves 32 of the 38 test cases creatable — only
 
 ## Step 2a: connect the agent
 
-Create an API token: `POST /api/tokens` with `{"name": "example-suite"}`, authenticated by a signed-in session cookie (a dedicated Settings page for this is coming; until then, the browser devtools console on a signed-in tab, or `curl -b cookies.txt`, both work). The response's `token` field is shown exactly once.
+Create an API token on the **Settings → MCP** page — it also hands you the command below with the token and URL filled in. The raw token is shown exactly once.
 
 ```bash
-claude mcp add --transport http promptrack https://your-host/api/mcp \
+claude mcp add --transport http promptrack https://your-host/mcp \
   --header "x-api-key: prk_…" \
   --header "x-customer: Acme GmbH"
 ```

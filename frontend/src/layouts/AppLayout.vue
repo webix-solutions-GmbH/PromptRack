@@ -48,7 +48,10 @@ const sections: NavSection[] = [
   },
   {
     label: 'Settings',
-    items: [{ label: 'Workspaces', to: '/workspaces', icon: 'pi-briefcase' }],
+    items: [
+      { label: 'Workspaces', to: '/workspaces', icon: 'pi-briefcase' },
+      { label: 'MCP', to: '/mcp', icon: 'pi-share-alt' },
+    ],
   },
 ]
 
