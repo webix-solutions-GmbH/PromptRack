@@ -160,6 +160,7 @@ function toggleNavCollapsed() {
 const currentThemeLabel = computed(
   () => themeModeItems.find((item) => item.mode === theme.mode)?.label ?? 'Theme',
 )
+
 </script>
 
 <template>
@@ -168,18 +169,6 @@ const currentThemeLabel = computed(
   </div>
   <div v-else class="app-shell">
     <header class="app-topbar">
-      <!-- Topbar-left is where Linear/GitHub/Sakai put the sidebar toggle, and
-           it has a practical edge over a button inside the sidenav: it never
-           moves when the rail collapses under it. -->
-      <Button
-        icon="pi pi-bars"
-        text
-        severity="secondary"
-        class="nav-collapse-button"
-        :aria-label="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
-        :title="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
-        @click="toggleNavCollapsed"
-      />
       <!-- The 1254px master carries a wide transparent margin that shrinks the
            glyph to a smudge at this size; this copy is trimmed to the artwork
            and resized to 128px tall (2x), 15 KB against the master's 565 KB. -->
@@ -228,17 +217,92 @@ const currentThemeLabel = computed(
           </span>
         </div>
         <div class="nav-spacer" />
-        <Button
-          :icon="theme.resolved === 'dark' ? 'pi pi-moon' : 'pi pi-sun'"
-          :label="navCollapsed ? undefined : currentThemeLabel"
-          text
-          :title="navCollapsed ? currentThemeLabel : undefined"
-          class="theme-toggle-button"
-          aria-label="Change theme"
-          aria-haspopup="true"
-          aria-controls="theme-menu"
-          @click="toggleThemeMenu"
-        />
+        <!-- Just the chevron, sitting at the rail's bottom right above the
+             footer's border; centered like every other icon once collapsed. -->
+        <div class="sidenav-toggle-row">
+          <Button
+            :icon="navCollapsed ? 'pi pi-angle-double-right' : 'pi pi-angle-double-left'"
+            text
+            size="small"
+            severity="secondary"
+            class="sidenav-toggle-button"
+            :aria-label="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
+            :title="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
+            @click="toggleNavCollapsed"
+          />
+        </div>
+        <!-- One coherent footer: an account row (avatar, identity, sign out)
+             and a utility row (theme, GitHub, build version) below a single
+             top border, instead of two separately-bordered blocks. -->
+        <div class="sidenav-footer">
+          <template v-if="!navCollapsed">
+            <div class="footer-account-row">
+              <div class="footer-account-info">
+                <span class="footer-email" :title="auth.user.email">{{ auth.user.email }}</span>
+                <span class="footer-role">{{ auth.user.role }}</span>
+              </div>
+              <div class="footer-spacer" />
+              <Button
+                icon="pi pi-sign-out"
+                text
+                severity="secondary"
+                title="Sign out"
+                aria-label="Sign out"
+                class="footer-icon-button"
+                @click="signOut"
+              />
+            </div>
+            <div class="footer-utility-row">
+              <div class="footer-utility-left">
+                <Button
+                  :icon="theme.resolved === 'dark' ? 'pi pi-moon' : 'pi pi-sun'"
+                  text
+                  severity="secondary"
+                  :title="currentThemeLabel"
+                  aria-label="Change theme"
+                  aria-haspopup="true"
+                  aria-controls="theme-menu"
+                  class="footer-icon-button"
+                  @click="toggleThemeMenu"
+                />
+                <a
+                  href="https://github.com/philphilphil/promptrack"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="PromptRack on GitHub"
+                  class="footer-github-link"
+                >
+                  <i class="pi pi-github" />
+                </a>
+              </div>
+              <span v-if="version" class="footer-version"
+                >v{{ version.version }}<template v-if="version.commit"> · {{ version.commit }}</template></span
+              >
+            </div>
+          </template>
+          <template v-else>
+            <Button
+              :icon="theme.resolved === 'dark' ? 'pi pi-moon' : 'pi pi-sun'"
+              text
+              severity="secondary"
+              :title="currentThemeLabel"
+              aria-label="Change theme"
+              aria-haspopup="true"
+              aria-controls="theme-menu"
+              class="footer-icon-button"
+              @click="toggleThemeMenu"
+            />
+            <Button
+              icon="pi pi-sign-out"
+              text
+              severity="secondary"
+              title="Sign out"
+              aria-label="Sign out"
+              class="footer-icon-button"
+              @click="signOut"
+            />
+          </template>
+        </div>
         <Menu ref="themeMenu" id="theme-menu" :model="themeItems" :popup="true">
           <template #item="{ item, props }">
             <a class="theme-menu-item" v-bind="props.action">
@@ -248,37 +312,6 @@ const currentThemeLabel = computed(
             </a>
           </template>
         </Menu>
-        <div class="nav-section account-section">
-          <span v-if="!navCollapsed" class="account-email" :title="auth.user.email">{{
-            auth.user.email
-          }}</span>
-          <div class="account-row">
-            <span v-if="!navCollapsed" class="account-role">{{ auth.user.role }}</span>
-            <Button
-              :label="navCollapsed ? undefined : 'Sign out'"
-              icon="pi pi-sign-out"
-              text
-              size="small"
-              :title="navCollapsed ? 'Sign out' : undefined"
-              class="sign-out-button"
-              @click="signOut"
-            />
-          </div>
-        </div>
-        <div v-if="version && !navCollapsed" class="build-row">
-          <span class="build-version"
-            >v{{ version.version }}<template v-if="version.commit"> · {{ version.commit }}</template></span
-          >
-          <a
-            href="https://github.com/philphilphil/promptrack"
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="PromptRack on GitHub"
-            class="build-github-link"
-          >
-            <i class="pi pi-github" />
-          </a>
-        </div>
       </nav>
       <main class="app-content">
         <RouterView />
@@ -461,94 +494,109 @@ const currentThemeLabel = computed(
   color: var(--p-primary-color);
 }
 
-/* Sits directly above the account block, styled like a nav item so it reads
- * as part of the same list rather than a floating control. */
-.theme-toggle-button {
-  width: 100%;
-  justify-content: flex-start;
-  gap: 0.6rem;
-  padding: 0.5rem 0.75rem;
-  font-weight: 500;
-  margin-bottom: 0.5rem;
+/* Right-aligned at the rail's bottom, directly above the footer's top
+ * border; centered like every other collapsed-rail icon once collapsed. */
+.sidenav-toggle-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.5rem;
 }
 
-.app-sidenav-collapsed .theme-toggle-button {
+.app-sidenav-collapsed .sidenav-toggle-row {
   justify-content: center;
-  padding: 0.5rem;
 }
 
-.account-section {
-  padding: 0.75rem 0.75rem;
+.sidenav-toggle-button {
+  color: var(--p-text-muted-color);
+}
+
+/* One footer block below the nav list: an account row and a utility row,
+ * padded to match .nav-item's horizontal padding so it reads as part of the
+ * same column rather than a bolted-on panel. */
+.sidenav-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 0.75rem 0;
   border-top: 1px solid var(--p-content-border-color);
-  gap: 0.375rem;
-  margin-bottom: 0;
 }
 
-.app-sidenav-collapsed .account-section {
+.app-sidenav-collapsed .sidenav-footer {
+  align-items: center;
+  gap: 0.5rem;
   padding: 0.75rem 0;
 }
 
-.app-sidenav-collapsed .account-row {
-  justify-content: center;
-}
-
-.account-email {
-  font-size: 0.8125rem;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.account-row {
+.footer-account-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.5rem;
 }
 
-.account-role {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--p-text-muted-color);
-}
-
-.sign-out-button {
-  flex-shrink: 0;
-}
-
-.build-row {
+.footer-account-info {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem 0;
-  font-size: 0.6875rem;
-  color: var(--p-text-muted-color);
+  flex-direction: column;
+  min-width: 0;
 }
 
-.build-version {
+.footer-email {
+  font-size: 0.75rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.build-github-link {
-  display: inline-flex;
-  align-items: center;
+.footer-role {
+  font-size: 0.6875rem;
   color: var(--p-text-muted-color);
-  flex-shrink: 0;
+  text-transform: capitalize;
 }
 
-.build-github-link:hover {
+.footer-spacer {
+  flex: 1;
+}
+
+.footer-icon-button {
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  color: var(--p-text-muted-color);
+}
+
+.footer-utility-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-bottom: 0.75rem;
+}
+
+.footer-utility-left {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.footer-github-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex-shrink: 0;
+  color: var(--p-text-muted-color);
+}
+
+.footer-github-link:hover {
   color: var(--p-text-color);
 }
 
-.nav-collapse-button {
-  margin-right: 0.25rem;
+.footer-version {
+  font-size: 0.6875rem;
   color: var(--p-text-muted-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
