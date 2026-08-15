@@ -625,7 +625,10 @@ function tokenLabel(cell: CompareCellView): string | null {
                   Expected
                 </button>
               </div>
-              <p v-if="row.drift.length > 0" class="drift-note">{{ driftLabel(row.drift) }}</p>
+              <p v-if="row.drift.length > 0" class="drift-note">
+                <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+                <span>{{ driftLabel(row.drift) }}</span>
+              </p>
             </div>
           </th>
           <td v-for="(cell, index) in row.cells" :key="index" class="cell">
@@ -971,14 +974,26 @@ thead .row-header-cell {
   background: var(--pr-task-accent);
 }
 
+/* No box at all: boxed, the note read as a misplaced alert wedged under the
+ * chip strip, and a pill can't hold a sentence that wraps. Amber ink on bare
+ * text is the entire warning — quiet enough to sit with the chips, loud
+ * enough that "this row moved under its runs" isn't missed. */
 .drift-note {
-  margin: 0;
-  padding: 0.25rem 0.5rem;
-  border: 1px solid var(--p-yellow-300, var(--p-yellow-500));
-  border-radius: var(--p-content-border-radius);
-  background: var(--p-yellow-50, transparent);
+  margin: 0.125rem 0 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.3125rem;
   color: var(--p-yellow-700, var(--p-yellow-600));
   font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.drift-note .pi {
+  font-size: 0.625rem;
+  flex-shrink: 0;
+  position: relative;
+  top: 0.0625rem;
 }
 
 .cell {
@@ -1085,6 +1100,13 @@ thead .row-header-cell {
 </style>
 
 <style>
+/* Dark theme flips the drift pill's ink the same way the tinted background
+   flips for free: yellow-700 reads on paper, not on a dark panel. Lives here
+   because a scoped rule cannot see the `.dark` ancestor on <html>. */
+.dark .row-header-cell .drift-note {
+  color: var(--p-yellow-400);
+}
+
 /* The peek popover and dialog teleport to <body>, out of reach of the scoped
    block above, so their sizing and text styles live here, under the two
    classes the template hands them. */
