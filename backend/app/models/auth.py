@@ -4,11 +4,6 @@ derived *from*.
 These are global infrastructure rather than workspace data: a user's active
 workspace is what produces a scope, so these tables cannot themselves be read
 through a scoped repository.
-
-The old app delegated to better-auth (`user` / `session` / `account` /
-`verification`, all with text ids). The rewrite owns its sessions, so the shape
-collapses to the tables below, with the integer keys the rest of the schema
-uses.
 """
 
 from datetime import datetime

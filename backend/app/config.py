@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # Dev fallback so a fresh clone works with nothing else configured —
-    # mirrors the old Node app's DEV_DATABASE_URL and docker/compose.dev.yml.
+    # matches what `docker/compose.dev.yml` serves.
     database_url: str = "postgres://promptrack:dev@127.0.0.1:5433/promptrack"
 
     # Max size of the async connection pool. Must exceed the number of runs
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     oidc_issuer: str | None = None
     oidc_client_id: str | None = None
     oidc_client_secret: str | None = None
-    # Comma-separated, mirroring the old app's `OIDC_SCOPES`.
+    # Comma-separated.
     oidc_scopes: str = "openid,profile,email"
     # The role a *new* OIDC-provisioned account gets. Read through
     # `parse_role` wherever it is used, never trusted verbatim — an
@@ -47,8 +47,7 @@ class Settings(BaseSettings):
     # "development" (the default, matching a fresh clone with nothing else
     # configured) or "production" — the latter is baked into the image at
     # build time by `docker/Dockerfile`'s `ENV`, not set at container start.
-    # Mirrors the old Node app's `NODE_ENV`; used only by
-    # `app.api.mocks.mocks_enabled` today.
+    # Used only by `app.api.mocks.mocks_enabled` today.
     environment: str = "development"
     # Forces the mock LLM / mock MCP routes on even when `environment` is
     # "production" — see `app.api.mocks`. Off by default so a production

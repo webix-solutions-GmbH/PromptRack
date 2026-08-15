@@ -1,21 +1,16 @@
 """Mock LLM + mock MCP endpoints — dev-only test doubles for exercising the
 run executor and the MCP tool loop without real hardware.
 
-Port of `git show legacy-nextjs:src/app/api/mock-llm/chat/completions/route.ts`,
-`git show legacy-nextjs:src/app/api/mock-llm/models/route.ts` and
-`git show legacy-nextjs:src/app/api/mock-mcp/route.ts`. Nothing in this module is
-imported by production code — it exists purely so `app.services.llm` and
-`app.services.tool_loop` can be driven end-to-end from a browser or a script,
-the same role the old app's mocks played (see its CLAUDE.md "Testing"
-section: "verified against the dev server + the mocks", outside the pytest
-suites).
+Nothing in this module is imported by production code — it exists purely so
+`app.services.llm` and `app.services.tool_loop` can be driven end-to-end from
+a browser or a script ("verified against the dev server + the mocks", outside
+the pytest suites — see this repo's CLAUDE.md "Testing" section).
 
-Every route is gated by :func:`mocks_enabled`, mirroring
-`git show legacy-nextjs:src/lib/dev-only.ts`: on in development, off in production
-unless `ENABLE_MOCKS=true` — a 404, not a 403, because in production these
-routes should not appear to exist at all. The gate is checked per request
-(not at router-registration time) so a test can flip it with a plain
-monkeypatch of `get_settings`.
+Every route is gated by :func:`mocks_enabled`: on in development, off in
+production unless `ENABLE_MOCKS=true` — a 404, not a 403, because in
+production these routes should not appear to exist at all. The gate is
+checked per request (not at router-registration time) so a test can flip it
+with a plain monkeypatch of `get_settings`.
 """
 
 from __future__ import annotations

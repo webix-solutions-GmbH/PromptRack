@@ -3,15 +3,14 @@
 // guards, the workspace switcher, role-gated controls) reads this store
 // rather than re-deriving auth state of its own.
 //
-// Contract this is built against (Task 2.1, backend/app/auth/router.py —
-// under construction alongside this task): `GET /api/auth/me` depends on
-// the `current_user` guard and so answers 401 when signed out, with a body
-// shaped `{ user, active_customer, can_write, can_administer }` when
-// signed in. `POST /api/auth/{sign-up,login,logout,switch-customer}` exist
-// per the plan but their response shapes are not specified — this store
-// never depends on them beyond success/failure, and always re-reads
-// `/auth/me` afterward for the canonical state, so a shape mismatch there
-// cannot desync the store.
+// Contract this is built against (backend/app/auth/router.py): `GET
+// /api/auth/me` depends on the `current_user` guard and so answers 401 when
+// signed out, with a body shaped `{ user, active_customer, can_write,
+// can_administer }` when signed in. `POST /api/auth/{sign-up,login,logout,
+// switch-customer}` exist but their response shapes are not specified —
+// this store never depends on them beyond success/failure, and always
+// re-reads `/auth/me` afterward for the canonical state, so a shape
+// mismatch there cannot desync the store.
 //
 // Whether an install still needs its first account is a separate question
 // from who is signed in, and it has its own endpoint: `GET /api/auth/status`

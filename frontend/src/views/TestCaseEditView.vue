@@ -1,16 +1,13 @@
 <script setup lang="ts">
-// Test case create/edit — the port of the old prompt editor
-// (`git show legacy-nextjs:src/components/prompts/prompt-editor.tsx`) under the
-// prompt-kinds terminology: a test case holds no prompt text of its own. It
-// references up to two prompt *assets* by slot — a `system`-kind prompt sent
-// as the system message and a `task`-kind prompt sent at the head of the user
-// message — plus its own `content`, the data half of that user message. It
-// offers any number of toolsets and carries the rubric that never reaches the
-// model.
+// Test case create/edit. Under the prompt-kinds terminology a test case
+// holds no prompt text of its own. It references up to two prompt *assets*
+// by slot — a `system`-kind prompt sent as the system message and a
+// `task`-kind prompt sent at the head of the user message — plus its own
+// `content`, the data half of that user message. It offers any number of
+// toolsets and carries the rubric that never reaches the model.
 //
 // One component handles both routes (`/test-cases/new` and
-// `/test-cases/:id`), same shape as the old editor taking an optional
-// `groupId` for creation — `props.id` absent means create.
+// `/test-cases/:id`) — `props.id` absent means create.
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
@@ -345,8 +342,8 @@ const offeredTools = computed(() =>
 
 const toolsActive = computed(() => form.toolMode !== 'none')
 
-// The same checks the backend's `assert_tool_config` enforces (Task 3.4's
-// `backend/app/services/tool_config.py`), surfaced while the test case is
+// The same checks the backend's `assert_tool_config` enforces
+// (`backend/app/services/tool_config.py`), surfaced while the test case is
 // being written rather than when a save or a run refuses to start.
 const toolError = computed(() => {
   if (!toolsActive.value || toolsLoading.value) return null

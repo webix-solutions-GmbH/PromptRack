@@ -2,11 +2,10 @@
 // The body of one matrix cell: full response, tool-call summary, provenance and
 // the same rating widget the run detail page uses — a matrix cell is a
 // `run_results` row like any other, so rating it here writes through the
-// identical `PATCH /api/results/{id}` endpoint. Port of the old app's
-// `compare-row.tsx` `Cell` — the matrix itself only carries `tool_call_names`
-// (`app/services/compare.py` never freights the full transcript into a cell),
-// so "transcript" here is the same turn/tool-call summary the old compare
-// page showed, not a message-by-message replay.
+// identical `PATCH /api/results/{id}` endpoint. The matrix itself only carries
+// `tool_call_names` (`app/services/compare.py` never freights the full
+// transcript into a cell), so "transcript" here is a turn/tool-call summary,
+// not a message-by-message replay.
 //
 // Rendered inline inside the `<td>` by `MatrixTable`, which mounts it only for
 // a cell that exists — hence a non-nullable `cell` and no `visible` prop.

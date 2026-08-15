@@ -1,14 +1,12 @@
 <script setup lang="ts">
 // The conversation a tool run actually had: assistant turns, the calls they
-// asked for, what each tool returned, and per-turn metrics. Port of
-// `git show legacy-nextjs:src/components/runs/tool-transcript.tsx`.
+// asked for, what each tool returned, and per-turn metrics.
 //
 // Rendered from the stored/streamed transcript rather than re-derived, so it
 // shows what happened even after the toolset behind it has been edited or
 // deleted. `tool_calls` entries are the backend's flat `{id, name,
 // arguments}` (`TranscriptMessage.to_json()` in
-// `backend/app/services/tool_loop.py`) rather than the old app's OpenAI-wire
-// `{id, function: {name, arguments}}` nesting.
+// `backend/app/services/tool_loop.py`).
 import { computed } from 'vue'
 import { formatDuration, formatRate, computeTokensPerSec, formatTokenLabel } from '../../lib/format'
 import { splitThinking } from '../../lib/thinking'

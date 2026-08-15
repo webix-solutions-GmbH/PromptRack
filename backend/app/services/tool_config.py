@@ -5,18 +5,14 @@ selected toolset with any *enabled* tool would quietly turn a tool test into an
 ordinary prompt that measured nothing, and two selected toolsets defining the
 same tool name would only ever let the model see one of the two definitions.
 `assert_tool_config` is the one place that check lives — called from
-`app.api.test_cases` at authoring time, and (unchanged) from run creation
-(Task 4.3) — so a test case saved through this API can never be one a run
-would later refuse.
+`app.api.test_cases` at authoring time, and (unchanged) from run creation —
+so a test case saved through this API can never be one a run would later
+refuse.
 
-Ported from `git show legacy-nextjs:src/lib/tools.ts` (`collectToolNameCollisions`,
-`normalizeMaxTurns`, `DEFAULT_MAX_TURNS`, `MAX_TURNS_LIMIT`) and the two call
-sites that used to duplicate the "no enabled tools" / collision rule:
-`git show legacy-nextjs:src/lib/mcp/tools-authoring.ts`'s `assertToolConfig` (checked
-from toolset refs, before resolving them) and
-`git show legacy-nextjs:src/lib/run-create.ts`'s inline version (checked from an
-already-resolved tool snapshot). This module checks from toolset ids, which
-both callers can produce.
+This is the one place the "no enabled tools" / collision rule lives, checked
+from toolset ids — the one input both `app.api.test_cases` (checked from
+toolset refs, before resolving them) and run creation (checked from an
+already-resolved tool snapshot) can produce.
 
 Kept in `app.services` rather than `app.repos` because it is a rule with a
 database lookup inside it, not a query — the same split `app.services.diff`

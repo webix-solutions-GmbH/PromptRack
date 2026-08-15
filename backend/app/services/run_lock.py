@@ -1,12 +1,10 @@
 """One execution per run, across processes — a Postgres advisory lock.
 
-Ported from `git show legacy-nextjs:src/lib/run-lock.ts`. The lock lives on a
-**dedicated connection held for the whole run**, and that is the point: it dies
-with the connection, so a crashed process releases it exactly the way an
-in-memory set would have vanished (rows left `running` are reclaimed to
-`pending` by the next execution), while more than one app process is still
-safe. A lock *table* would have needed expiry and heartbeats to get the same
-crash semantics.
+The lock lives on a **dedicated connection held for the whole run**, and that
+is the point: it dies with the connection, so a crashed process releases it
+automatically (rows left `running` are reclaimed to `pending` by the next
+execution), while more than one app process is still safe. A lock *table*
+would have needed expiry and heartbeats to get the same crash semantics.
 
 This is the one place outside `app.db` that reaches for the engine rather than
 taking a session from its caller: a session's connection goes back to the pool

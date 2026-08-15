@@ -1,8 +1,7 @@
 """Baseline schema.
 
-The whole schema in one revision: the rewrite starts from an empty database
-(there is no data to preserve), so the old app's migration history collapses
-here rather than being carried across the rename.
+The whole schema in one revision: there is no data to preserve, so there is
+no migration history to carry forward.
 
 Rewritten in place for the prompt-kinds pivot (`prompts.kind`, the test case's
 two prompt slots, the three frozen texts and two version ids on `run_results`)

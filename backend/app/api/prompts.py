@@ -3,10 +3,10 @@ pointer, baseline attribution, restore, and diffs against any two texts.
 
 Prompts hold no credentials (unlike endpoints/toolsets), so the whole surface
 sits at `Writer` for mutation and `CurrentUser` for reads — the content vs.
-credentials split the plan draws for the pivot. `mark_deployed`-equivalent
+credentials split the pivot draws. `mark_deployed`-equivalent
 (`POST /{id}/deploy`) stays reachable from the UI only in the sense that
-nothing here is MCP-specific; the MCP server (Phase 6) simply never mounts a
-`deploy` tool, mirroring the old app's `mark_deployed` being UI-only.
+nothing here is MCP-specific; the MCP server simply never mounts a `deploy`
+tool, keeping deployment a UI-only human claim.
 
 `GET /versions/{version_id}` and `POST /versions/{version_id}/baseline` live
 under this same router rather than nested under `/{prompt_id}/...`: a version

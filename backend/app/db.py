@@ -1,9 +1,9 @@
 """Async SQLAlchemy engine, session factory, and the `get_session` dependency.
 
-One pooled async engine per process. `pool_size` mirrors the old Node app's
-`DATABASE_POOL_MAX`: an executing run holds one connection for its whole
-duration (see the future `run_lock` service), so this must exceed concurrent
-runs plus normal request concurrency.
+One pooled async engine per process. `pool_size` is `settings.database_pool_max`:
+an executing run holds one connection for its whole duration (see the future
+`run_lock` service), so this must exceed concurrent runs plus normal request
+concurrency.
 """
 
 from collections.abc import AsyncIterator

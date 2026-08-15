@@ -2,7 +2,7 @@
 
 No database, no real network: `httpx.MockTransport` stands in for the
 endpoint's OpenAI-compatible endpoint, keeping this in the fast suite next to
-`test_attribution.py` and (in Phase 4) `test_llm.py`.
+`test_attribution.py` and `test_llm.py`.
 """
 
 from __future__ import annotations

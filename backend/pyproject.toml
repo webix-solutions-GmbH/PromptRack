@@ -32,10 +32,9 @@ asyncio_mode = "auto"
 # module-level object built once at import time, and asyncpg connections it
 # opens are bound to whichever loop was running when they were created —
 # reusing one across pytest-asyncio's default per-function loops raises
-# `MissingGreenlet` (the async framework equivalent of the old JS suite's
-# `fileParallelism: false`, which existed because those suites share one
-# database and one client). Harmless for the pure suite, which has no async
-# tests today.
+# `MissingGreenlet` — the integration suites share one database and one
+# client, so they need to run in a single loop. Harmless for the pure suite,
+# which has no async tests today.
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 pythonpath = ["."]

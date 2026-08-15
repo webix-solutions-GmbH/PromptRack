@@ -1,6 +1,5 @@
 // Small formatting helpers shared across views. Grows as later tasks need
-// more (durations, token rates, …) — ported from the old `src/lib/format.ts`
-// only as far as this task needs it.
+// more (durations, token rates, …).
 
 /** ISO 8601 in local time, minutes precision: `2026-08-15 07:07`. */
 export function formatDateTime(value: string | number | Date): string {
@@ -10,8 +9,7 @@ export function formatDateTime(value: string | number | Date): string {
   return `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-/** Compact wall-clock duration: `840ms`, `3.4s`, `1m 12s`. Port of
- * `git show legacy-nextjs:src/lib/format.ts`'s `formatDuration`. */
+/** Compact wall-clock duration: `840ms`, `3.4s`, `1m 12s`. */
 export function formatDuration(ms: number | null | undefined): string {
   if (typeof ms !== 'number' || !Number.isFinite(ms)) return '—'
   if (ms < 1000) return `${Math.round(ms)}ms`

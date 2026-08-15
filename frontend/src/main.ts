@@ -23,8 +23,8 @@ app.use(PrimeVue, {
   },
 })
 // Toasts (discover/test results) and confirm dialogs (destructive actions)
-// are used from Task 3.5 onward — registered globally here rather than per
-// view, same as PrimeVue itself.
+// are registered globally here rather than per view, same as PrimeVue
+// itself.
 app.use(ToastService)
 app.use(ConfirmationService)
 

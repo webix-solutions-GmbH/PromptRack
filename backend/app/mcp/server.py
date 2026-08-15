@@ -6,15 +6,12 @@ read the measurements back — instead of retyping someone else's prompts into
 the web UI by hand. The point is that the interesting test cases already exist
 in other repositories: a customer's own agent repo is where the job is defined.
 
-Ported from `git show legacy-nextjs:src/lib/mcp/*` with the pivot's renames, and with
-the hand-rolled JSON-RPC layer replaced by the official Python SDK's
-`MCPServer` (the ergonomic FastMCP surface). Four things that were code in the
-old server are now the SDK's job: protocol negotiation, `tools/list` schemas
-(derived from each tool's signature), argument validation, and turning a raised
-exception into `isError` tool *content* rather than a JSON-RPC error — which is
-what lets the calling model read the message and fix its arguments, the same
-reasoning `app.services.tool_loop` uses when it feeds a tool failure back to
-the model.
+Built on the official Python SDK's `MCPServer` (the ergonomic FastMCP surface),
+which handles protocol negotiation, `tools/list` schemas (derived from each
+tool's signature), argument validation, and turning a raised exception into
+`isError` tool *content* rather than a JSON-RPC error — which is what lets the
+calling model read the message and fix its arguments, the same reasoning
+`app.services.tool_loop` uses when it feeds a tool failure back to the model.
 
 What stayed ours, because it is policy rather than protocol:
 
@@ -30,8 +27,8 @@ What stayed ours, because it is policy rather than protocol:
   header, then the token's default, then a refusal listing what exists.
 * **The read-only gate** — a viewer's token is refused every writing tool as
   `isError` content, not as a protocol error, for the same reason as above.
-* **Epoch millis on the wire**, matching the old server: `get_run`/`list_runs`
-  already emitted numbers and external agents parse them.
+* **Epoch millis on the wire**: `get_run`/`list_runs` emit numbers, which is
+  what external agents expect to parse.
 
 Deliberately absent, both carried over from the old surface: endpoints,
 toolsets and tools are not writable here (a base URL with an API key and an MCP

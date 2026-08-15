@@ -14,12 +14,11 @@ nothing changes behavior until someone flips a flag in Base.
 
 **Create or adopt, never blindly insert.** `customers_name_lower_idx` is unique
 on `lower(name)`, so an insert would simply fail on an install that already has
-a workspace called "Base" — and there is one: `backend/scripts/split_base_
-workspace.py` has already run against the user's imported data and moved the
-reusable baseline suite into a workspace of exactly that name. Its id is
-whatever the data holds, never an assumed 1, and it is not empty: it owns
-groups, cases, prompts and toolsets, which is why nothing here or in the app
-may assume Base is infrastructure-only.
+a workspace called "Base". This migration therefore adopts one matched
+case-insensitively by name and only creates it when absent. Its id is whatever
+the data holds, never an assumed 1, and it may not be empty: an adopted Base can
+already own groups, cases, prompts and toolsets, which is why nothing here or in
+the app may assume Base is infrastructure-only.
 
 `downgrade()` drops the three columns and **leaves the workspace in place**. By
 the time it runs Base may own rows, and a workspace delete is `RESTRICT`-guarded

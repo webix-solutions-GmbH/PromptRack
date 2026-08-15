@@ -1,8 +1,6 @@
 """Executing a run: every still-pending row, one after the other.
 
-Port of `git show legacy-nextjs:src/lib/run-executor.ts`. Four invariants carried
-over unchanged, because they are what makes an interrupted run recoverable
-rather than corrupt:
+Four invariants make an interrupted run recoverable rather than corrupt:
 
 * **One execution per run**, across processes — a Postgres advisory lock
   (:mod:`app.services.run_lock`) held on its own connection for the whole run.

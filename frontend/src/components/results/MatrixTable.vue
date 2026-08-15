@@ -1,10 +1,9 @@
 <script setup lang="ts">
 // The comparison matrix itself: test cases as rows, one column per selected
-// run (run mode) or model (model mode). Port of the old app's
-// `compare-row.tsx` table body, back to that file's inline layout after the
-// dialog it briefly used turned out to defeat the point of a matrix: a modal
-// can only ever show one cell, so comparing two models' answers to the same
-// test case meant opening, closing and remembering.
+// run (run mode) or model (model mode). Every cell renders inline rather than
+// behind a dialog: a modal can only ever show one cell, so comparing two
+// models' answers to the same test case would mean opening, closing and
+// remembering.
 //
 // Every row is open, always, and open means *fully*: a response renders at
 // its natural height with no inner scrollport, so reading a long answer is

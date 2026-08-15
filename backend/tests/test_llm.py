@@ -1,9 +1,8 @@
 """`app.services.llm` — SSE parsing, metric math and the HTTP client.
 
-A direct port of `git show legacy-nextjs:src/lib/llm.test.ts`: every fixture there
-encodes a provider quirk this client exists to absorb (where usage arrives,
-how tool-call fragments are keyed, where a network read may cut a line), so
-each of them keeps a test here. No database and no socket — the stream
+Every fixture here encodes a provider quirk this client exists to absorb
+(where usage arrives, how tool-call fragments are keyed, where a network read
+may cut a line). No database and no socket — the stream
 fixtures are replayed through `consume_chat_completion_stream` with a fake
 clock, and `stream_chat` is exercised through `httpx.MockTransport`, the same
 seam `tests/test_discovery.py` uses.

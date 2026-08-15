@@ -16,7 +16,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
 #: Refused shorter, in the request schema. Long-and-simple beats
-#: short-and-clever; the old app used the same floor.
+#: short-and-clever.
 MIN_PASSWORD_LENGTH = 12
 
 _hasher = PasswordHasher()

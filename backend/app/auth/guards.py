@@ -9,8 +9,7 @@ The workspace lives here too, because it is derived from the same identity:
 :data:`CurrentScope` resolves the signed-in user's active customer into the
 :class:`~app.scope.Scope` every repository function demands. That keeps
 :mod:`app.scope` itself free of the session and the database, so the pure test
-suite can import it — the split the old app made between ``src/db/scope.ts`` and
-``src/lib/workspace.ts``.
+suite can import it.
 
 A refusal is a JSON body with a ``message``, which is the envelope the frontend
 client reads (see the handlers in :mod:`app.main`).

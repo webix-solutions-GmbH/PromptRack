@@ -1,10 +1,8 @@
 <script setup lang="ts">
 // One test case's result inside a run: its frozen inputs, its outcome, its
-// manual verdict. Port of `git show legacy-nextjs:src/components/runs/result-card.tsx`,
-// renamed for the pivot's terminology (prompt -> test case) and carrying what
-// the old app never had: the run's **three** frozen texts shown apart — the
-// system prompt, the task prompt and the case's own content — each prompt with
-// its own attribution badge (spec §"Attribution surfaced"). Reading the three
+// manual verdict. The run's **three** frozen texts show apart — the system
+// prompt, the task prompt and the case's own content — each prompt with its
+// own attribution badge (spec §"Attribution surfaced"). Reading the three
 // columns and never the transcript is deliberate: `transcript_json` records the
 // *assembled* messages, which cannot say which half came from where.
 import { computed } from 'vue'

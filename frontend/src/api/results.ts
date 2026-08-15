@@ -1,6 +1,6 @@
 // `/api/results/matrix` — the comparison matrix, both pivots, in one payload.
 // Built directly against `backend/app/api/results.py` and the dataclasses in
-// `backend/app/services/compare.py` (Task 5.1, already landed), so every
+// `backend/app/services/compare.py`, so every
 // field below is read off those files rather than assumed. The response
 // carries no "other pivot" fields as absent — they come back as empty
 // arrays/lists — so a client can switch modes without branching on presence.
@@ -216,7 +216,7 @@ export const resultsApi = {
     // `runs`/`group` accept a single comma-joined value server-side
     // (`app.services.compare.parse_id_list`); `models` must stay repeated
     // params since a model id is free-form text that must never need
-    // escaping (mirrors the old app's query contract).
+    // escaping.
     if (query.runs && query.runs.length > 0) params.set('runs', query.runs.join(','))
     for (const key of query.models ?? []) params.append('models', key)
     if (query.group && query.group.length > 0) params.set('group', query.group.join(','))

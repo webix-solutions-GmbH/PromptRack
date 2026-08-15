@@ -2,9 +2,8 @@
 
 Mirrors `tests/test_passwords.py`'s split: the pure half of tokens lives here
 (minting, hashing, the display prefix, and `presented_token`'s header
-precedence); `resolve_token` itself needs a database and is exercised once the
-MCP endpoint (Phase 6) wires it up end to end, the same way the old app left
-`resolveToken` to its integration suite.
+precedence); `resolve_token` itself needs a database and is exercised in the
+integration suite instead.
 """
 
 from starlette.datastructures import Headers

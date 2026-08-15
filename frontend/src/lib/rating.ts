@@ -1,7 +1,6 @@
-// The manual rating vocabulary, in one place. Port of
-// `git show legacy-nextjs:src/lib/rating.ts` — the wire values are unchanged
-// (`good` / `meh` / `bad`), only the styling moved from Tailwind class
-// strings to the small severity/emoji lookup the Vue components below use.
+// The manual rating vocabulary, in one place. The wire values are
+// `good` / `meh` / `bad`; the small severity/emoji lookup below is what the
+// Vue components use for styling.
 //
 // `meh` is the middle verdict: the response is not wrong, but it is not one
 // you would ship — often a sign the *test case* needs work rather than the

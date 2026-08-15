@@ -1,7 +1,6 @@
-// Contract this is built against (Task 3.4, backend/app/api/{test_cases,
-// test_groups}.py — not yet landed alongside this task; see the plan's
-// Task 3.4 section and backend/app/repos/test_cases.py + backend/app/models/
-// test_cases.py, which this mirrors field-for-field). Assumed shape:
+// Contract this is built against (backend/app/api/{test_cases,test_groups}.py
+// and backend/app/repos/test_cases.py + backend/app/models/test_cases.py,
+// which this mirrors field-for-field):
 //
 //   GET    /api/test-groups                    -> TestGroup[]   (test_case_count embedded)
 //   POST   /api/test-groups                      TestGroupInput -> TestGroup
@@ -20,9 +19,8 @@
 //                                                   `list_test_cases`)
 //   POST   /api/test-cases                        TestCaseInput -> TestCase
 //   GET    /api/test-cases/{id}                  -> TestCase
-//   PATCH  /api/test-cases/{id}                   Partial<TestCaseInput> -> TestCase (patch semantics,
-//                                                   per the plan's "update_test_case (patch
-//                                                   semantics + post-patch tool-config check)")
+//   PATCH  /api/test-cases/{id}                   Partial<TestCaseInput> -> TestCase (patch
+//                                                   semantics + post-patch tool-config check)
 //   DELETE /api/test-cases/{id}                  -> (204)
 //
 // A test case holds **no prompt text of its own** (prompt-kinds spec): it
@@ -38,8 +36,7 @@
 // `toolset_ids` travels on `TestCase`/`TestCaseInput` directly rather than
 // through a separate link endpoint — `create_test_case`/`update_test_case`
 // are assumed to call `repos/test_cases.py`'s `replace_toolset_links`
-// internally, the same way `createRun`'s snapshot did not need its own tool
-// route in the old app. `assert_tool_config` (`backend/app/services/
+// internally. `assert_tool_config` (`backend/app/services/
 // tool_config.py`) is the server-side authority refusing "no enabled tools"
 // or a duplicate tool name across selected toolsets; `collectToolNameCollisions`
 // in `../lib/tools.ts` mirrors it client-side only for instant feedback while

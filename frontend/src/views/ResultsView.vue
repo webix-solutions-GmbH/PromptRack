@@ -1,10 +1,8 @@
 <script setup lang="ts">
-// Results — the comparison matrix, both pivots. Port of
-// `git show legacy-nextjs:src/app/results/page.tsx` + its `compare-row.tsx` /
-// `model-picker.tsx` / `run-picker.tsx` / `group-filter.tsx`, collapsed into
-// one view since the backend now does all the pivoting server-side
-// (`GET /api/results/matrix`, Task 5.1) and hands back a single payload with
-// the pickers, the matrix and its tallies already agreeing with each other.
+// Results — the comparison matrix, both pivots, one view: the backend does
+// all the pivoting server-side (`GET /api/results/matrix`) and hands back a
+// single payload with the pickers, the matrix and its tallies already
+// agreeing with each other.
 //
 // `?mode=` wins; without it a URL carrying `?runs=` stays in run mode (so a
 // baseline-comparison deep link `?mode=runs&runs=a,b` keeps its pivot),

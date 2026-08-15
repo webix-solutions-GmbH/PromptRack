@@ -1,9 +1,5 @@
 """`create_run_record` against a real Postgres — the snapshot invariant.
 
-Ports `git show legacy-nextjs:tests/integration/run-create.test.ts` onto the pivot's
-names and adds what the two pivots introduced: version **attribution**, and the
-prompt-kinds split that makes it exact.
-
 **The central assertion of the prompt-kinds spec lives here**: a run created
 from a test case with both slots filled freezes **three texts** — the system
 prompt's draft, the task prompt's draft, and the case's own content — and **two

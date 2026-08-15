@@ -43,9 +43,8 @@ class ProbeResult:
 def describe_transport_error(exc: httpx.HTTPError) -> str:
     """A short, human-readable reason for a probe that never got a response.
 
-    httpx raises a distinct exception type per failure mode (unlike undici's
-    single `TypeError` wrapping a `cause` chain, which is what the old app's
-    `describeFetchError` had to dig through), so this is a straight lookup.
+    httpx raises a distinct exception type per failure mode, so this is a
+    straight lookup.
     """
     if isinstance(exc, httpx.TimeoutException):
         return "Connection timed out."

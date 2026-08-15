@@ -33,51 +33,45 @@ cd backend && uv run pytest tests/integration                # throwaway postgre
 cd backend && uv run ruff check .                            # lint
 
 cd frontend && npm run build          # vue-tsc -b && vite build; catches type errors too
-cd frontend && npm run typecheck      # vue-tsc -b, no bundle — see the note below
+cd frontend && npm run typecheck      # vue-tsc -b --force, no bundle — see the note below
 
 cd backend && uv run alembic revision --autogenerate -m "..."  # write a migration from model changes
 ```
+
+`make check` runs lint + the pure suite + typecheck, which is everything a commit should
+pass.
 
 Everything reads `DATABASE_URL` (`backend/app/config.py`, `Settings`, pydantic-settings —
 field names map case-insensitively to env vars). `docker/compose.dev.yml` brings up
 Postgres on `127.0.0.1:5433`; `backend/tests/integration/conftest.py` provisions its own
 throwaway Postgres on `55432` (docker, tmpfs data) unless `TEST_DATABASE_URL` is set, so
-the integration suite never touches the dev database — it applies the committed
-migrations to that database itself and tears the container down again once the suite
-finishes. `.env.example` at the repo root
-documents every variable (`app/config.py`'s `Settings`, pydantic-settings, reads a `.env`
-file plus the process environment); every field has a working dev default, so a fresh
-clone runs with no `.env` at all until you need to change something.
+the integration suite never touches the dev database — it applies the committed migrations
+to that database itself and tears the container down again once the suite finishes.
+`.env.example` at the repo root documents every variable; every field has a working dev
+default, so a fresh clone runs with no `.env` at all until you need to change something.
+`DATABASE_POOL_MAX` (default 10) has to exceed the number of runs that can execute
+concurrently plus normal request concurrency, because **an executing run holds one
+connection for its whole duration**.
 
 Migrations are committed under `backend/alembic/versions/`. `alembic revision
 --autogenerate` compares the SQLAlchemy models to the database and writes a migration —
 read it before committing: autogenerate does not reliably infer a *rename* (it will drop
-and recreate a column instead), so a rename needs the generated file hand-edited into a
-`op.alter_column`/`op.rename_table` the same way `drizzle-kit generate` needed a real
-terminal for the equivalent case in the old stack.
+and recreate a column instead), so a rename needs the generated file hand-edited into an
+`op.alter_column`/`op.rename_table`.
 
 Git: default branch is `main`. One remote: `origin` is GitHub
-(`philphilphil/PromptRack`, private, renamed from `modelfit`; note the capitalisation —
-the lowercase URL only resolves through GitHub's redirect). `rewrite` (the branch this
-rewrite was developed on, now a few commits behind `main`) and `platform-evolution` (an
-unmerged line of further work) still exist alongside `main`. The `master` branch — the
-retired Next.js/TypeScript implementation "This is a rewrite" below describes as a
-`git show`-able reference — no longer exists as a ref, but its commits are not lost: the
-rewrite was built on top of the old app in place, so `master`'s last commit, `be8ad76`, is
-an ancestor of `main` and its tree is still readable with `git show be8ad76:<path>` in any
-clone. It is also tagged `legacy-nextjs` locally (deliberately not pushed), so `git show
-legacy-nextjs:<path>` is the convenient form in this checkout — same commit, just a
-friendlier name that only exists here.
+(`philphilphil/PromptRack`, private; note the capitalisation — the lowercase URL only
+resolves through GitHub's redirect).
 
 ## What this is
 
-**PromptRack** (formerly modelfit) answers two questions for a consultancy that sells AI
-solutions to businesses: **which model is good enough for this customer's actual job**,
-and **what hardware that takes**. Not a leaderboard score — the customer's real work,
-loaded in as test suites: an invoice-processing agent, document and data extraction,
-structured extraction from business correspondence, MCP tool calls against the company's
-own RAG. The suites are the specification of the job, and the app's answer is a fitness
-verdict per model on *those* test cases, never a general ranking.
+**PromptRack** answers two questions for a consultancy that sells AI solutions to
+businesses: **which model is good enough for this customer's actual job**, and **what
+hardware that takes**. Not a leaderboard score — the customer's real work, loaded in as
+test suites: an invoice-processing agent, document and data extraction, structured
+extraction from business correspondence, MCP tool calls against the company's own RAG. The
+suites are the specification of the job, and the app's answer is a fitness verdict per
+model on *those* test cases, never a general ranking.
 
 The second question is sizing, and it is why every result names the **endpoint** that
 produced it (a base URL plus free-text hardware notes): if a small model does the job, a
@@ -90,9 +84,8 @@ model — and the app exists to find where that line falls. Workspaces are per *
 engagement**, which is the whole reason they exist: one engagement's prompts and runs stay
 out of another's. Endpoints and toolsets are the deliberate exception — they are the two
 things that hold credentials rather than an engagement's own work product, so they can be
-registered once, in a master workspace named "Base", and shared read-only into every
-engagement instead of duplicated (and left stale) per customer; see "Customer workspaces"
-below.
+registered once, in a shared workspace named "Base", and read into every engagement
+instead of duplicated (and left stale) per customer; see "Customer workspaces" below.
 
 Mechanically, multi-user and multi-workspace: author test cases (grouped, optionally with
 expected output — the rubric), run them sequentially against an endpoint,
@@ -112,24 +105,6 @@ swap's regression check is then: open the baseline version's Verify link, run th
 test cases against the new model, and compare against the baseline run in `/results`.
 See "Prompt versioning" below.
 
-### This is a rewrite
-
-The app used to be a Next.js/TypeScript/Drizzle monolith, referenced below as "the old
-app". `main` (developed on the now-superseded `rewrite` branch) is a from-scratch rewrite
-to FastAPI + SQLAlchemy + Vue, done alongside a domain-model pivot: `system_prompts` →
-`prompts` (the versioned asset), the old `prompts` (input + expected output) →
-`test_cases`, `prompt_groups` → `test_groups`, `prompt_toolsets` → `test_case_toolsets`.
-Old code is kept only as a *behavioral* reference, not a structural one, readable via
-`git show legacy-nextjs:<path>` rather than checked out into this tree — `legacy-nextjs`
-is the locally-tagged commit `be8ad76`, the old app's last commit before the rewrite
-deleted `src/` (see the Git paragraph above for why the tag, not a branch name, is what
-resolves it now). Every service module that ports old logic says so in its docstring with
-the exact old path via that tag (e.g. `Port of git show legacy-nextjs:src/lib/llm.ts`),
-which is the fastest way to find the reference for anything below. See
-`docs/superpowers/plans/2026-08-13-rewrite-fastapi-vue.md` for the phased implementation
-plan and `docs/superpowers/specs/2026-08-13-prompt-versioning-pivot-design.md` for the
-versioning design itself.
-
 ## Architecture
 
 - **Backend**: FastAPI + SQLAlchemy 2.0 (async, `asyncpg`) + Alembic + Pydantic v2, on
@@ -138,11 +113,9 @@ versioning design itself.
   `backend/app/models/` is the single source of truth for the schema (one module per
   domain area: `customers`, `endpoints`, `prompts`, `test_cases`, `toolsets`, `runs`,
   `auth`); `alembic revision --autogenerate` writes migrations from it.
-  - Enum-ish columns are `Text` + a Python `Literal`, not a Postgres enum — same reasoning
-    as the old app's `text('x', { enum: [...] })`: adding a rating or status value needs
-    no migration.
-  - `tokens_per_sec` is `Double` (float8), matching the old app's deliberate avoidance of
-    a 4-byte float that would round every value.
+  - Enum-ish columns are `Text` + a Python `Literal`, not a Postgres enum: adding a
+    rating, status or kind value needs no migration.
+  - `tokens_per_sec` is `Double` (float8) — a 4-byte float would round every value.
 - **Frontend**: Vue 3 + Vite + PrimeVue 4 + Pinia, an SPA against the FastAPI API.
   `frontend/src/api/client.ts` is the thin `fetch` wrapper every `src/api/*.ts` module
   uses; it throws `ApiError { status, message }` from the envelope
@@ -160,6 +133,13 @@ versioning design itself.
   (`require_admin`). There is no client-side route "protection" beyond a
   `router.beforeEach` guard in `frontend/src/router/index.ts` that keeps the SPA from
   rendering a page it cannot use — the API enforces the real boundary.
+- **Where a preference lives is a decision, not a default.** The active workspace is a
+  column on the user row (`users.active_customer_id`) because it must be unforgeable and
+  survive a session refresh; the dark/light theme is `localStorage`
+  (`frontend/src/stores/theme.ts`) because it is a per-*device* preference and the same
+  person can reasonably want dark at home and light at work. Its `STORAGE_KEY` must stay
+  byte-identical to the key the inline script in `frontend/index.html` reads, which sets
+  the class before the bundle loads to avoid a flash of the wrong theme.
 - **MCP is mounted in the same process**, not a separate service: `POST /mcp`
   (`backend/app/mcp/server.py`, the official `mcp` Python SDK, FastMCP, streamable HTTP,
   stateless). See "This app as an MCP server" below.
@@ -190,20 +170,20 @@ before anything is written, and the probe is a network call that must never hold
 transaction open. Only the three writes — the run row, all of its `run_results` in one
 multi-row insert, the `endpoint_models` upsert — are one unit
 (`app.repos.scoped.transaction`, a `SAVEPOINT` if the caller is already inside one), so a
-crash between them can no longer leave a run with no test cases in it, which Resume would
-have reported as finished.
+crash between them cannot leave a run with no test cases in it, which Resume would report
+as finished.
 
 The line between frozen and live is **content vs. credentials**: test-case text, tool
 definitions and a manual tool's canned response travel with the run; an endpoint's
 `base_url`/`api_key` and a toolset's `mcp_url`/headers are read live at execution time so
 a moved endpoint doesn't break Resume.
 
-### Prompt versioning (the pivot)
+### Prompt versioning
 
 `prompts.content` is the mutable **draft** — what the editor writes to on every save, no
-version created. Every prompt text in the app is one of these rows: a test case holds no
-prompt text of its own (see "Prompt kinds and message assembly"), so a suite's ~20 prompts
-are ~20 versioned assets rather than one asset and nineteen free-text fields.
+version created. **Every prompt text in the app is one of these rows**: a test case holds
+no prompt text of its own (see "Prompt kinds and message assembly"), so every instruction
+a suite sends is a named, versioned asset rather than an anonymous free-text field.
 `prompt_versions` is the immutable history: a child of `prompts`
 (`prompt_id` **CASCADE** — history dies with the asset, but every past run keeps its own
 snapshot regardless), never edited or deleted individually, `version` sequential per
@@ -220,7 +200,7 @@ that follow from that, both inside repository functions so no call site can forg
 - **`assert_prompt_slot(scope, session, prompt_id, kind)`** does same-workspace and
   right-kind in **one** read, and returns the row (which is what lets the caller check
   "does this case have a user message at all" without a second query). A `None` id is a
-  valid empty slot, so the four call sites carry no `if`. The two refusals are deliberately
+  valid empty slot, so the call sites carry no `if`. The two refusals are deliberately
   distinct: a prompt from another workspace is `CrossCustomerError` → 404, a prompt of the
   wrong kind is `PromptSlotError` → 400, because "no longer exists in this workspace" would
   be a lie about a row sitting right there.
@@ -228,8 +208,8 @@ that follow from that, both inside repository functions so no call site can forg
   (`PromptKindChangeError` → 409, raised inside the shared `update_prompt` patcher before
   the UPDATE, so a refused request writes nothing at all). The alternative — silently
   relocating that text from the system message to the head of the user message for every
-  case that uses it — is the invisible wire-format change the kinds pivot exists to
-  eliminate. Unreferenced, the kind changes freely.
+  case that uses it — is exactly the invisible wire-format change kinds exist to prevent.
+  Unreferenced, the kind changes freely.
 
 Versioning machinery is indifferent to kind: commit, restore, diff, deployed and baseline
 work identically for both.
@@ -262,11 +242,9 @@ work identically for both.
   attribution, computed after the fact by `match_version(draft_text, versions)` inside the
   existing scoped read, matching **newest first** so a revert (a new commit whose content
   equals an older version) attributes to the new commit, not the old one.
-- **Attribution is now exact.** The text sent *is* `prompt.content` verbatim, so
-  `match_version` compares against what went on the wire. Before the kinds pivot a test
-  case could splice its own text into the referenced prompt, and the version id was computed
-  from the prompt alone — every such run was attributed to a version whose text was never
-  sent. There is no derived prompt text left for a version id to lie about.
+- **Attribution is exact.** The text sent *is* `prompt.content` verbatim, so
+  `match_version` compares against what went on the wire. There is no derived prompt text
+  anywhere for a version id to lie about, and nothing may reintroduce one.
 - **Diff**: `backend/app/services/diff.py`'s `unified_diff` (stdlib `difflib`, no Monaco
   or `vue-diff` dependency) renders a version against the draft, the deployed version, or
   any other version. `GET /api/prompts/{id}/diff?from=&to=` accepts a version id or the
@@ -285,12 +263,12 @@ work identically for both.
 ### Data access — the Scope pattern
 
 No page, action, route handler or MCP tool touches `app.db`'s session-independent engine
-or the `Pool` directly outside `backend/app/db.py`, `app/services/run_lock.py` (needs the
-engine itself for a Postgres advisory lock, on its own connection — see "Run execution"),
-and `app/auth/sessions.py` / `tokens.py` / `users.py`, which own the auth tables a `Scope`
-is derived *from* and so cannot themselves be read through a scoped repository. Every
-other query goes through a repository function in `backend/app/repos/*` whose functions
-all take a `Scope` (`backend/app/scope.py`) as their first argument.
+directly outside `backend/app/db.py`, `app/services/run_lock.py` (needs the engine itself
+for a Postgres advisory lock, on its own connection — see "Run execution pipeline"), and
+`app/auth/sessions.py` / `tokens.py` / `users.py` / `invites.py`, which own the auth tables
+a `Scope` is derived *from* and so cannot themselves be read through a scoped repository.
+Every other query goes through a repository function in `backend/app/repos/*` whose
+functions all take a `Scope` (`backend/app/scope.py`) as their first argument.
 
 `Scope` is a frozen dataclass that can only be constructed by one of three functions
 (an `InitVar` key guard raises on any other construction path):
@@ -316,17 +294,18 @@ the one place a transaction leaves this layer: it hands a nested-safe context ma
 which wraps each test) to callers like `create_run_record` that need several writes to be
 atomic without knowing where the request's own transaction boundary is.
 
-**`visible_where` is `scope_where`'s read-only twin**, added because endpoints and toolsets
-becoming shareable made "what may I see" and "what may I write to" stop being the same
-question. `scope_where` stays exactly the ownership predicate it always was — every
-`UPDATE`, `DELETE` and `scope_values` insert still asks it, unchanged — and `visible_where`
-ORs in `is_global` on top of it, but **only** for `Endpoint` and `Toolset`; for every other
-root table it is `scope_where` verbatim. `scope_through_parent` takes the same opt-in via
-a `visible: bool = False` keyword, so a global endpoint's `endpoint_models` and a global
-toolset's `tools` come along with a parent a workspace can see but does not own.
-`where_visible` is `where_scoped`'s counterpart, spelled as its own function rather than a
-flag so a call site states which of the two questions it is asking and the shared-row
-surface stays a grep away (`where_visible(` across `backend/app/repos/`).
+**`visible_where` is `scope_where`'s read-only twin**, because endpoints and toolsets being
+shareable makes "what may I see" and "what may I write to" two different questions.
+`scope_where` is exactly the ownership predicate — every `UPDATE`, `DELETE` and
+`scope_values` insert asks it — and `visible_where` ORs in `is_global` on top of it, but
+**only** for `Endpoint` and `Toolset` (the `_SHAREABLE` map in `app/scope.py`); for every
+other root table it is `scope_where` verbatim. `scope_through_parent` takes the same opt-in
+via a `visible: bool = False` keyword, so a global endpoint's `endpoint_models` and a global
+toolset's `tools` come along with a parent a workspace can see but does not own — and a
+*write* must never pass it, since a shared parent's children are still only editable where
+the parent lives. `where_visible` is `where_scoped`'s counterpart, spelled as its own
+function rather than a flag so a call site states which of the two questions it is asking
+and the shared-row surface stays a grep away (`where_visible(` across `backend/app/repos/`).
 
 **The failure direction is deliberate and load-bearing: forgetting to opt into
 `visible_where` must only ever cost a feature, never leak a workspace.** A read path that
@@ -335,6 +314,10 @@ missing feature. The alternative design, a permissive default that writes opt ou
 turn that identical omission into cross-workspace disclosure instead, which is why
 `visible_where` is opt-in everywhere and will never become the default — the same reasoning
 that keeps `system_scope` a grep-able, explicit call rather than an implicit state.
+
+A system scope still gets `None` from `visible_where`: "every workspace" already includes
+the global rows, and narrowing it there would make the escape hatch see less than an
+ordinary scope does.
 
 `app.models` stays importable everywhere — API response models legitimately reference ORM
 types. Only the session/engine handle is restricted.
@@ -347,12 +330,12 @@ endpoints — i.e. base URLs with API keys — from mixing with another's.
 
 - The five root tables (`endpoints`, `prompts`, `toolsets`, `test_groups`, `runs`) carry
   `customer_id NOT NULL`. The child tables (`endpoint_models`, `tools`, `test_cases`,
-  `test_case_toolsets`, `run_results`, and now `prompt_versions`) carry **nothing**: they
-  inherit scope through their parent FK. Cross-root references can only be checked in app
+  `test_case_toolsets`, `run_results`, `prompt_versions`) carry **nothing**: they inherit
+  scope through their parent FK. Cross-root references can only be checked in app
   code — a test case's group, a test case's toolsets, a run's endpoint, a prompt's
   `deployed_version_id`, a version's `baseline_run_id` — via `assert_same_customer`
   (`backend/app/repos/customers.py`), called from inside the repository functions so no
-  call site can forget it. A test case's prompt reference is now **two** of them, one per
+  call site can forget it. A test case's prompt reference is **two** of them, one per
   slot (`system_prompt_id`, `task_prompt_id`), and both go through `assert_prompt_slot`
   (`backend/app/repos/prompts.py`) instead: the workspace check and the kind check are true
   of the same row, so they are one read and one refusal path rather than two that can drift.
@@ -368,11 +351,9 @@ endpoints — i.e. base URLs with API keys — from mixing with another's.
   workspace; `app.auth.guards.active_workspace` writes the resolution back, so a workspace
   archived under a user logs them into the fallback rather than into an empty app.
 - `system_scope(reason)` means "every workspace" — see the Scope section above.
-- **Not yet ported**: the old app rendered a deep link into another workspace (`/runs/42`
-  from a different customer) as a switch notice rather than a 404, via two deliberately
-  unscoped reads (`findRunWorkspace`, `findEndpointWorkspace`) exposing nothing but a
-  workspace name the switcher already lists. Nothing in `frontend/src/views` does this yet
-  — a deep link into the wrong workspace currently surfaces whatever the scoped 404 says.
+- **Known limitation**: a deep link into a row another workspace owns (`/runs/42` while
+  switched to a different customer) surfaces whatever the scoped 404 says. Nothing in
+  `frontend/src/views` renders it as a "switch workspace to see this" notice.
 - **MCP scope precedence**: `customer` argument → `X-Customer` header → the token's
   default → refusal naming both and listing the workspaces. See "This app as an MCP
   server" below.
@@ -400,46 +381,54 @@ layer's refusal needs no role check, only the strict predicate already in place;
 `app/api/endpoints.py` and `app/api/toolsets.py` routes add one explicit check on top of
 that (`_refuse_if_borrowed`, a 403) purely so a write against a borrowed row reads as a
 named refusal rather than the silent no-op `scope_where` alone would produce.
+
 `assert_same_customer` learns the same distinction through one keyword:
-**`allow_global: bool = False`**, widening
-its check from ownership to `visible_where` when passed. It is `True` at exactly two call
-sites — `create_run`'s endpoint reference (`backend/app/repos/runs.py`) and a test case's
-toolset links (`backend/app/repos/test_cases.py`) — because those are the only two
-references that may legitimately name a row another workspace owns; every other call site
-keeps the default and keeps refusing globals, which is what makes the exception list two
-greppable words long. None of this touches the snapshot invariant: a run's
-`endpoint_snapshot` and a result's `tools_snapshot` are copies, so a global row appearing in
-a past run is already immune to Base editing it later.
+**`allow_global: bool = False`**, widening its check from ownership to `visible_where` when
+passed. Every call site that passes it is a reference that may legitimately name a row
+another workspace owns, and the list is short and greppable (`allow_global=True` across
+`backend/app/`):
+
+- `create_run`'s endpoint reference (`app/repos/runs.py`),
+- a test case's toolset links (`replace_toolset_links`, `app/repos/test_cases.py`) and the
+  validating half of the same reference (`assert_tool_config`,
+  `app/services/tool_config.py`) — a stricter check in one would refuse at authoring time
+  exactly what the other allows,
+- the two `endpoint_models` sighting writes (`touch_endpoint_model` and
+  `sync_discovered_models`, `app/repos/endpoints.py`) — a run recording its own model
+  sighting, and the new-run page's page-load probe, both of which would otherwise make a
+  shared endpoint unusable.
+
+Every other call site keeps the default and keeps refusing globals. None of this touches
+the snapshot invariant: a run's `endpoint_snapshot` and a result's `tools_snapshot` are
+copies, so a global row appearing in a past run is already immune to Base editing it later.
 
 Two hazards worth knowing about rather than being surprised by:
 
 - **Deleting a global toolset is guarded, not cascaded.** `test_case_toolsets.toolset_id`
   is `ON DELETE CASCADE`, which is correct while a toolset and its test cases live in one
   workspace and destructive the moment they don't — an ungated delete would silently strip a
-  shared toolset from every engagement's test cases. `delete_toolset`
-  (`backend/app/repos/toolsets.py`) refuses a referenced global toolset and names the
-  damage (which workspaces, how many test cases in each) — the same shape `delete_customer`'s
-  guard established.
+  shared toolset from every engagement's test cases. `_assert_not_borrowed_elsewhere`
+  (`backend/app/repos/toolsets.py`) refuses and names the damage (which workspaces, how many
+  test cases in each); both `delete_toolset` and `update_toolset` (before *un-sharing*) ask
+  it, since they are two doors onto the same cascade.
 - **`endpoint_models` on a global endpoint accumulates rows from every engagement that ran
   against it.** This is intended, not a leak: shared hardware has one shared history, and
   "this box has already served qwen3:32b" is exactly what the next engagement needs to know.
 
-Base itself is not a privileged workspace in any other sense — it holds ordinary groups,
-prompts and test cases too (see the note below), and any user switches into it the normal
-way to author a global row, since there is no separate admin surface for them. It is,
-however, **refused for both deletion and archiving** (`app.api.customers`, a 409 regardless
-of role): archiving it would hide the only place the shared rows can be edited, and every
-scope has to resolve to a workspace, which Base is the one holding the shared
-infrastructure for.
+Base is not a privileged workspace in any other sense — it holds ordinary groups, prompts
+and test cases too, and any user switches into it the normal way to author a global row,
+since there is no separate admin surface for them. It is, however, **refused for both
+deletion and archiving** (`app.api.customers`, a 409 regardless of role): archiving it would
+hide the only place the shared rows can be edited, and every scope has to resolve to a
+workspace.
 
-**Base was created by adopting existing data, not by an empty migration.** By the time this
-shipped, `backend/scripts/split_base_workspace.py` had already run against imported data
-and created a workspace literally named "Base" holding the reusable baseline suite (the
-`General Capabilities` and `Prompt Injection & Instruction Hierarchy` groups, their test
-cases, prompts and three mock toolsets) — see that script's docstring for the history. The
-migration that adds `is_base` therefore **adopts** a workspace already named "Base"
-(matched case-insensitively) rather than inserting a second one, and leaves that
-workspace's existing content untouched.
+Migration `0003_base_workspace_and_globals` **creates or adopts, never blindly inserts**:
+`customers_name_lower_idx` is unique on `lower(name)`, so on an install that already has a
+workspace called "Base" — matched case-insensitively, the same way an MCP caller resolves a
+workspace by name — it flags that one and leaves everything it owns untouched, rather than
+failing on a duplicate insert. Its id is whatever the data holds, never an assumed 1, and
+it is not necessarily empty, which is why nothing in the app may assume Base is
+infrastructure-only.
 
 ### Auth
 
@@ -450,23 +439,43 @@ unrecognised value to `viewer`, never to admin), and the FastAPI dependency guar
 (`guards.py`: `CurrentUser`, `Writer`, `Admin`, `CurrentScope` — see above).
 
 - **Roles**: `admin` / `member` / `viewer`, all semantics in `policy.py`'s two pure
-  predicates. Content vs. credentials is the line: toolset create/update/delete is admin
-  (it holds `mcp_url` + headers), the tools *inside* it are member; endpoints are admin,
-  `POST /api/endpoints/{id}/discover` is member (`/runs/new` posts it on page load for
-  everyone), `POST /{id}/test` stays admin (it exercises the stored API key).
+  predicates, with the vocabulary derived from `app.models.auth.UserRole`'s `Literal` so a
+  role added to the column cannot be missing from `ROLES`. Content vs. credentials is the
+  line: toolset create/update/delete is admin (it holds `mcp_url` + headers), the tools
+  *inside* it are member; endpoints are admin, `POST /api/endpoints/{id}/discover` is member
+  (`/runs/new` posts it on page load for everyone), `POST /{id}/test` and
+  `POST /endpoints/test-connection` stay admin (they exercise a stored or submitted API key).
 - **First account is the administrator, then sign-up closes forever** — `app/auth/router.py`
-  refuses `POST /api/auth/sign-up` once the `users` table is non-empty.
+  refuses `POST /api/auth/sign-up` once the `users` table is non-empty, and takes a lock so
+  two simultaneous bootstrap sign-ups cannot both be stamped `admin`.
+- **Invites are the way in afterwards** (`app/auth/invites.py`, `app/api/invites.py`, all
+  `Admin`): a single-use link, structurally a sibling of `tokens.py` — 32 random bytes
+  prefixed `pri_`, stored as SHA-256, a 12-char display prefix, shown exactly once. An
+  invite holds **no email**; it names a role, and whoever opens the link first supplies
+  their own address. Both user FKs are `SET NULL` so the audit row survives deleting the
+  admin who sent it or the account that redeemed it.
+- **Deactivation is `users.disabled_at`**, nullable with no default — its presence *is* the
+  deactivation, with no boolean beside it to drift from it. Deliberately not `deleted_at`,
+  because deleting a user here is a real `DELETE`. `app/api/users.py` (all `Admin`) is the
+  Users page's surface: list, set role, deactivate, reactivate, delete. Two pure guards in
+  `policy.py` sit in front of the destructive three: `is_self` (a 409 — an admin cannot
+  demote, deactivate or delete their own account here) and `would_remove_last_admin`, one
+  rule for all three, so an install can never lock itself out of having an administrator
+  who can sign in.
 - **API tokens** (`backend/app/auth/tokens.py`, `backend/app/api/tokens.py`): 32 random
   bytes prefixed `prk_`, stored as SHA-256, shown exactly once, a 12-char display prefix.
   A token acts as its owner and carries their role — `presented_token`
   (`app/auth/guards.py`) reads `x-api-key` **before** `Authorization: Bearer`, so a
-  reverse-proxy basic-auth credential and an MCP client's token both fit in one request
-  (see `CLAUDE.local.md`'s production note, if present in your checkout). Ownership is
-  baked into every query; there is no admin override on another user's tokens.
-- **OIDC is optional and generic** (`backend/app/auth/oidc.py`, Authlib): an unset
-  `OIDC_ISSUER` mounts no `/api/auth/oidc/*` routes at all rather than 404ing per-route.
+  reverse-proxy basic-auth credential and an MCP client's token both fit in one request.
+  There is deliberately no customer column on `api_tokens`: a call names its own workspace.
+  Ownership is baked into every query; there is no admin override on another user's tokens.
+- **OIDC is optional and generic** (`backend/app/auth/oidc.py`, Authlib): without
+  `OIDC_ISSUER` **and** `OIDC_CLIENT_ID` the module mounts no `/api/auth/oidc/*` routes at
+  all rather than 404ing per-route. One provider at a time, not a menu.
   `OIDC_DEFAULT_ROLE` (default `member`) is read through `parse_role`, never trusted
-  verbatim.
+  verbatim. Authlib needs `request.session` to carry `state`/`nonce` across the provider
+  round trip, so `app.main` adds Starlette's `SessionMiddleware` — only when OIDC is
+  configured, and unrelated to `app.auth.sessions`.
 - **Frontend**: `frontend/src/stores/auth.ts` (Pinia) holds `user`, `canWrite`,
   `canAdminister`, `setupRequired`; `router.beforeEach` in `frontend/src/router/index.ts`
   is the single enforcement point on the client (optimistic only — the API is the real
@@ -484,14 +493,12 @@ and `expected_output` (the rubric, never sent to the model).
 - `task_prompt_id` → a `kind: "task"` prompt, sent at the **head of the user message**,
   ahead of `content`.
 
-The modelling assumption this replaces — prompt = shared *system* message, test case = user
-message — was never true of real pipelines. The invoice agent's PO judge is one instruction
-and no system prompt; other calls have a framing system prompt *plus* a per-call task
-prompt. Neither was expressible, so both used to land in a test case's own `custom_text`
-field: a prompt with no name, no version history, no deploy pointer and no diff, in an app
-whose thesis is "git for your customers' prompts". `mode` and `custom_text` are **deleted,
-not deprecated** — they existed solely to splice unversioned text into a versioned asset,
-and with two slots there is nothing left to splice.
+Two slots exist because real pipelines use all three shapes and one slot expresses only
+one of them: an invoice agent's PO judge is a single instruction with no system prompt;
+other calls have a framing system prompt *plus* a per-call task prompt; some have only the
+framing. Anything a test case could splice in on its own would be a prompt with no name, no
+version history, no deploy pointer and no diff, in an app whose thesis is "git for your
+customers' prompts" — so there is no such field, and none may be added.
 
 Assembly is `backend/app/services/message_assembly.py`, pure and database-free (the same
 split `diff.py` and `attribution.py` draw — resolving an id into text is a scoped read, the
@@ -516,15 +523,15 @@ caller's job):
 
 Assembly happens at **execution** time from the frozen columns, not at run creation — see
 "Snapshot model" for why the parts stay separate. There is no server-side preview endpoint:
-the editor already fetched both prompts' text, so `POST /api/test-cases/effective-prompt`
-and `frontend/src/lib/effectivePrompt.ts` are gone and the preview is a client-side concat.
+the editor has already fetched both prompts' text, so the preview is a client-side concat.
 
 ### Run execution pipeline
 
 `backend/app/services/llm.py` (raw-`httpx` SSE client, no vendor SDK) →
 `backend/app/services/tool_loop.py` (one to N turns) →
 `backend/app/services/executor.py` (sequential loop over rows) →
-`POST /api/runs/{id}/execute` (NDJSON) → the frontend's run-detail view drives it live.
+`POST /api/runs/{id}/execute` (NDJSON, one event per line — the dataclasses in
+`backend/app/services/run_events.py`) → the frontend's run-detail view drives it live.
 
 - `llm.py` parses SSE tolerant of provider differences (usage in a final empty-choices
   chunk vs. on the last content chunk; chunks split across reads, including mid-JSON tool
@@ -534,21 +541,23 @@ and `frontend/src/lib/effectivePrompt.ts` are gone and the preview is a client-s
   first — a tool-call-only response streams no content. Only connection-level failures
   raise `LlmError`.
 - **Executor invariants** (`app/services/executor.py`, `app/services/run_lock.py`): one
-  execution per run via a Postgres **advisory lock** (`pg_try_advisory_lock` on its own
-  connection, `AUTOCOMMIT`, held for the whole run — it dies with the connection, so a
-  crashed process releases it the same way an in-memory set used to vanish, while more
-  than one app process is safe). `is_run_executing` reads `pg_locks` rather than taking
-  the lock, so asking never accidentally answers. Every result row is persisted the
-  moment it finishes; a row error marks it `error` and the loop continues; disconnect
-  (an explicit `asyncio.Event`, not task cancellation — a cancelled scope cannot safely
-  `await` the row-reset write) resets the in-flight row to `pending`; rows stuck
-  `running` from a crashed process are reclaimed to `pending` at the next execution's
-  start. Run status `failed` is reserved for "every attempted result died at connection
-  level"; partial errors still end `completed`.
-- Execution runs as a **detached background task**, not tied to the request's own task
-  group (Starlette cancels a streaming response's task group on client disconnect, and a
-  cancelled scope cannot safely finish writing the in-flight row back to `pending`) — the
-  route sets a cancellation flag and the executor notices it. Resume picks up remaining
+  execution per run via a Postgres **advisory lock** (`pg_try_advisory_lock`, namespaced
+  under `LOCK_CLASS`, taken on its own connection in `AUTOCOMMIT` and held for the whole
+  run — it dies with the connection, so a crashed process releases it, while more than one
+  app process is still safe; a lock *table* would have needed expiry and heartbeats for the
+  same crash semantics). `is_run_executing` reads `pg_locks` rather than taking the lock,
+  so asking never accidentally answers. Every result row is persisted the moment it
+  finishes; a row error marks it `error` and the loop continues; disconnect (an explicit
+  `asyncio.Event`, not task cancellation — a cancelled scope cannot safely `await` the
+  row-reset write) resets the in-flight row to `pending`; rows stuck `running` from a
+  crashed process are reclaimed to `pending` at the next execution's start (safe precisely
+  because the lock is already held by then). Run status `failed` is reserved for "every
+  attempted result died at connection level"; partial errors still end `completed`.
+- Execution runs as a **detached background task** (`run_in_background`), not tied to the
+  request's own task group: Starlette cancels a streaming response's task group on client
+  disconnect, and inside a cancelled scope every further `await` raises immediately — which
+  is exactly when the executor still has to write the in-flight row back to `pending`. The
+  route sets the cancellation flag and the executor notices it. Resume picks up remaining
   `pending` rows by calling execute again.
 - `tokens_per_sec = completion_tokens / ((duration_ms - ttft_ms) / 1000)` — rate over the
   generation window, not total duration. For a multi-turn tool run the denominator is the
@@ -569,7 +578,7 @@ the one shared function `assert_tool_config`
   verbatim — what keeps a multi-turn test deterministic) or `mcp` (tools discovered from a
   streamable-HTTP MCP server and really executed against it,
   `backend/app/services/mcp_client.py`, the official `mcp` SDK, connections opened
-  per-operation, never pooled). `tools` rows follow the `endpoint_models` precedent:
+  per-operation, never pooled). `tools` rows follow the `endpoint_models` rule:
   discovery upserts and **never deletes** — a tool absent from `tools/list` only flips
   `enabled` false.
 - **A tool failure is never a failed row.** The error text is serialized back to the
@@ -578,25 +587,27 @@ the one shared function `assert_tool_config`
 - The loop stops **before** executing calls it has no turn budget left to use, so a real
   ERP never gets hit for results that could not reach the model. `stopped_reason` is
   `stop` / `definitions_only` / `max_turns`.
-- Metric columns keep the old meaning — `response_text` = final assistant text, `ttft_ms`
-  = first turn's TTFT, `duration_ms`/token columns = sums over model turns only (tool wait
-  time excluded, and lives per call in the transcript). Tool detail is *added alongside*
-  in `transcript_json` / `turns_json` / `turn_count` / `tool_call_count`, all null when
-  `tool_mode = "none"`.
+- Metric columns mean what they do for a one-shot run — `response_text` = final assistant
+  text, `ttft_ms` = first turn's TTFT, `duration_ms`/token columns = sums over model turns
+  only (tool wait time excluded, and living per call in the transcript). Tool detail is
+  *added alongside* in `transcript_json` / `turns_json` / `turn_count` / `tool_call_count`,
+  all null when `tool_mode = "none"`.
 
 ### Results (`/results`): two pivots
 
 `GET /api/results/matrix` (`backend/app/api/results.py`, pure logic in
 `backend/app/services/compare.py`, scoped reads in `backend/app/repos/results.py`) has a
 `mode`: `models` (default) and `runs`. `?mode=` wins; without it a URL carrying `?runs=`
-stays in run mode, so old links keep their view. **One model is a valid selection**
+stays in run mode, so an existing link keeps its view. **One model is a valid selection**
 (`MIN_COMPARE_MODELS = 1`) — the same matrix with a single column is "show me everything
 this model answered", the cheapest review of a model across all of its runs. Run mode
 still needs two, since a single run is already its own detail page.
 
-- **By model** (`model=<endpointId>|<modelId>`, repeated, plus `?group=` to narrow the
-  rows) takes the **live test cases** as rows and fills each cell with that model's
-  **most recent `ok` result**, whichever run produced it. Columns are keyed on endpoint
+- **By model** (`models=<endpointId>|<modelId>`, **repeated** rather than comma-joined,
+  because a model id is free-form text that must never need escaping; plus `?group=`,
+  also repeated, to narrow the rows) takes the **live test cases** as rows and fills each
+  cell with that model's **most recent `ok` result**, whichever run produced it. Columns
+  are keyed on endpoint
   *id* + model, so an endpoint rename doesn't split a column and one model on two boxes
   stays two columns. Archived runs are excluded outright.
 - **By run** (`runs=1,5`) is the only pivot that can put two runs of the *same* model
@@ -605,12 +616,15 @@ still needs two, since a single run is already its own detail page.
 
 Falling back past a **newer failed attempt** must not blank a good older answer, so a
 model-mode cell keeps the newest `ok` row and reports the skipped one
-(`superseded` on the cell). `describe_row_drift` (`app.services.compare`) compares the
-three frozen texts **separately** — "system prompt" / "task prompt" / "test case text" —
-plus `tools_snapshot` / tool mode / tool choice / run params across a row, and in model
-mode each of the three again against the live test case ("… edited since", a part already
-drifting across the row is not additionally reported), naming whatever is not held
-constant, since a difference between cells might be config rather than model. Splitting the
+(`CompareCellView.superseded`). `describe_row_drift` (`app.services.compare`) names
+whatever is *not* held constant across a row, since a difference between cells might be
+config rather than model: the three frozen texts **separately** — "system prompt" / "task
+prompt" / "test case text" — plus expected output, `tools_snapshot`, tool mode, tool choice,
+run params, and max turns once any cell actually executes tools. In model mode each of the
+three texts (and the rubric) is compared again against the live test case ("… edited
+since"); a part already drifting across the row is not additionally reported. Expected
+output sits outside the three because the model never saw it — rewriting the rubric changes
+the standard past results were graded by rather than invalidating them. Splitting the
 prompt parts out is the reading-side payoff of prompt kinds: a cell can say *the task
 prompt changed* instead of merging prompt drift and data drift into one indistinguishable
 "user message differs".
@@ -628,16 +642,20 @@ a rating value needs no migration.
 
 `endpoint_models` records every model ever seen per endpoint and is never deleted from:
 discovery upserts (`currently_loaded` flips false for models absent from `/v1/models`),
-manual adds, and every run (`source: "run"`). An endpoint is a `base_url` + optional
-`api_key` + free-text hardware specs — anything that speaks the OpenAI protocol, whether
-it's a box you own or a hosted API. Live probing is `backend/app/services/discovery.py`
-(`POST /{id}/discover`, member — upserts into `endpoint_models`; `POST /{id}/test`, admin —
-just reports reachability, since it exercises the stored API key).
+manual adds, and every run (`source: "run"`). `source` says how a model was *first*
+learned about, so a later sighting bumps `last_seen_at` and nothing else. An endpoint is a
+`base_url` + optional `api_key` + free-text hardware specs — anything that speaks the
+OpenAI protocol, whether it's a box you own or a hosted API. Live probing is
+`backend/app/services/discovery.py` (`POST /{id}/discover`, member — upserts into
+`endpoint_models`; `POST /{id}/test`, admin — just reports reachability, since it exercises
+the stored API key).
 
-On a **global** endpoint (see "Customer workspaces" above) `endpoint_models` accumulates
+On a **global** endpoint (see "The Base workspace" above) `endpoint_models` accumulates
 across every engagement that has run against it — deliberately: shared hardware has one
 shared history, and that is exactly what makes "this box already served qwen3:32b" useful
-to the next customer.
+to the next customer. The sighting write is an upsert for that reason too: two workspaces
+discovering the same shared box at once (which the new-run page's page-load probe makes
+routine) would otherwise both read no row and both insert.
 
 ### This app as an MCP server
 
@@ -667,61 +685,62 @@ measurements back — the interesting test cases already exist in other repos.
   the row.
 - **`_WRITES`** (a module-level dict built by the `_tool` registration decorator) is the
   single declaration of whether each tool writes: it becomes both the `readOnlyHint`
-  annotation and the gate a viewer's token is refused by, so the two cannot drift apart.
+  annotation and the gate a viewer's token is refused by in `_call`, so the two cannot
+  drift apart — and since `_call` is the only route to a database session, "a viewer's
+  token is refused everything that writes" is impossible to forget.
 - **Everything relatable by name is** (`backend/app/mcp/refs.py`: `RowRef`,
   `parse_row_ref`, `resolve_row_ref`) — group, prompt, toolset, endpoint take a name or an
   id, a numeric string is always an id, and an ambiguous name is refused with a
   "Known: …" list of that workspace's rows.
-- **Every call names a customer workspace** (`backend/app/mcp/customer.py`):
-  `customer` argument → `X-Customer` header → the token's default (always `None` today —
-  `api_tokens` has no customer column yet, chain written out anyway so adding it is one
-  line) → refusal listing the known workspaces. `list_customers` is the one tool that
-  needs no scope, and it's `readOnly` so a viewer's token can orient itself before being
-  refused a write elsewhere.
-- **The 20 tools** (registered in `backend/app/mcp/server.py`, renamed per the pivot):
+- **Every call names a customer workspace** (`backend/app/mcp/customer.py`,
+  `pick_customer_ref`): `customer` argument → `X-Customer` header → the token's default
+  (always `None` today — `api_tokens` has no customer column, and the chain is written out
+  anyway so adding one changes one line and no call site) → refusal listing the known
+  workspaces. Nothing is guessed. `list_customers` is the one tool that needs no scope, and
+  it's `readOnly` so a viewer's token can orient itself before being refused a write
+  elsewhere.
+- **The 20 tools** (registered in `backend/app/mcp/server.py`):
   `list_customers`, `list_endpoints`, `list_prompts`, `create_prompt`, `update_prompt`,
   `commit_prompt`, `list_prompt_versions`, `get_prompt_version`, `set_baseline`,
   `list_test_groups`, `create_test_group` (name-idempotent — a second call returns the
   existing group, `created: false`), `list_test_cases`, `create_test_case`,
   `update_test_case` (patches only the keys present, and re-checks tool config as it will
   be *after* the patch), `create_run`, `execute_run` (fire-and-forget — safe only because
-  the executor already persists every row as it finishes), `get_run`, `get_run_result`,
-  `list_runs`, `set_rating` (refuses a still-pending/running row; omitting `note` leaves
-  an existing one untouched, `"unrated"` clears the rating — JSON-RPC cannot distinguish
-  "absent" from "null" by the time an argument reaches the tool). `mark_deployed` and
+  the executor already persists every row as it finishes), `list_runs`, `get_run`,
+  `get_run_result`, `set_rating` (refuses a still-pending/running row; omitting `note`
+  leaves an existing one untouched, `"unrated"` clears the rating — JSON-RPC cannot
+  distinguish "absent" from "null" by the time an argument reaches the tool, so presence is
+  read off the raw `tools/call` params via `raw_arguments`). `mark_deployed` and
   `delete_test_case`/`delete_prompt` are **deliberately absent** — deploying is a UI-only
-  human claim about a customer's production system, and there is currently no delete
-  surface over MCP at all (see the example suite's note on this for the practical
-  consequence).
+  human claim about a customer's production system, and there is no delete surface over MCP
+  at all.
 - **Prompt kinds on the wire.** `create_prompt` / `update_prompt` take `kind`
   (`"system"` default), `list_prompts` returns it, and `create_test_case` /
   `update_test_case` take `system_prompt` and `task_prompt` — both `RowRef`s resolving by
-  name or id — in place of the deleted `prompt` / `mode` / `custom_text`. `content` is now
-  optional on `create_test_case` (a task prompt can be the whole user message), which is
-  why its JSON-Schema `required` is `{group, title}`. An unrecognised `kind` is **refused**
-  by `_parse_kind`, never coerced — deliberately the opposite of `parse_role`, whose
-  degrade-to-`viewer` is safe because the fallback is the least privileged value; here
-  there is no safe fallback, since guessing would silently move the text between the system
-  message and the user message. A test case reads back both slots twice over: as the
-  referenced asset (`system_prompt` / `task_prompt`, id and name) and as the text those
-  slots hold (`system_prompt_text` / `task_prompt_text`) — the same two key names
-  `get_run_result` uses for the frozen copies, so a case and its result speak one
-  vocabulary. `get_run` / `get_run_result` likewise carry both version ids.
+  name or id. `content` is optional on `create_test_case` (a task prompt can be the whole
+  user message), which is why its JSON-Schema `required` is `{group, title}`. An
+  unrecognised `kind` is **refused** by `_parse_kind`, never coerced — deliberately the
+  opposite of `parse_role`, whose degrade-to-`viewer` is safe because the fallback is the
+  least privileged value; here there is no safe fallback, since guessing would silently move
+  the text between the system message and the user message. A test case reads back both
+  slots twice over: as the referenced asset (`system_prompt` / `task_prompt`, id and name)
+  and as the text those slots hold (`system_prompt_text` / `task_prompt_text`) — the same
+  two key names `get_run_result` uses for the frozen copies, so a case and its result speak
+  one vocabulary. `get_run` / `get_run_result` likewise carry both version ids.
 - **Not writable over MCP**: endpoints, toolsets and tools (a base URL with an API key and
   an MCP server URL are credentials — the app's line is content over the API, credentials
   in the UI), customer workspaces (creating an engagement is a human decision with
   billing behind it), and a prompt's `deployed_version_id` (see "Prompt versioning").
   Versions themselves *are* writable over MCP (`commit_prompt`, `set_baseline`) because
   they are content, not credentials. `list_endpoints` and `create_run`'s `endpoint`
-  argument (renamed from `machine`) see and accept **global** endpoints for free, since
-  both are read paths that already ask `visible_where` — nothing MCP-specific was needed
-  to share them.
+  argument see and accept **global** endpoints for free, since both are read paths that
+  already ask `visible_where` — nothing MCP-specific was needed to share them.
 - **A judge model reading these results is itself injectable.** `get_run_result` returns
-  `system_prompt_text`, `task_prompt_text` and `test_case_text` — three fields now, and for
-  the `Prompt Injection & Instruction Hierarchy` group any of them can carry a live
-  payload. Grade from `expected_output` + `response`, and
-  never let a judge's output pick a tool call. Most of that group needs no judge at all —
-  the rubrics are canary strings and "was this tool called."
+  `system_prompt_text`, `task_prompt_text` and `test_case_text`, and for the
+  `Prompt Injection & Instruction Hierarchy` group any of the three can carry a live
+  payload. Grade from `expected_output` + `response`, and never let a judge's output pick a
+  tool call. Most of that group needs no judge at all — the rubrics are canary strings and
+  "was this tool called."
 
 Tests: `backend/tests/test_mcp.py` (pure — argument coercion via `refs.py`, workspace
 precedence via `customer.py`, dispatch); `backend/tests/integration/test_mcp_api.py`
@@ -730,20 +749,20 @@ exercises the wired-up handler (real Postgres, no server process) via
 
 ### The example suite
 
-`docs/example-suite/` is the standard suite — 3 manual toolsets, 38 test cases in 4
-groups — written as **documentation an agent executes over MCP**, not a script. The split
-inside it is forced by the app's own rule: toolsets are not writable over MCP (they hold
-an MCP URL and headers, i.e. credentials), so `toolsets.md` is instructions for a human
-in the UI and the four group files are for an agent to push in with `create_test_group` /
-`create_prompt` / `create_test_case`.
+`docs/example-suite/` is the standard suite — 3 manual toolsets with 12 tools, 16 prompts
+and 38 test cases in 4 groups — written as **documentation an agent executes over MCP**,
+not a script. The split inside it is forced by the app's own rule: toolsets are not
+writable over MCP (they hold an MCP URL and headers, i.e. credentials), so `toolsets.md` is
+instructions for a human in the UI and the four group files are for an agent to push in
+with `create_test_group` / `create_prompt` / `create_test_case`. Do the toolsets first: six
+test cases reference one by name, and `create_test_case` refuses a tool test whose toolsets
+do not exist or hold no enabled tools.
 
 **Every prompt in the suite is a named asset.** Since a test case holds no prompt text,
-each of the ~20 prompts that used to be a per-case `custom_text` block is now its own
-`create_prompt`, named after the test case it belongs to and referenced by name. They are
-all `kind: "system"` on purpose: that is the channel those texts are sent on today, and
-re-kinding one to `task` would move it into the user message and shift every group-4
-injection result. Re-kinding is a later, deliberate, per-prompt act, not a side effect of
-the pivot.
+each of the 16 prompts is its own `create_prompt`, named after the test case it belongs to
+and referenced by name. They are all `kind: "system"` on purpose: that is the channel those
+texts are sent on today, and re-kinding one to `task` would move it into the user message
+and shift every group-4 injection result. Re-kinding is a deliberate, per-prompt act.
 
 Canned tool responses are written to stay correct *whatever arguments the model
 passes* — `convert_currency` returns a rate rather than a converted amount, so the
@@ -754,13 +773,14 @@ purpose**: there the canned response *is* the attack, because `mock_response` is
 tool-result channel — the one place a real agent meets attacker-controlled text, and the
 one with far less refusal training behind it than the user channel. Two invariants that
 group depends on: every prompt scores task completion *and* injection resistance, and two
-test cases (13, 14) fail on **over-defense** instead — a model that refuses everything
-instruction-shaped scores perfectly on an attack-only suite and is useless on real order
-and invoice correspondence, where "please ignore my previous email" is what customers
-actually write; and `expected_output` is **never sent to the model** (the user message is
-built from the task prompt and `content` alone — `message_assembly.user_message`, never
-touching `expected_output`), which is what lets the rating aids state a payload or a canary
-outright.
+of its fifteen cases (13, 14) fail on **over-defense** instead — a model that refuses
+everything instruction-shaped scores perfectly on an attack-only suite and is useless on
+real order and invoice correspondence, where "please ignore my previous email" is what
+customers actually write (13 tests data that legitimately contains an override, 14 the
+*user* overriding themselves mid-message); and `expected_output` is **never sent to the
+model** (the user message is built from the task prompt and `content` alone —
+`message_assembly.user_message`, never touching `expected_output`), which is what lets the
+rating aids state a payload or a canary outright.
 
 ## Testing
 
@@ -769,17 +789,16 @@ seam that breaks, and no type checker guards it.** Those TypeScript interfaces a
 hand-written descriptions of a Pydantic model; when one drifts, TS still compiles — the
 interface is simply a lie about the wire format, and the failure surfaces as a blank
 table, a 404/405, or a `TypeError` inside a render that takes the whole dialog down with
-it. The rewrite's two halves were built in parallel and drifted in eleven places this
-way (a wrong field name, `diff: string` for a `list[str]`, `PATCH` against a `PUT` route,
-two whole endpoints that were never written, and a `null` credential overwriting a stored
-API key). So: when changing a response model, grep the matching `src/api/*.ts` in the same
-change, and prefer integration tests that assert the **stored column** over ones that
-assert a flag derived from it.
+it. Real examples of the drift this produces: a wrong field name, `diff: string` for a
+`list[str]`, `PATCH` against a `PUT` route, a whole endpoint the frontend called that was
+never written, and a `null` credential overwriting a stored API key. So: when changing a
+response model, grep the matching `src/api/*.ts` in the same change, and prefer integration
+tests that assert the **stored column** over ones that assert a flag derived from it.
 
-`npm run typecheck` was a no-op for exactly this reason and hid the drift: it ran
-`vue-tsc --noEmit` against `frontend/tsconfig.json`, which is `{"files": [],
-"references": [...]}` — no files, so it always exited 0. It runs `vue-tsc -b` now.
-Only `-b` (or `-p tsconfig.app.json`) checks anything in a project-references setup.
+**`npm run typecheck` must run `vue-tsc -b`.** Pointing `vue-tsc --noEmit` at
+`frontend/tsconfig.json` checks nothing at all: that file is `{"files": [],
+"references": [...]}`, so there are no files to check and it always exits 0. Only `-b` (or
+`-p tsconfig.app.json`) checks anything in a project-references setup.
 
 Two suites, split by whether they need a database.
 
@@ -791,23 +810,24 @@ either side, both blank), `test_llm.py` (SSE fixtures per provider style), `test
 `test_attribution.py` (version matching, dirty detection), `test_mcp.py`, `test_scope.py`
 (the branded `Scope`, `combine`, `resolve_active_customer_id` — written db-free
 precisely so it can live here), `test_policy.py`, `test_passwords.py`, `test_tokens.py`
-(the token crypto's pure half — resolving a raw token needs a database),
-`test_discovery.py`, `test_llm_info.py`, `test_mocks.py`, `test_health.py`.
+and `test_invites.py` (the token/invite crypto's pure half — resolving a raw secret needs
+a database), `test_discovery.py`, `test_llm_info.py`, `test_mocks.py`, `test_health.py`,
+`test_version.py`.
 
 `cd backend && uv run pytest tests/integration` (or `make test-integration`) runs
 against the scratch Postgres described above, with a single event loop for the whole
 session (`asyncio_default_fixture_loop_scope = "session"` in `pyproject.toml`) because the
 suites share one database and one engine bound to whichever loop was running at import
-time — the async-framework equivalent of the old Node app's `fileParallelism: false`.
-`tests/integration/conftest.py` truncates every table between tests. Covers what only a
-real database can show: FK cascade/`SET NULL` actions and `Date`/`bool`/float8
+time. `tests/integration/conftest.py` truncates every table between tests. Covers what only
+a real database can show: FK cascade/`SET NULL` actions and `Date`/`bool`/float8
 round-tripping (`test_schema.py`), the snapshot invariant and `create_run_record`'s
 rollback (`test_run_create.py`), the advisory-lock claim (`test_run_lock.py`), the
 executor end-to-end against the mock LLM (`test_executor.py`), cross-workspace isolation
 including the versioning cases and the Base/global-sharing cases
 (`test_workspaces.py::TestGlobals`, `test_versioning.py`), the
 login/session/sign-up-closes flow (`test_auth_flow.py`), and every domain router's CRUD
-(`test_*_api.py`, including `test_endpoints_api.py`).
+(`test_*_api.py`, including `test_endpoints_api.py`, `test_users_api.py` and
+`test_invites_api.py`).
 
 For checking the running app itself (dev server, `http://localhost:5177`) there is a
 dedicated agent account in the local dev database: `claude-dev@example.com` /
@@ -833,9 +853,9 @@ gated by `mocks_enabled()` — dev, or `ENABLE_MOCKS=true` in production; the re
 
 ## Deployment
 
-Docker-related files live under `docker/` (the build context is still the repo root —
-only the files moved): `docker/Dockerfile`, `docker/entrypoint.sh`, `docker/compose.yml`
-(production), `docker/compose.build.yml` (a local-build override) and
+Docker-related files live under `docker/`, but the **build context is the repo root**, not
+`docker/`: `docker/Dockerfile`, `docker/entrypoint.sh`,
+`docker/compose.yml` (production), `docker/compose.build.yml` (a local-build override) and
 `docker/compose.dev.yml` (the dev Postgres already covered under Commands above).
 
 Two-stage `docker/Dockerfile`: `node:22-alpine` builds `frontend/` and only the compiled
@@ -858,15 +878,14 @@ overrides the bundled database with an external one. The app is published on
 `127.0.0.1:8000` by default — change the port mapping or front it with a reverse proxy to
 expose it further.
 
-**Both compose files pin `name: promptrack`.** Without it Compose derives the project
-name from the directory it's invoked from, and the move into `docker/` would otherwise
-rename the project and orphan the existing `promptrack_pgdata` /
-`promptrack-dev-pgdata` volumes on the next `up` — pinning the name is what keeps them
-attached across the move. **Every `compose.yml` command also passes `--env-file .env` and
-is run from the repo root**: Compose derives its project directory from the compose
-file's location, so from `docker/` it would otherwise miss the repo-root `.env` entirely
-and fail on `POSTGRES_PASSWORD`. `compose.dev.yml` needs no `--env-file` — its password
-is hardcoded `dev` and it reads nothing from the environment.
+**All three compose files pin `name: promptrack`.** Without it Compose derives the project
+name from the directory it is invoked from, which would rename the project and orphan the
+existing `promptrack_pgdata` / `promptrack-dev-pgdata` volumes on the next `up`. **Every
+`compose.yml` command also passes `--env-file .env` and is run from the repo root**:
+Compose derives its project directory from the compose file's location, so from `docker/`
+it would otherwise miss the repo-root `.env` entirely and fail on `POSTGRES_PASSWORD`.
+`compose.dev.yml` needs no `--env-file` — its password is hardcoded `dev` and it reads
+nothing from the environment.
 
 `docker/compose.yml` only has an `image:` stanza — it pulls
 `ghcr.io/philphilphil/promptrack:${PROMPTRACK_TAG:-main}` rather than building. Deploy is
@@ -881,10 +900,10 @@ succeed.
 `.github/workflows/docker.yml` builds and pushes the image on every push to `main`, on
 `v*` tags, and on manual dispatch — `linux/amd64` only. It authenticates with the
 built-in `GITHUB_TOKEN` (no configured secret) and tags the image with the branch name,
-`sha-<short>`, and, on a version tag, the semver plus `latest`. The image name is
-hardcoded lowercase (`ghcr.io/philphilphil/promptrack`) rather than interpolated from
-`github.repository`, because that variable is mixed-case (`philphilphil/PromptRack`) and
-GHCR rejects uppercase in image names outright. It passes
+`sha-<short>`, and, on a version tag, the semver (full and `major.minor`) plus `latest`.
+The image name is hardcoded lowercase (`ghcr.io/philphilphil/promptrack`) rather than
+interpolated from `github.repository`, because that variable is mixed-case
+(`philphilphil/PromptRack`) and GHCR rejects uppercase in image names outright. It passes
 `PROMPTRACK_COMMIT=${{ github.sha }}` into the `ARG` the Dockerfile already declares, so
 `GET /api/version` reports the exact commit a running container was built from. It
 deliberately runs no tests before pushing — a known gap, not an oversight, so don't

@@ -36,7 +36,7 @@ app.include_router(api_router, prefix="/api")
 # through the FastAPI guards.
 mount_mcp(app)
 
-# Task 6.3: the production image bakes the built SPA in here as `static/`
+# The production image bakes the built SPA in here as `static/`
 # (`frontend/dist`, copied by the Dockerfile) so one process on one port
 # serves the API, the MCP endpoint and the frontend. In dev this directory
 # never exists — `uv run uvicorn` serves the API only, and `npm run dev`'s

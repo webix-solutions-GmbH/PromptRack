@@ -3,17 +3,13 @@
 Reading an endpoint needs only a signed-in actor (the new-run page needs every
 role to see the list), writing one is `Admin` (it holds an API key), and
 `POST /discover` sits in between at `Writer` — it only reads model ids back,
-and every writer needs it on the new-run page, exactly the split
-`git show legacy-nextjs:src/app/api/machines/[id]/discover/route.ts` and
-`.../test/route.ts` made.
+and every writer needs it on the new-run page.
 
 The stored `api_key` is never round-tripped back to the client: an endpoint view
-carries `has_api_key` instead. That is a deliberate deviation from the old
-Next.js app, which could pre-fill the raw key into a server-rendered `<form>`
-without it ever reaching a browser that could not already see it (the admin
-who loaded the page). A JSON API has no such boundary, so `PUT` treats
-`api_key` as write-only and patch-like: omit it to leave the stored key
-untouched, send `""`/`null` to clear it, send a value to replace it.
+carries `has_api_key` instead. A JSON API has no way to guarantee a raw secret
+only reaches a browser that could already see it, so `PUT` treats `api_key` as
+write-only and patch-like: omit it to leave the stored key untouched, send
+`""`/`null` to clear it, send a value to replace it.
 
 The route handlers here are suffixed `_route` rather than the `_endpoint` every
 other `app/api/*` module uses: this is the one module where "endpoint" is the

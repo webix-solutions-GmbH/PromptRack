@@ -7,11 +7,10 @@ Three things are settled here so no model has to repeat them:
   or alter one by name in a later migration instead of guessing what Postgres
   auto-generated.
 * **Python type -> column type.** `type_annotation_map` is what makes
-  ``Mapped[str]`` a `TEXT` column (the old Drizzle schema used `text`
-  throughout), ``Mapped[datetime]`` a `TIMESTAMPTZ` (server code therefore
-  always holds *aware* datetimes — `withTimezone` in the old schema existed for
-  exactly this reason) and ``Mapped[float]`` a `DOUBLE PRECISION` (`real` would
-  be float4 and would silently round every `tokens_per_sec`).
+  ``Mapped[str]`` a `TEXT` column, ``Mapped[datetime]`` a `TIMESTAMPTZ`
+  (server code therefore always holds *aware* datetimes) and ``Mapped[float]``
+  a `DOUBLE PRECISION` (`real` would be float4 and would silently round every
+  `tokens_per_sec`).
 * **No pg enums.** Enum-ish columns are `Text` annotated with a Python
   ``Literal``: adding a rating or status value stays a code change with no
   migration, and a value written by an older build can still be read back.

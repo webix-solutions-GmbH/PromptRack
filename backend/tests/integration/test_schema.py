@@ -1,7 +1,6 @@
-"""Schema behavior only a real Postgres can show: the FK actions Task 1.1
-declared, and `timestamptz`/`bool`/`double precision` round-tripping through
-asyncpg. Ports `git show legacy-nextjs:tests/integration/schema.test.ts` onto the
-pivot's renamed tables.
+"""Schema behavior only a real Postgres can show: the FK actions the schema
+declares, and `timestamptz`/`bool`/`double precision` round-tripping through
+asyncpg.
 
 Deletions go through the repository layer (`delete_run`, `delete_toolset`,
 …) rather than raw SQL, and every assertion re-reads through a **brand-new**

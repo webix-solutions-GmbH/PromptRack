@@ -1,4 +1,4 @@
-"""Per-user API tokens for the MCP endpoint (`app.mcp`, Phase 6).
+"""Per-user API tokens for the MCP endpoint (`app.mcp`).
 
 Like `app.auth.users`/`app.auth.sessions`, this reads the auth tables
 directly: `api_tokens` is global infrastructure rather than workspace data, so

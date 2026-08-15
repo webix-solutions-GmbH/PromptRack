@@ -1,7 +1,7 @@
 """Alembic environment: async engine, URL from app.config.Settings.
 
 `target_metadata` points at `app.models.base.Base`, the declarative base the
-schema task (1.1) adds — this file needs no edit once that module exists,
+schema is built from — this file needs no edit as models are added,
 `--autogenerate` just starts seeing tables.
 """
 
@@ -13,7 +13,7 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import get_settings
-from app.models.base import Base  # models land in Task 1.1
+from app.models.base import Base
 
 config = context.config
 

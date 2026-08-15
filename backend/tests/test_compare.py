@@ -1,11 +1,8 @@
-"""The results matrix, database-free — ported from
-`git show legacy-nextjs:src/lib/compare.test.ts`.
+"""The results matrix, database-free.
 
-Every case there survives under the pivoted names (`prompts` → `test_cases`,
-the frozen system message → the three frozen texts), because what each one pins
-is a rule about *matching and fallback*, not about what the rows are called:
-which results land in one row, which cell a column shows when several results
-compete, and what a difference between cells is allowed to mean.
+Each case here pins a rule about *matching and fallback*: which results land
+in one row, which cell a column shows when several results compete, and what
+a difference between cells is allowed to mean.
 
 The prompt-kinds pivot adds one thing to the last of those: a row now freezes
 **three** texts — the system prompt, the task prompt and the test case's own

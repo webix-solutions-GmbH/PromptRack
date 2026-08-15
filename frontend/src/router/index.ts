@@ -165,11 +165,8 @@ const router = createRouter({
 // Single enforcement point for "signed in or not" on the client: unknown
 // session state is resolved once (fetchMe is a no-op on later navigations,
 // guarded by `initialized`), then every navigation is judged against it.
-// This mirrors the old app's server-side guard in spirit — a page never
-// renders past this point without an established session — but it is
-// optimistic like the old proxy.ts, not authoritative: the API still
-// enforces auth itself, this only keeps the SPA from showing a page it
-// cannot use.
+// It is optimistic, not authoritative: the API still enforces auth itself,
+// this only keeps the SPA from showing a page it cannot use.
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (!auth.initialized) {

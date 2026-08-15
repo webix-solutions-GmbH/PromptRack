@@ -3,8 +3,7 @@
 Covers what `tests/integration/test_workspaces.py` deliberately left for this
 task — the composed delete-guard refusal message and the "last workspace"
 refusal — plus the name-clash guard and role gating (create/rename/archive
-are `Writer`, delete alone is `Admin`, matching
-`git show legacy-nextjs:src/actions/customers.ts`).
+are `Writer`, delete alone is `Admin`).
 """
 
 from __future__ import annotations

@@ -2,9 +2,8 @@
 
 Database-backed rather than a signed/stateless cookie, for one reason: a role
 change, a revoked account or a sign-out has to bite on the very next request.
-That is the same trade the old app made by refusing better-auth's
-``session.cookieCache`` — one indexed lookup per request is nothing at this
-scale, and it is what makes "signed out" mean signed out.
+One indexed lookup per request is nothing at this scale, and it is what makes
+"signed out" mean signed out.
 
 The raw token exists in exactly two places: the client's cookie and the request
 that carries it. What is stored is its SHA-256, so a database leak yields

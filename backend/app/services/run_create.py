@@ -1,9 +1,5 @@
 """Creating a run, independent of how it was asked for.
 
-Ported from `git show legacy-nextjs:src/lib/run-create.ts` with the pivot's renames
-(prompt group -> test group, prompt -> test case, system prompt -> prompt) and
-one addition: version **attribution**.
-
 The **snapshot invariant** lives here — freeze the **three texts** (the system
 prompt's draft, the task prompt's draft, the test case's own content), the
 **two version ids** attributing them, and the tool definitions into

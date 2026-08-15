@@ -4,8 +4,7 @@ Transport is streamable HTTP only, via the official SDK (`mcp`) rather than a
 hand-rolled JSON-RPC layer. A toolset is configured exactly like an endpoint — a
 URL plus optional auth headers — so the deployed container needs nothing baked
 in: an Odoo or websearch MCP server runs as its own container on the same
-network and is reached by URL. Port of
-`git show legacy-nextjs:src/lib/mcp-client.ts`.
+network and is reached by URL.
 
 Connections are not pooled: one is opened per operation and always closed
 again, which keeps lifecycle and failure handling trivial for a sequential,
@@ -27,7 +26,7 @@ from mcp import Client, Implementation
 from mcp.client.streamable_http import streamable_http_client
 
 #: Generous: an MCP server's `tools/list` may itself call out to something
-#: slow. Mirrors the old Node client's `DEFAULT_TIMEOUT_MS`.
+#: slow.
 DEFAULT_TIMEOUT_S = 60.0
 
 _CLIENT_INFO = Implementation(name="promptrack", version="0.1.0")

@@ -1,15 +1,12 @@
 <script setup lang="ts">
-// Run detail: header + live-streaming result list. Port of
-// `git show legacy-nextjs:src/components/runs/run-detail.tsx` (the NDJSON driver
-// and its event-to-state patching) and `src/app/runs/[id]/page.tsx` (the
-// header fields), renamed for the pivot's terminology and adding version
-// attribution per spec §"Workflow & UI" ("run detail and results cells show
-// which version a result tested").
+// Run detail: header + live-streaming result list. The NDJSON driver patches
+// state from each event; version attribution (spec §"Workflow & UI": "run
+// detail and results cells show which version a result tested") shows next
+// to each result.
 //
-// Deviation: the backend's run contract (`backend/app/api/runs.py`, Task
-// 4.4) has no endpoint to edit a run's comment after creation — only
-// archive/unarchive/delete/execute and the per-result rating patch exist —
-// so `RunComment`'s edit UI has no port here; the comment renders read-only.
+// The backend's run contract (`backend/app/api/runs.py`) has no endpoint to
+// edit a run's comment after creation — only archive/unarchive/delete/execute
+// and the per-result rating patch exist — so the comment renders read-only.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'

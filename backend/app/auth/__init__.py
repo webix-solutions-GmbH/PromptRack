@@ -8,8 +8,7 @@ refuses a request. :mod:`app.auth.router` is the HTTP surface — sign-up, login
 logout, ``me``, and switching workspace; :mod:`app.auth.oidc` adds an optional
 second way to establish who the caller is, upstream of the same guards.
 
-Two rules carried over from the old app, because they are what keep a second
-authorization system from growing beside the first:
+Two rules keep a second authorization system from growing beside the first:
 
 * **Roles are asked, never re-decided.** Every guard, every ``can_write``
   boolean the frontend hides a button behind, and (later) the MCP read-only

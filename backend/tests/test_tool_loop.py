@@ -1,16 +1,13 @@
 """`app.services.tool_loop` — metric aggregation and the agentic loop itself.
 
-The `aggregate` half is a direct port of
-`git show legacy-nextjs:src/lib/tool-loop.test.ts`: every case there pins one of the
-reasons the aggregation is not a plain sum (ttft comes from the first turn
-only, the throughput denominator is the sum of the per-turn generation
-windows, a turn with no ttft is pure generation), so each keeps a test here.
+The `aggregate` tests each pin one of the reasons the aggregation is not a
+plain sum (ttft comes from the first turn only, the throughput denominator is
+the sum of the per-turn generation windows, a turn with no ttft is pure
+generation).
 
-The loop half is new, because the old suite only ever tested `aggregate` — the
-rest was verified against the dev server's mock LLM. It runs against a
-scripted `ChatStreamer` instead: no socket, no database, and the turn budget,
-the transcript assembly and the tool dispatch are exactly what a mock endpoint
-makes hardest to assert on.
+The loop tests run against a scripted `ChatStreamer` instead: no socket, no
+database, and the turn budget, the transcript assembly and the tool dispatch
+are exactly what a mock endpoint makes hardest to assert on.
 """
 
 from __future__ import annotations
@@ -159,7 +156,7 @@ async def run(streamer: ScriptedStreamer, **overrides: Any):
 
 
 # ---------------------------------------------------------------------------
-# aggregate — ported from legacy-nextjs:src/lib/tool-loop.test.ts
+# aggregate
 # ---------------------------------------------------------------------------
 
 

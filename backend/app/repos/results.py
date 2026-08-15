@@ -1,9 +1,8 @@
-"""Cross-entity reads for `/results` — ported from `legacy-nextjs:src/db/repo/results.ts`.
+"""Cross-entity reads for `/results`.
 
 Each pivot gets exactly the rows it uses: run mode fetches the results of the
 selected runs, model mode fetches the results of the selected (endpoint, model)
-*pairs*. Neither loads the whole `run_results` table, which is what the old page
-did in both modes on every request.
+*pairs*. Neither loads the whole `run_results` table.
 
 Everything here is scoped through `runs`, the root that carries `customer_id`;
 `run_results` inherits it through `run_id` like every other child table.

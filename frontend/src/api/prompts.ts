@@ -1,8 +1,6 @@
-// Contract this is built against (Task 3.3, backend/app/api/prompts.py —
-// not yet landed alongside this task; see the plan's Task 3.3 section, the
-// spec's "Data model" §prompts/prompt_versions, and backend/app/repos/{prompts,
-// prompt_versions}.py + backend/app/services/attribution.py, which this
-// mirrors field-for-field). Assumed shape:
+// Contract this is built against (backend/app/api/prompts.py,
+// backend/app/repos/{prompts,prompt_versions}.py and
+// backend/app/services/attribution.py, which this mirrors field-for-field):
 //
 //   GET    /api/prompts                        -> Prompt[]
 //   POST   /api/prompts                          PromptInput -> Prompt
@@ -18,20 +16,18 @@
 //   GET    /api/prompts/{id}/diff?from=&to=     -> DiffResult                (from/to: a version id, or the literal "draft")
 //
 // `Prompt.dirty`, `head_version` and `deployed_version` are computed by the
-// backend (plan: "Response for a prompt includes head_version, deployed_version,
-// dirty (draft ≠ head)") — this module never re-derives dirtiness client-side,
-// the same way `endpoints.ts` never re-derives `loaded_count`.
+// backend — this module never re-derives dirtiness client-side, the same way
+// `endpoints.ts` never re-derives `loaded_count`.
 //
 // `PromptVersion.created_by_name` and `Prompt.deployed_by_name` are resolved
 // server-side (`backend/app/api/prompts.py`, `app.auth.users.list_display_names`)
 // so the history panel and the editor never render a bare user id.
 //
-// `setBaseline` is part of the Task 3.3 contract but has no caller in this
-// task's UI — Task 3.6's own action list for a version is view/diff/deploy/
-// restore only; baseline-setting is a run-side workflow (Task 4.5's "Verify"
-// flow). Included here for the same reason `endpointsApi.test` ships alongside
-// `discover` even where only one is wired into a given view: the module is the
-// full client for its backend contract.
+// `setBaseline` has no caller in this UI — a version's action list is
+// view/diff/deploy/restore only; baseline-setting is a run-side workflow
+// (the "Verify" flow). Included here for the same reason `endpointsApi.test`
+// ships alongside `discover` even where only one is wired into a given
+// view: the module is the full client for its backend contract.
 import { api } from './client'
 
 export interface PromptVersionSummary {
@@ -115,7 +111,7 @@ export interface DiffResult {
 }
 
 /** A version id or the literal `"draft"`, as the diff endpoint's `from`/`to`
- * accept per the plan. */
+ * accept. */
 export type DiffRef = 'draft' | number
 
 function diffRefParam(ref: DiffRef): string {

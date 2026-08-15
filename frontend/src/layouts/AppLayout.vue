@@ -4,9 +4,9 @@
 // Environment is the credentials that run it (endpoints, toolsets; both
 // admin-gated for the same reason the backend draws that line — see
 // CLAUDE.md's "content vs. credentials"), then Evaluate, then Settings.
-// Every item below has a route as of Task 5.2 (Results was the last inert
-// label); `NavItem.to` stays optional so a future addition can still land
-// ahead of its view.
+// Every item below has a route (Results was the last inert label);
+// `NavItem.to` stays optional so a future addition can still land ahead of
+// its view.
 //
 // The shell itself is auth-gated: /login and /setup render with no nav at
 // all (there is nothing scoped to a workspace to show yet), everything else

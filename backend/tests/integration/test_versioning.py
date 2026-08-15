@@ -1,8 +1,8 @@
-"""Prompt-version integration behavior — the new half of Task 1.4, alongside
-the ported workspace suite in `test_workspaces.py`: version history is scoped
-like everything else, the deployed/baseline pointers refuse a cross-workspace
-target, and the two FK actions only a real Postgres can show (`baseline_run_id`
-`SET NULL` on run delete, `prompt_versions` `CASCADE` on prompt delete).
+"""Prompt-version integration behavior, alongside the workspace suite in
+`test_workspaces.py`: version history is scoped like everything else, the
+deployed/baseline pointers refuse a cross-workspace target, and the two FK
+actions only a real Postgres can show (`baseline_run_id` `SET NULL` on run
+delete, `prompt_versions` `CASCADE` on prompt delete).
 
 Two rules keep this file honest about `AsyncSession`'s async-refresh model
 (`expire_on_commit=False`, and an *expired* attribute access needs an

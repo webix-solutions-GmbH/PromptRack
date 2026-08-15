@@ -1,24 +1,22 @@
 <script setup lang="ts">
-// Test cases list — the regression suite (the old app's `/prompts`, renamed
-// per the pivot: a test case is now input + rubric + tool config, and
-// references a *prompt* asset rather than duplicating it).
+// Test cases list — the regression suite. A test case is input + rubric +
+// tool config, and references a *prompt* asset rather than duplicating it.
 //
 // Two layouts, chosen by `?view=`. Grouped (default) is one collapsible
 // `Panel` per test group, all of them on the page at once, each holding its
 // own table of cases. The suite's structure *is* groups-containing-cases, and
-// the old two-pane split (a sidebar of group names, a flat table of whichever
-// one was selected — the old `GroupSidebar` + `PromptsPanel`) showed one
-// group at a time and read as a filter rather than as the shape of the suite.
-// `Panel` over `Accordion` because each header carries its own
-// edit/delete/new-case controls and every group collapses independently;
-// neither component is used anywhere else in the app, so there was no
-// existing idiom to follow. `?view=flat` is the other layout: one ungrouped,
-// sortable `DataTable` of every case with a Group column — "where is the
-// case that mentions X" and "sort every case by group, by title, by tool
-// mode", questions the panel layout cannot answer at all. The mode lives in
-// the URL, not localStorage, matching every other toggle on this page: a
-// link is the whole state of the view, so a colleague opening it sees what
-// the sender saw.
+// a two-pane split (a sidebar of group names, a flat table of whichever one
+// was selected) shows one group at a time and reads as a filter rather than
+// as the shape of the suite. `Panel` over `Accordion` because each header
+// carries its own edit/delete/new-case controls and every group collapses
+// independently; neither component is used anywhere else in the app, so
+// there was no existing idiom to follow. `?view=flat` is the other layout:
+// one ungrouped, sortable `DataTable` of every case with a Group column —
+// "where is the case that mentions X" and "sort every case by group, by
+// title, by tool mode", questions the panel layout cannot answer at all.
+// The mode lives in the URL, not localStorage, matching every other toggle
+// on this page: a link is the whole state of the view, so a colleague
+// opening it sees what the sender saw.
 //
 // `?group=<id>` still solos one group (that group alone, expanded) rather
 // than filtering a table — still the whole state of the view, so a link to

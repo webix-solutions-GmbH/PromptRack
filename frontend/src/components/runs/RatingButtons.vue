@@ -1,9 +1,8 @@
 <script setup lang="ts">
-// A result's manual verdict — good/meh/bad plus an optional note. Combines
-// the old app's two components (`rating-badge.tsx`, read-only display; and
-// `result-rating.tsx`, the interactive toggle buttons) into one, since a
-// viewer and a writer both need to see the same three states, just with or
-// without the buttons to change them.
+// A result's manual verdict — good/meh/bad plus an optional note. One
+// component covers both read-only display and the interactive toggle
+// buttons, since a viewer and a writer both need to see the same three
+// states, just with or without the buttons to change them.
 //
 // A row that has not finished (`pending`/`running`) is refused by the
 // backend (`PATCH /api/results/{id}`, "rate it once it has finished") — the

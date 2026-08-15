@@ -1,11 +1,10 @@
 """`/api/results/matrix` — the comparison matrix, both pivots, in one payload.
 
-The old app built this page on the server and shipped HTML; the SPA needs the
-same work done in the same place, so this endpoint answers with everything the
-page draws: the pickers, the selection it actually honoured, the columns, the
-rows and the per-column tallies. Splitting it into four endpoints would only
-mean four round trips to render one table, and the pickers have to agree with
-the matrix anyway — they are computed from the same reads.
+The SPA needs everything the page draws answered in one place: the pickers,
+the selection it actually honoured, the columns, the rows and the per-column
+tallies. Splitting it into four endpoints would only mean four round trips to
+render one table, and the pickers have to agree with the matrix anyway — they
+are computed from the same reads.
 
 All of the logic is in :mod:`app.services.compare` (pure) and
 :mod:`app.repos.results` (scoped reads). What lives here is the query-string

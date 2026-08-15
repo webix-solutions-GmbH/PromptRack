@@ -1,11 +1,10 @@
 """The MCP server's own halves: reference resolution, workspace precedence,
 the tool registry and the read-only gate.
 
-Database-free on purpose, the same split the old app made between
-`src/lib/mcp/args.test.ts` / `customer.test.ts` / `protocol.test.ts` and its
-integration suite: what a tool *does* with a scope needs Postgres and is
-exercised there, while what decides the scope, what a name resolves to and
-which tools a role may call are pure decisions and belong in the fast suite.
+Database-free on purpose: what a tool *does* with a scope needs Postgres and
+is exercised in the integration suite, while what decides the scope, what a
+name resolves to and which tools a role may call are pure decisions and
+belong in the fast suite.
 
 `app.mcp.server` is imported for its registry, which is built at import time by
 the `@_tool` decorators — importing it is itself the check that every tool

@@ -1,7 +1,7 @@
 """A streaming client for OpenAI-compatible `/chat/completions` endpoints.
 
-Port of `git show legacy-nextjs:src/lib/llm.ts`. Raw HTTP (httpx) and hand-rolled SSE
-parsing, no vendor SDK: the whole point of this app is that *any* endpoint —
+Raw HTTP (httpx) and hand-rolled SSE parsing, no vendor SDK: the whole point
+of this app is that *any* endpoint —
 vLLM, Ollama, LM Studio, a hosted frontier API — can be measured side by side,
 and the providers differ in exactly the places an SDK would hide:
 
@@ -573,10 +573,8 @@ def _classify(exc: Exception) -> LlmError:
     """Maps an httpx failure onto the kind the executor grades runs on.
 
     httpx raises a distinct exception type per failure mode, so this is a
-    straight lookup — unlike the old Node client, which had to dig a
-    `ECONNREFUSED`-style code out of undici's `TypeError: fetch failed` cause
-    chain. `describe_transport_error` is the shared port of that message
-    mapping (see `app.services.discovery`).
+    straight lookup. `describe_transport_error` is the shared message mapping
+    (see `app.services.discovery`).
     """
     if isinstance(exc, httpx.TimeoutException):
         return LlmError(describe_transport_error(exc), "timeout")

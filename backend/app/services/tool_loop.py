@@ -1,9 +1,8 @@
 """The agentic loop: one `run_results` row, one to N model turns.
 
-Port of `git show legacy-nextjs:src/lib/tool-loop.ts`. A tool-free test case is just
-the degenerate case — a single turn with no tool definitions — so the executor
-(Task 4.4) runs *everything* through here and keeps one code path for
-persistence, cancellation and error handling.
+A tool-free test case is just the degenerate case — a single turn with no
+tool definitions — so the executor runs *everything* through here and keeps
+one code path for persistence, cancellation and error handling.
 
 Three things this module is responsible for, and the reasoning behind each:
 
@@ -189,9 +188,8 @@ class ParsedArguments(NamedTuple):
 def parse_tool_arguments(raw: str | None) -> ParsedArguments:
     """Parses the `arguments` string of a tool call.
 
-    Port of `parseToolArguments` in `legacy-nextjs:src/lib/tools.ts`. An empty string
-    is how a no-argument call arrives and parses to `{}`; anything that is not
-    a JSON *object* is an error the model gets to read.
+    An empty string is how a no-argument call arrives and parses to `{}`;
+    anything that is not a JSON *object* is an error the model gets to read.
     """
     text = (raw or "").strip()
     if not text:

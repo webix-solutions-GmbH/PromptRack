@@ -1,20 +1,13 @@
 <script setup lang="ts">
 // New run: pick an endpoint + model, pick which test-case groups to run, and
-// go. Port of `git show legacy-nextjs:src/components/runs/new-run-form.tsx` (model
-// detection: probe on endpoint select, auto-select a single loaded model,
-// degrade to a warning + previously-seen models, discard a slow probe's
-// answer for an endpoint the user has since switched away from) plus the
-// pivot's "Verify" entry point (spec §"Workflow & UI": a version's baseline
+// go. Model detection: probe on endpoint select, auto-select a single loaded
+// model, degrade to a warning + previously-seen models, discard a slow
+// probe's answer for an endpoint the user has since switched away from.
+// Also the "Verify" entry point (spec §"Workflow & UI": a version's baseline
 // run gets a Verify button that opens this page prefilled).
 //
-// Deviation from the old app, forced by what the landed backend contract
-// actually exposes (flagged for reconciliation — see this task's report):
-// `GET /endpoints/{id}/models` (the "previously seen" model history used by
-// the old "Currently loaded" / "Previously seen" optgroups) has no route on
-// `backend/app/api/endpoints.py` yet, though `../api/endpoints.ts` and
-// `EndpointEditView.vue` already assume it exists. `historyModels` below
-// calls it anyway (for symmetry with that existing convention, and so this
-// view starts working the moment the route lands) but degrades silently to
+// `historyModels` below calls `GET /endpoints/{id}/models` for the
+// "Currently loaded" / "Previously seen" optgroups, and degrades silently to
 // an empty list on failure, same as an unreachable endpoint's warning.
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -84,7 +77,7 @@ type ProbeState =
 const probe = ref<ProbeState>({ status: 'idle' })
 const historyModels = ref<EndpointModel[]>([])
 /** Discards a slow probe's answer once the user has switched to a different
- * endpoint — the same sequence guard the old app used a ref for. */
+ * endpoint. */
 let probeSeq = 0
 
 async function detectModels(id: number) {

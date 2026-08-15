@@ -4,8 +4,8 @@
 // pivot's headline signal — which deployed prompts are running something
 // other than what was last verified (spec §"Deployed signal").
 //
-// No backend task adds a dedicated stats endpoint (Task 5.2's file list is
-// frontend-only), so this composes three reads already used elsewhere:
+// There is no dedicated stats endpoint, so this composes three reads already
+// used elsewhere:
 // `GET /customers` (the same call `AppLayout`'s workspace switcher makes,
 // which is where its embedded `counts` come from), `GET /runs` and
 // `GET /prompts`. `describeVersionStatus` is the exact sentence

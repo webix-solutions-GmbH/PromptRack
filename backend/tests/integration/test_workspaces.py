@@ -1,18 +1,14 @@
 """Cross-workspace isolation, against a real Postgres.
 
-Ports the old suite's core (`git show legacy-nextjs:tests/integration/workspaces.test.ts`)
-onto the pivot's renamed tables and repository functions: a byte-identical
-test case in two workspaces must never collapse into one row, a write naming
-another workspace's row is refused rather than silently landing there, and a
-foreign toolset id resolves to nothing rather than to someone else's
-credentials.
+A byte-identical test case in two workspaces must never collapse into one
+row, a write naming another workspace's row is refused rather than silently
+landing there, and a foreign toolset id resolves to nothing rather than to
+someone else's credentials.
 
-The old suite's "delete guard" also asserted the friendly refusal message
-("still holds 1 endpoint, 1 system prompt…") — that composition lives in the
-customers *service* layer, which is Task 3.1's job and does not exist yet in
-Phase 1. What this file exercises instead is the two things that service will
-be built on: the `RESTRICT` constraint itself, and `count_customer_content`,
-which is exactly what a future refusal message would be built from.
+The friendly refusal message ("still holds 1 endpoint, 1 system prompt…") is
+composed in `app.api.customers` (`_held_contents`), built on the two things
+this file exercises directly: the `RESTRICT` constraint itself, and
+`count_customer_content`, which the refusal message is built from.
 
 `TestGlobals` at the bottom is the deliberate exception to everything above:
 the one place rows *do* cross a workspace boundary. It is here rather than in a
@@ -326,7 +322,7 @@ async def test_delete_guard_the_restrict_constraint_it_will_sit_in_front_of(
     assert counts.toolsets == 1
     assert counts.test_groups == 1
     # One prompt per kind — both are root rows this workspace holds, and the
-    # future refusal message has to name them.
+    # refusal message has to name them.
     assert counts.prompts == 2
     assert counts.total == 5
 

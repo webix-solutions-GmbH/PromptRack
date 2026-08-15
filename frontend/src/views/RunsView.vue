@@ -1,11 +1,9 @@
 <script setup lang="ts">
 // Runs list — each run executed the test cases of one or more groups against
-// one endpoint and model. Port of `git show legacy-nextjs:src/app/runs/page.tsx`,
-// trimmed to what `GET /api/runs` actually returns: the backend's `RunView`
-// (`backend/app/api/runs.py`) carries no per-run result/rating aggregates
-// (the old `listRunSummaries` computed those with SQL joins that have no
-// equivalent here yet), so the "ok/err/pending" and rating-tally columns are
-// dropped rather than approximated with N+1 requests — see this task's
+// one endpoint and model. Trimmed to what `GET /api/runs` actually returns:
+// the backend's `RunView` (`backend/app/api/runs.py`) carries no per-run
+// result/rating aggregates, so the "ok/err/pending" and rating-tally columns
+// are dropped rather than approximated with N+1 requests — see this task's
 // report for a note on adding an aggregate endpoint later.
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'

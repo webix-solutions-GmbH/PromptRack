@@ -3,7 +3,7 @@
 Absent `OIDC_ISSUER`/`OIDC_CLIENT_ID`, this module mounts no routes at all —
 `app.api` only includes :data:`router` when :func:`oidc_configured` says yes,
 so an install that never asked for SSO gets no `/api/auth/oidc/*` surface and
-no "Single sign-on" affordance for the frontend to wire up later (Task 2.3).
+no "Single sign-on" affordance for the frontend to wire up.
 
 Uses Authlib's Starlette integration, which needs `request.session` to stash
 the CSRF `state` (and, for OIDC, the `nonce`) between the redirect to the
@@ -13,8 +13,7 @@ to `app.auth.sessions`: a short-lived, provider-round-trip artifact, not how a
 signed-in user is recognised afterwards. The callback exchanges it for one of
 our own sessions the same way `/auth/login` does.
 
-Only one provider at a time — a single configured issuer, not a menu of them
-— matching the old app's ``genericOAuth`` config.
+Only one provider at a time — a single configured issuer, not a menu of them.
 """
 
 from typing import Any
@@ -75,7 +74,7 @@ def map_profile_to_user(profile: dict[str, Any]) -> tuple[str, str]:
     """`(email, name)` from an OIDC profile.
 
     Entra ID does not reliably emit `email`; the ID token may only carry
-    `preferred_username` or `upn` — the same fallback chain the old app used.
+    `preferred_username` or `upn`.
     """
     email = profile.get("email") or profile.get("preferred_username") or profile.get("upn")
     if not email:

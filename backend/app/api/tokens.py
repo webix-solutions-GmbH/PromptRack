@@ -1,4 +1,4 @@
-"""`/api/tokens` — API tokens for the MCP endpoint (mounted for real in Phase 6).
+"""`/api/tokens` — API tokens for the MCP endpoint.
 
 Any signed-in role may hold a token: a viewer's token simply cannot call a
 write tool, once `app.mcp` checks its role the same way every other guard
@@ -20,7 +20,7 @@ from app.repos.scoped import utc_now
 router = APIRouter(prefix="/tokens", tags=["tokens"])
 
 #: A ceiling on the *finite* expiry option only — a token minted with no
-#: `expires_in_days` has no expiry at all, matching the old app.
+#: `expires_in_days` has no expiry at all.
 MAX_EXPIRY_DAYS = 3650
 
 
