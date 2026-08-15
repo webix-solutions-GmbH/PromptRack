@@ -236,19 +236,26 @@ function handleRatingChange(payload: {
               :class="{ selected: selectedRunIds.includes(run.id) }"
               @click="toggleRun(run.id)"
             >
-              <td>
+              <td class="picker-check">
+                <!-- Display-only: the row is the one click target. A click on
+                     the checkbox itself used to fire twice (the input's click
+                     plus the label-forwarded one), toggling on and straight
+                     back off — pointer-events: none routes it to the row. -->
                 <Checkbox
                   :model-value="selectedRunIds.includes(run.id)"
                   binary
                   :disabled="!selectedRunIds.includes(run.id) && selectedRunIds.length >= MAX_COMPARE_RUNS"
-                  @click.stop="toggleRun(run.id)"
                 />
               </td>
               <td>#{{ run.id }}</td>
               <td class="mono">{{ run.model_id }}</td>
               <td>{{ run.endpoint_name }}</td>
               <td>{{ formatDateTime(run.created_at) }}</td>
-              <td>{{ run.good }}/{{ run.meh }}/{{ run.bad }}</td>
+              <td>
+                <span class="good-count">{{ run.good }}</span
+                >/<span class="meh-count">{{ run.meh }}</span
+                >/<span class="bad-count">{{ run.bad }}</span>
+              </td>
               <td>{{ formatRate(run.avg_rate) }}</td>
               <td>{{ formatDuration(run.total_duration_ms) }}</td>
             </tr>
@@ -285,7 +292,8 @@ function handleRatingChange(payload: {
                 :class="{ selected: selectedModelKeys.includes(column.key) }"
                 @click="toggleModel(column.key)"
               >
-                <td>
+                <td class="picker-check">
+                  <!-- Display-only, same as the run picker's. -->
                   <Checkbox
                     :model-value="selectedModelKeys.includes(column.key)"
                     binary
@@ -293,7 +301,6 @@ function handleRatingChange(payload: {
                       !selectedModelKeys.includes(column.key) &&
                       selectedModelKeys.length >= MAX_COMPARE_MODELS
                     "
-                    @click.stop="toggleModel(column.key)"
                   />
                 </td>
                 <td class="mono">{{ column.model_id }}</td>
@@ -301,7 +308,11 @@ function handleRatingChange(payload: {
                 <td>{{ column.test_case_count }}</td>
                 <td>{{ column.run_count }}</td>
                 <td>{{ formatDateTime(column.latest_run_at) }}</td>
-                <td>{{ column.good }}/{{ column.meh }}/{{ column.bad }}</td>
+                <td>
+                  <span class="good-count">{{ column.good }}</span
+                  >/<span class="meh-count">{{ column.meh }}</span
+                  >/<span class="bad-count">{{ column.bad }}</span>
+                </td>
                 <td>{{ formatRate(column.avg_rate) }}</td>
                 <td>{{ formatDuration(column.total_duration_ms) }}</td>
               </tr>
@@ -461,6 +472,23 @@ function handleRatingChange(payload: {
 
 .picker-row {
   cursor: pointer;
+}
+
+/* See the template comment: the checkbox is display-only, the row toggles. */
+.picker-check :deep(.p-checkbox) {
+  pointer-events: none;
+}
+
+.good-count {
+  color: var(--p-green-600, var(--p-green-500));
+}
+
+.meh-count {
+  color: var(--p-yellow-600, var(--p-yellow-500));
+}
+
+.bad-count {
+  color: var(--p-red-600, var(--p-red-500));
 }
 
 .picker-row:hover {
