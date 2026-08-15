@@ -561,32 +561,19 @@ async function removeTestCase() {
               <div class="preview-sticky">
                 <span class="label">As it will be sent</span>
                 <div class="assembled">
-                  <div class="segment segment-system">
-                    <span class="segment-label">System message</span>
-                    <pre v-if="systemMessagePreview" class="segment-text">{{ systemMessagePreview }}</pre>
+                  <!-- Outer caption + box name the channel; everything inside
+                       the <pre> is the literal wire text, so the part colors
+                       — not labels or rules — are what carry the structure. -->
+                  <div class="message-block message-system">
+                    <span class="channel-caption">System message</span>
+                    <pre v-if="systemMessagePreview" class="message-text ink-system">{{ systemMessagePreview }}</pre>
                     <p v-else class="segment-empty">(no system message)</p>
                   </div>
 
-                  <!-- The task prompt and the content are one message, so they
-                       share a box and are separated only by a rule; the system
-                       message is a different channel and stands apart. -->
-                  <div class="user-group">
-                    <span class="group-caption">User message</span>
-                    <div class="user-message">
-                      <template v-if="userMessagePreview">
-                        <div v-if="taskMessagePreview" class="segment segment-task">
-                          <span class="segment-label">Task prompt</span>
-                          <pre class="segment-text">{{ taskMessagePreview }}</pre>
-                        </div>
-                        <div v-if="contentPreview" class="segment segment-case">
-                          <span class="segment-label">Content</span>
-                          <pre class="segment-text">{{ contentPreview }}</pre>
-                        </div>
-                      </template>
-                      <div v-else class="segment segment-case">
-                        <p class="segment-empty">(nothing to send)</p>
-                      </div>
-                    </div>
+                  <div class="message-block message-user">
+                    <span class="channel-caption">User message</span>
+                    <pre v-if="userMessagePreview" class="message-text"><span v-if="taskMessagePreview" class="ink-task">{{ taskMessagePreview }}</span><template v-if="taskMessagePreview && contentPreview">{{ '\n\n' }}</template><span v-if="contentPreview" class="ink-case">{{ contentPreview }}</span></pre>
+                    <p v-else class="segment-empty">(nothing to send)</p>
                   </div>
                 </div>
                 <Message v-if="userMessageError" severity="error" :closable="false">
@@ -907,26 +894,28 @@ async function removeTestCase() {
   overflow: auto;
 }
 
-/* One colour per channel, the same tokens the results matrix's prompt peeks
-   read (`src/style.css`): system blue, task violet, the case's own content
-   neutral. */
-.segment {
+/* Each message is one continuous block — the outer border/tint is framing
+   for the channel, not a divider between parts. Only the ink color changes
+   mid-text (see .ink-* below), matching the tokens the results matrix's
+   prompt peeks read (`src/style.css`): system blue, task violet, the case's
+   own content neutral. */
+.message-block {
   border-left: 3px solid var(--pr-case-accent);
   background: var(--pr-case-bg);
+  border-radius: var(--p-content-border-radius);
   padding: 0.5rem 0.625rem;
 }
 
-.segment-system {
+.message-system {
   border-left-color: var(--pr-system-accent);
   background: var(--pr-system-bg);
 }
 
-.segment-task {
-  border-left-color: var(--pr-task-accent);
-  background: var(--pr-task-bg);
+.message-user {
+  border-left-color: var(--pr-case-accent);
 }
 
-.segment-label {
+.channel-caption {
   display: block;
   font-size: 0.6875rem;
   text-transform: uppercase;
@@ -934,7 +923,7 @@ async function removeTestCase() {
   color: var(--p-text-muted-color);
 }
 
-.segment-text {
+.message-text {
   margin: 0.25rem 0 0;
   white-space: pre-wrap;
   word-break: break-word;
@@ -943,36 +932,22 @@ async function removeTestCase() {
   color: var(--p-text-color);
 }
 
+.ink-system {
+  color: var(--pr-system-text);
+}
+
+.ink-task {
+  color: var(--pr-task-text);
+}
+
+.ink-case {
+  color: var(--p-text-color);
+}
+
 .segment-empty {
   margin: 0.25rem 0 0;
   font-size: 0.75rem;
   color: var(--p-text-muted-color);
-}
-
-.user-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.group-caption {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--p-text-muted-color);
-}
-
-/* Task prompt and content are one message, so they share a box and only a
-   rule separates them. */
-.user-message {
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius);
-  overflow: hidden;
-}
-
-.user-message .segment + .segment {
-  border-top: 1px dashed var(--p-content-border-color);
 }
 
 .hint {

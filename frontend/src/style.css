@@ -127,4 +127,14 @@ pre {
   --pr-task-bg: color-mix(in srgb, var(--p-purple-500) 9%, transparent);
   --pr-case-accent: var(--p-text-muted-color);
   --pr-case-bg: color-mix(in srgb, var(--p-text-muted-color) 7%, transparent);
+  /* Ink variants of the system/task accents, for coloring the literal message
+   * text itself rather than a box around it — tuned darker/lighter per theme
+   * so the text stays readable against the page background. */
+  --pr-system-text: var(--p-blue-600);
+  --pr-task-text: var(--p-purple-600);
+}
+
+.dark {
+  --pr-system-text: var(--p-blue-400);
+  --pr-task-text: var(--p-purple-400);
 }
