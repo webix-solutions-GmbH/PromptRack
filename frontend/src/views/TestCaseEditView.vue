@@ -485,7 +485,9 @@ async function removeTestCase() {
           <div class="columns">
             <div class="column">
               <div class="field">
-                <label for="tc-system-prompt">System prompt</label>
+                <label for="tc-system-prompt"
+                  ><span class="part-dot part-dot-system" aria-hidden="true" /> System prompt</label
+                >
                 <div class="slot-row">
                   <Select
                     id="tc-system-prompt"
@@ -513,7 +515,9 @@ async function removeTestCase() {
               </div>
 
               <div class="field">
-                <label for="tc-task-prompt">Task prompt</label>
+                <label for="tc-task-prompt"
+                  ><span class="part-dot part-dot-task" aria-hidden="true" /> Task prompt</label
+                >
                 <div class="slot-row">
                   <Select
                     id="tc-task-prompt"
@@ -817,6 +821,25 @@ async function removeTestCase() {
   display: flex;
   align-items: center;
   gap: 0.25rem;
+}
+
+/* Ties each slot's dropdown to its ink in the preview: violet is the task
+ * prompt wherever it appears. Same dot the matrix's peek chips use. */
+.part-dot {
+  display: inline-block;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  vertical-align: middle;
+  margin-right: 0.15rem;
+}
+
+.part-dot-system {
+  background: var(--pr-system-accent);
+}
+
+.part-dot-task {
+  background: var(--pr-task-accent);
 }
 
 .slot-select {
