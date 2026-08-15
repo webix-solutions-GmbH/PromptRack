@@ -525,19 +525,9 @@ function tokenLabel(cell: CompareCellView): string | null {
                 <!-- The dots carry the same part colours the peek content and
                      the test-case editor's assembled preview use, so a row
                      says which channels it holds before anything is opened:
-                     one per prompt slot actually present in the row. -->
-                <button
-                  v-if="row.test_case_text"
-                  type="button"
-                  class="peek-button"
-                  @mouseenter="peekEnter($event, caseTextPeek(row))"
-                  @mouseleave="peekLeave"
-                  @click="pin(caseTextPeek(row))"
-                >
-                  <i class="pi pi-align-left" aria-hidden="true" />
-                  <span class="peek-dot dot-case" aria-hidden="true" />
-                  Test case
-                </button>
+                     one per prompt slot actually present in the row. Prompts
+                     first, then the case text — send order, the same order
+                     the editor's preview stacks them in. -->
                 <button
                   v-if="rowPromptBlocks(row).length > 0"
                   type="button"
@@ -556,6 +546,18 @@ function tokenLabel(cell: CompareCellView): string | null {
                     />
                   </span>
                   Prompts
+                </button>
+                <button
+                  v-if="row.test_case_text"
+                  type="button"
+                  class="peek-button"
+                  @mouseenter="peekEnter($event, caseTextPeek(row))"
+                  @mouseleave="peekLeave"
+                  @click="pin(caseTextPeek(row))"
+                >
+                  <i class="pi pi-align-left" aria-hidden="true" />
+                  <span class="peek-dot dot-case" aria-hidden="true" />
+                  Test case
                 </button>
                 <button
                   v-if="toolsFor(row) !== null"
