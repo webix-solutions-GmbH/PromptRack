@@ -1072,25 +1072,31 @@ thead .row-header-cell {
 
 /* Which channel a text went out on, in the same colours the test-case
    editor's assembled preview uses (tokens in `src/style.css`): system blue,
-   task violet, the case's own content neutral. The rubric and the tool list
+   task violet, the case's own content neutral. The ink on the text itself
+   carries the mapping — same as the editor's preview — with only a thin
+   accent bar as the anchor; no tinted boxes. The rubric and the tool list
    are not parts of a message and stay uncoded. */
 .peek-part-system,
 .peek-part-task,
 .peek-part-case {
   border-left: 3px solid var(--pr-case-accent);
-  border-radius: 0 var(--p-content-border-radius) var(--p-content-border-radius) 0;
-  background: var(--pr-case-bg);
-  padding: 0.5rem 0.625rem;
+  padding-left: 0.625rem;
 }
 
 .peek-part-system {
   border-left-color: var(--pr-system-accent);
-  background: var(--pr-system-bg);
+}
+
+.peek-part-system .peek-text {
+  color: var(--pr-system-text);
 }
 
 .peek-part-task {
   border-left-color: var(--pr-task-accent);
-  background: var(--pr-task-bg);
+}
+
+.peek-part-task .peek-text {
+  color: var(--pr-task-text);
 }
 
 .peek-block-label {

@@ -486,8 +486,8 @@ async function removeTestCase() {
             <div class="column">
               <div class="field">
                 <label for="tc-system-prompt"
-                  ><span class="part-dot part-dot-system" aria-hidden="true" /> System prompt</label
-                >
+                  >System prompt <span class="part-dot part-dot-system" aria-hidden="true"
+                /></label>
                 <div class="slot-row">
                   <Select
                     id="tc-system-prompt"
@@ -516,8 +516,8 @@ async function removeTestCase() {
 
               <div class="field">
                 <label for="tc-task-prompt"
-                  ><span class="part-dot part-dot-task" aria-hidden="true" /> Task prompt</label
-                >
+                  >Task prompt <span class="part-dot part-dot-task" aria-hidden="true"
+                /></label>
                 <div class="slot-row">
                   <Select
                     id="tc-task-prompt"
@@ -831,7 +831,7 @@ async function removeTestCase() {
   height: 0.4rem;
   border-radius: 50%;
   vertical-align: middle;
-  margin-right: 0.15rem;
+  margin-left: 0.15rem;
 }
 
 .part-dot-system {

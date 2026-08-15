@@ -75,14 +75,14 @@ const taskVersionLabel = computed(() =>
       differs across the row — the row header carries it otherwise, and the
       test case's own text is always the row's.
     -->
-    <details v-if="showSystemPrompt" class="prompt-details">
+    <details v-if="showSystemPrompt" class="prompt-details prompt-details-system">
       <summary>
         System prompt
         <Tag v-if="systemVersionLabel" severity="secondary" :value="systemVersionLabel" />
       </summary>
       <pre class="pre">{{ cell.system_prompt_text ?? '(no system message)' }}</pre>
     </details>
-    <details v-if="showTaskPrompt" class="prompt-details">
+    <details v-if="showTaskPrompt" class="prompt-details prompt-details-task">
       <summary>
         Task prompt
         <Tag v-if="taskVersionLabel" severity="secondary" :value="taskVersionLabel" />
@@ -141,6 +141,17 @@ const taskVersionLabel = computed(() =>
 
 .prompt-details .pre {
   margin-top: 0.5rem;
+}
+
+/* Same ink logic as the matrix peeks and the editor's assembled preview
+   (tokens in `src/style.css`): the frozen text itself carries its channel's
+   color, so a cell's own prompt copy reads the same as everywhere else. */
+.prompt-details-system .pre {
+  color: var(--pr-system-text);
+}
+
+.prompt-details-task .pre {
+  color: var(--pr-task-text);
 }
 
 .field {
