@@ -168,6 +168,18 @@ const currentThemeLabel = computed(
   </div>
   <div v-else class="app-shell">
     <header class="app-topbar">
+      <!-- Topbar-left is where Linear/GitHub/Sakai put the sidebar toggle, and
+           it has a practical edge over a button inside the sidenav: it never
+           moves when the rail collapses under it. -->
+      <Button
+        icon="pi pi-bars"
+        text
+        severity="secondary"
+        class="nav-collapse-button"
+        :aria-label="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
+        :title="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
+        @click="toggleNavCollapsed"
+      />
       <!-- The 1254px master carries a wide transparent margin that shrinks the
            glyph to a smudge at this size; this copy is trimmed to the artwork
            and resized to 128px tall (2x), 15 KB against the master's 565 KB. -->
@@ -267,15 +279,6 @@ const currentThemeLabel = computed(
             <i class="pi pi-github" />
           </a>
         </div>
-        <Button
-          :icon="navCollapsed ? 'pi pi-angle-double-right' : 'pi pi-angle-double-left'"
-          text
-          size="small"
-          class="nav-collapse-button"
-          :aria-label="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
-          :title="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
-          @click="toggleNavCollapsed"
-        />
       </nav>
       <main class="app-content">
         <RouterView />
@@ -545,8 +548,7 @@ const currentThemeLabel = computed(
 }
 
 .nav-collapse-button {
-  align-self: center;
-  margin-top: 0.5rem;
+  margin-right: 0.25rem;
   color: var(--p-text-muted-color);
 }
 </style>
