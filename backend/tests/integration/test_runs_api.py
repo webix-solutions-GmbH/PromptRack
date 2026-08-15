@@ -16,6 +16,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import tokens as token_store
 from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.auth.policy import Role
@@ -23,7 +24,7 @@ from app.main import app
 from app.repos.endpoints import create_endpoint
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt, delete_prompt
-from app.repos.runs import list_run_results
+from app.repos.runs import list_run_results, rate_result
 from app.repos.test_cases import create_test_case, create_test_group
 from app.scope import Scope
 from app.services.run_create import create_run_record
@@ -424,6 +425,13 @@ class TestRating:
         await session.commit()
         return results[0].id
 
+    async def _stored_rated_via(
+        self, session: AsyncSession, scope: Scope, run_id: int
+    ) -> str | None:
+        """The column itself, re-read past this session's identity map."""
+        session.expire_all()
+        return (await list_run_results(scope, session, run_id))[0].rated_via
+
     async def test_a_pending_result_cannot_be_rated(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
@@ -465,6 +473,115 @@ class TestRating:
         noted = await client.patch(f"/api/results/{result_id}", json={"note": "  later  "})
         assert noted.json()["rating"] is None
         assert noted.json()["rating_note"] == "later"
+
+    async def test_a_rating_from_the_ui_records_the_session_that_set_it(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """`rated_via` is asserted on the **stored column**, not on the payload
+        alone: it is what the judge badge in the run detail view reads, and a
+        view field derived from something else would still pass.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        run_id = await make_run(scope, session)
+        result_id = await self._finished_result(session, scope, run_id)
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        rated = await client.patch(f"/api/results/{result_id}", json={"rating": "good"})
+        assert rated.status_code == 200, rated.text
+        assert rated.json()["rated_via"] == "session"
+        assert await self._stored_rated_via(session, scope, run_id) == "session"
+
+    async def test_a_rating_from_an_api_token_records_the_token_that_set_it(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """The same REST route, hit with an API token instead of a session
+        cookie — the credential type it reads is `Actor.via`, so this is the
+        route stamping `token` on its own, not `set_rating` doing it over MCP.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        run_id = await make_run(scope, session)
+        result_id = await self._finished_result(session, scope, run_id)
+        user_id = await make_user(session, "agent@example.com", "member", customer_id)
+        _, raw = await token_store.create_token(
+            session, user_id=user_id, name="judge", expires_at=None
+        )
+        await session.commit()
+
+        rated = await client.patch(
+            f"/api/results/{result_id}",
+            json={"rating": "good"},
+            headers={"x-api-key": raw},
+        )
+        assert rated.status_code == 200, rated.text
+        assert rated.json()["rated_via"] == "token"
+        assert await self._stored_rated_via(session, scope, run_id) == "token"
+
+    async def test_a_note_only_patch_leaves_the_provenance_alone(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """Whoever fixes a typo in the note has not re-judged the row.
+
+        The verdict here is stamped `token` first — the state an agent's
+        `set_rating` leaves behind — so a note-only PATCH restamping it as
+        `session` would be visible.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        run_id = await make_run(scope, session)
+        result_id = await self._finished_result(session, scope, run_id)
+        await rate_result(
+            scope, session, result_id, rating="good", rated_via="token"
+        )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        noted = await client.patch(f"/api/results/{result_id}", json={"note": "canary present"})
+        assert noted.status_code == 200, noted.text
+        assert noted.json()["rating"] == "good"
+        assert noted.json()["rated_via"] == "token"
+        assert await self._stored_rated_via(session, scope, run_id) == "token"
+
+    async def test_clearing_the_rating_clears_the_provenance_with_it(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # An unrated row has nobody to attribute, so leaving `token` behind
+        # would badge a verdict that no longer exists.
+        customer_id, scope = await create_workspace("Acme")
+        run_id = await make_run(scope, session)
+        result_id = await self._finished_result(session, scope, run_id)
+        await rate_result(scope, session, result_id, rating="bad", rated_via="token")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        cleared = await client.patch(f"/api/results/{result_id}", json={"rating": "unrated"})
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["rating"] is None
+        assert cleared.json()["rated_via"] is None
+        assert await self._stored_rated_via(session, scope, run_id) is None
+
+    async def test_a_human_re_rating_takes_the_row_back_from_the_judge(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # No separate "accept the judge's verdict" action exists: an ordinary
+        # click overwrites the provenance, which is what drops the badge.
+        customer_id, scope = await create_workspace("Acme")
+        run_id = await make_run(scope, session)
+        result_id = await self._finished_result(session, scope, run_id)
+        await rate_result(
+            scope, session, result_id, rating="bad", rating_note="wrong PO", write_note=True,
+            rated_via="token",
+        )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        rated = await client.patch(f"/api/results/{result_id}", json={"rating": "meh"})
+        assert rated.json()["rated_via"] == "session"
+        # The judge's reasoning survives — only the verdict changed hands.
+        assert rated.json()["rating_note"] == "wrong PO"
+        assert await self._stored_rated_via(session, scope, run_id) == "session"
 
     async def test_an_empty_patch_is_refused(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace

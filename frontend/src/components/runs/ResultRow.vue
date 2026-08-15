@@ -68,6 +68,7 @@ const ratingResponse = computed(() => splitThinking(props.result.response_text ?
       :result-id="result.id"
       :rating="result.rating"
       :rating-note="result.rating_note"
+      :rated-via="result.rated_via"
       :readonly="!canWrite || result.status === 'pending' || result.status === 'running'"
       @change="emit('ratingChange', $event)"
     />

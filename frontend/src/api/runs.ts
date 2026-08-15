@@ -138,6 +138,10 @@ export interface RunResultView {
 
   rating: 'good' | 'meh' | 'bad' | null
   rating_note: string | null
+  /** Which credential set the verdict: `'token'` is an agent judging over
+   * MCP, `'session'` a human in the UI. Null when the row is unrated, and on
+   * anything rated before the column existed. */
+  rated_via: 'session' | 'token' | null
   started_at: string | null
   finished_at: string | null
 }

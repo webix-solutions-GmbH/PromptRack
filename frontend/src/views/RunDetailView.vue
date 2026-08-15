@@ -13,6 +13,7 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
+import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import {
   executeRun,
@@ -294,10 +295,42 @@ function handleRatingChange(
   patch: { rating?: Rating | null; ratingNote?: string | null },
 ) {
   const values: Partial<RunResultView> = {}
-  if ('rating' in patch) values.rating = patch.rating ?? null
+  if ('rating' in patch) {
+    values.rating = patch.rating ?? null
+    // The same write the server is making: a rating set from here is set by
+    // this session, so the judge badge goes the moment the thumb is clicked
+    // rather than on the next load. Clearing a rating clears its provenance.
+    values.rated_via = patch.rating == null ? null : 'session'
+  }
   if ('ratingNote' in patch) values.rating_note = patch.ratingNote ?? null
   patchResult(resultId, values)
 }
+
+// --- judge filter -------------------------------------------------------
+
+type ResultFilter = 'all' | 'judge'
+
+const resultFilter = ref<ResultFilter>('all')
+const resultFilterOptions: { label: string; value: ResultFilter }[] = [
+  { label: 'All', value: 'all' },
+  { label: 'Judge-rated', value: 'judge' },
+]
+const judgeRatedCount = computed(
+  () => results.value.filter((row) => row.rated_via === 'token').length,
+)
+/** Rows to render, each keeping its **position in the run** rather than its
+ * position in the filtered list — a result's number has to go on meaning the
+ * same thing once the filter narrows what is on screen. */
+const visibleResults = computed(() =>
+  results.value
+    .map((result, index) => ({ result, position: index + 1 }))
+    .filter(({ result }) => resultFilter.value === 'all' || result.rated_via === 'token'),
+)
+// Taking over the last judge-rated row hides the control; leaving the list
+// filtered by a control that is no longer on screen would strand it empty.
+watch(judgeRatedCount, (count) => {
+  if (count === 0) resultFilter.value = 'all'
+})
 
 // --- archive / delete -------------------------------------------------
 
@@ -477,12 +510,26 @@ const totalDuration = computed(() =>
         <Message v-if="streamError" severity="error" :closable="false">{{ streamError }}</Message>
       </section>
 
+      <!-- Only once a judge has been here: a filter for a state the run is
+           not in is a control that can do nothing. -->
+      <div v-if="judgeRatedCount > 0" class="filter-row">
+        <span class="filter-label">Show</span>
+        <SelectButton
+          v-model="resultFilter"
+          :options="resultFilterOptions"
+          option-label="label"
+          option-value="value"
+          :allow-empty="false"
+          size="small"
+        />
+      </div>
+
       <section class="results">
         <ResultRow
-          v-for="(result, index) in results"
+          v-for="{ result, position } in visibleResults"
           :key="result.id"
           :result="result"
-          :index="index + 1"
+          :index="position"
           :can-write="auth.canWrite"
           :system-version-label="
             versionLabel(result.system_prompt_text, result.system_prompt_version_id)

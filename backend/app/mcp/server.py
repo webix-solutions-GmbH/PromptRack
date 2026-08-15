@@ -147,6 +147,7 @@ from app.services.message_assembly import NoUserMessageError
 from app.services.run_create import RunCreateError, create_run_record
 from app.services.run_lock import is_run_executing
 from app.services.tool_config import ToolConfigError, assert_tool_config, normalize_max_turns
+from app.services.tool_loop import parse_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -1237,6 +1238,9 @@ def _result_row(result: RunResult, response: str | None, truncated: bool) -> dic
         "response_truncated": truncated,
         "rating": result.rating,
         "rating_note": result.rating_note,
+        # Which credential set that verdict: `token` is an agent (this
+        # surface), `session` a human in the UI. Null = unrated.
+        "rated_via": result.rated_via,
         "metrics": {
             "ttft_ms": result.ttft_ms,
             "duration_ms": result.duration_ms,
@@ -1250,10 +1254,37 @@ def _result_row(result: RunResult, response: str | None, truncated: bool) -> dic
     if result.tool_mode != "none":
         snapshot = _json_value(result.tools_snapshot) or []
         row["tools_offered"] = _snapshot_tool_names(snapshot)
+        row["tools_called"] = _tools_called(result.transcript_json)
         row["turn_count"] = result.turn_count
         row["tool_call_count"] = result.tool_call_count
         row["stopped_reason"] = result.stopped_reason
     return row
+
+
+def _tools_called(transcript_json: str | None) -> list[str]:
+    """The tool names a result really called, in call order, duplicates kept.
+
+    Most of a tool test's rubric is "did it call X", "did it call X twice" or
+    "did it call anything at all" — mechanically checkable, and until now only
+    from the whole transcript, one extra `get_run_result` per row. Repetitions
+    are what make it answer the second question, so nothing is de-duplicated.
+
+    Read off `transcript_json` rather than `turns_json`, which holds per-turn
+    metrics (`TurnMetrics`) and counts calls without naming them; and off the
+    *assistant's* own `tool_calls` rather than the tool messages that came
+    back, so a `definitions`-mode row — where the loop deliberately executes
+    nothing — still reports what the model asked for.
+
+    Degrades to `[]` on a missing or malformed transcript, the same rule
+    `_json_value` follows: a bad snapshot must never keep a run from being read.
+    """
+    return [
+        call.name
+        for message in parse_transcript(transcript_json) or ()
+        if message.role == "assistant"
+        for call in message.tool_calls or ()
+        if call.name
+    ]
 
 
 def _snapshot_entries(snapshot: Any) -> list[tuple[str, Mapping[str, Any]]]:
@@ -1516,7 +1547,11 @@ async def list_runs_tool(
     "get_run",
     "Fetch one run with every result: status, measurements (TTFT, duration, tokens, tokens/s), "
     "manual rating, the response text and which prompt version it tested. Use this to poll a "
-    "running execution and to read the outcome.",
+    "running execution and to read the outcome. To grade a finished run, call it with "
+    'rating: "unrated" and judge each row from its expected_output (the rubric), its response '
+    "and, for a tool test, tools_called — the tool names it really called, in order and with "
+    "repetitions kept, so 'did it call X', 'did it call X twice' and 'did it call anything' are "
+    "all answerable here without fetching a transcript per row.",
     write=False,
 )
 async def get_run_tool(
@@ -1613,6 +1648,7 @@ async def get_run_result_tool(
             "response": result.response_text,
             "rating": result.rating,
             "rating_note": result.rating_note,
+            "rated_via": result.rated_via,
             "metrics": {
                 "ttft_ms": result.ttft_ms,
                 "duration_ms": result.duration_ms,
@@ -1631,6 +1667,7 @@ async def get_run_result_tool(
             view["tool_choice"] = result.tool_choice
             view["max_turns"] = result.max_turns
             view["tools_offered"] = _snapshot_tool_details(snapshot)
+            view["tools_called"] = _tools_called(result.transcript_json)
             view["turn_count"] = result.turn_count
             view["tool_call_count"] = result.tool_call_count
             view["stopped_reason"] = result.stopped_reason
@@ -1644,12 +1681,13 @@ async def get_run_result_tool(
 @_tool(
     "set_rating",
     'Set or clear one result\'s manual verdict: "good", "meh", "bad", or "unrated" to clear it. '
-    "Writes the same column the UI writes, so nothing afterwards distinguishes this from a "
-    "hand-clicked rating — record why in `note`. The grading rubric for a result is its "
-    "`expected_output` (see get_run_result); much of it is mechanically checkable (a canary "
-    "string in `response`, or whether a given tool appears in the transcript) and needs no judge "
-    "model. Results that have not answered yet (pending/running) are refused. Omitting `note` "
-    'keeps any existing note; passing "" clears it.',
+    "Writes the same column the UI writes, and records that it was set with an API token, so the "
+    "UI shows the row as judge-rated until a human re-rates it — record *why* in `note` all the "
+    "same, since the badge says who decided and not what decided it. The grading rubric for a "
+    "result is its `expected_output` (see get_run_result); much of it is mechanically checkable "
+    "(a canary string in `response`, or a tool name in `tools_called`) and needs no judge model. "
+    "Results that have not answered yet (pending/running) are refused. Omitting `note` keeps any "
+    'existing note; passing "" clears it.',
     write=True,
 )
 async def set_rating_tool(
@@ -1666,14 +1704,14 @@ async def set_rating_tool(
     note: Annotated[
         str | None,
         Field(
-            description="Why this verdict. Shown beside the rating in the UI. Worth stating "
-            "which check decided it, since the rating itself carries no record of having been "
-            "set by an agent."
+            description="Why this verdict. Shown beside the rating in the UI, next to the badge "
+            "marking the row as judge-rated. Worth stating which check decided it: the badge "
+            "records that an agent judged, not how."
         ),
     ] = None,
     customer: CustomerArg = None,
 ) -> dict[str, Any]:
-    async with _scoped_call(ctx, customer, "set_rating") as (session, scope, _):
+    async with _scoped_call(ctx, customer, "set_rating") as (session, scope, actor):
         args = raw_arguments(ctx)
         result = await get_run_result(scope, session, result_id)
         if result is None:
@@ -1694,6 +1732,9 @@ async def set_rating_tool(
             rating=None if rating == "unrated" else rating,
             rating_note=_blank_to_none(note),
             write_note=has_key(args, "note"),
+            # `rating` is required here, so the write always includes it and
+            # always stamps the credential that judged.
+            rated_via=actor.via,
         )
         if written is None:  # pragma: no cover - deleted between the two statements
             raise McpToolError(f"No run result with id {result_id}.")
@@ -1710,6 +1751,7 @@ async def set_rating_tool(
                 "status": result.status,
                 "rating": written.rating,
                 "rating_note": written.rating_note,
+                "rated_via": written.rated_via,
             },
             "run": {"run_id": written.run_id, "ratings": _rating_tally(siblings)},
         }

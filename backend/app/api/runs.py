@@ -39,7 +39,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
 from app.auth.guards import CurrentScope, CurrentUser, DbSession, Writer
-from app.models import Rating, ResultStatus, Run, RunResult, RunStatus, StoppedReason
+from app.models import (
+    RatedVia,
+    Rating,
+    ResultStatus,
+    Run,
+    RunResult,
+    RunStatus,
+    StoppedReason,
+)
 from app.models.toolsets import ToolChoice, ToolMode
 from app.repos.runs import (
     count_pending_results,
@@ -164,6 +172,10 @@ class RunResultView(BaseModel):
 
     rating: Rating | None
     rating_note: str | None
+    #: Which credential set the verdict — `token` is an agent judging over MCP,
+    #: which the UI badges as such. Null on an unrated row, and on one rated
+    #: before the column existed.
+    rated_via: RatedVia | None
     started_at: datetime | None
     finished_at: datetime | None
 
@@ -299,6 +311,7 @@ def _result_view(result: RunResult) -> RunResultView:
         tokens_estimated=result.tokens_estimated,
         rating=result.rating,
         rating_note=result.rating_note,
+        rated_via=result.rated_via,
         started_at=result.started_at,
         finished_at=result.finished_at,
     )
@@ -533,8 +546,11 @@ async def rate_result_endpoint(
     A row that has not finished is refused: execution can be fire-and-forget
     (MCP `execute_run`), so a grading loop can trivially outrun it and would
     otherwise be rating a response that does not exist yet.
+
+    The verdict is stamped with how this request proved itself (`actor.via`),
+    so a human clicking a rating here clears the judge badge an agent's earlier
+    verdict left on the row — which is the whole point of recording it.
     """
-    del actor
     if "rating" not in body.model_fields_set and "note" not in body.model_fields_set:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "Send a rating, a note, or both."
@@ -549,11 +565,12 @@ async def rate_result_endpoint(
             "This result has not finished running yet — rate it once it has.",
         )
 
-    rating: Rating | None
-    if "rating" in body.model_fields_set:
-        rating = None if body.rating in (None, "unrated") else body.rating  # type: ignore[assignment]
-    else:
-        rating = result.rating
+    # A note-only patch leaves the rating (and with it `rated_via`) alone
+    # rather than restating it: re-writing the same verdict would restamp it
+    # with whoever edited the note.
+    rating: Rating | None = (
+        None if body.rating in (None, "unrated") else body.rating  # type: ignore[assignment]
+    )
 
     written = await rate_result(
         scope,
@@ -562,6 +579,8 @@ async def rate_result_endpoint(
         rating=rating,
         rating_note=body.note,
         write_note="note" in body.model_fields_set,
+        write_rating="rating" in body.model_fields_set,
+        rated_via=actor.via,
     )
     if written is None:  # pragma: no cover - deleted between the two statements
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such result.")

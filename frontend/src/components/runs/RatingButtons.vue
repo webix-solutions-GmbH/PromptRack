@@ -8,7 +8,7 @@
 // backend (`PATCH /api/results/{id}`, "rate it once it has finished") — the
 // parent is expected to pass `readonly` for those rows rather than this
 // component discovering the 409 on click.
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
@@ -19,8 +19,17 @@ const props = defineProps<{
   resultId: number
   rating: Rating | null
   ratingNote: string | null
+  /** How the stored verdict was set. `'token'` means an agent judged it over
+   * MCP, which is worth saying out loud next to the rating; rating from here
+   * always overwrites it with `'session'`, so the badge answers "has a human
+   * looked at this yet". */
+  ratedVia?: 'session' | 'token' | null
   readonly?: boolean
 }>()
+
+const judged = computed(() => props.ratedVia === 'token')
+
+const JUDGE_TITLE = 'Rated by an agent over MCP, not by a person. Rate it here to take it over.'
 
 const emit = defineEmits<{
   change: [patch: { rating?: Rating | null; ratingNote?: string | null }]
@@ -74,6 +83,7 @@ async function saveNote() {
     <Tag v-if="rating" :severity="RATING_META[rating].severity">
       {{ RATING_META[rating].emoji }} {{ RATING_META[rating].label }}
     </Tag>
+    <Tag v-if="judged" severity="secondary" value="judge" :title="JUDGE_TITLE" />
     <span v-if="ratingNote" class="note-text">{{ ratingNote }}</span>
   </div>
 
@@ -94,6 +104,9 @@ async function saveNote() {
     >
       {{ RATING_META[value].emoji }}
     </button>
+    <!-- Beside the thumbs, not in the card header: it qualifies the verdict,
+         and clicking any thumb here replaces it with a human one. -->
+    <Tag v-if="judged" severity="secondary" value="judge" :title="JUDGE_TITLE" />
     <!-- Default (primary) severity when a note exists, secondary otherwise:
          the pen itself answers "is there a note here" at a glance. -->
     <Button

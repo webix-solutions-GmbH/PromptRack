@@ -11,6 +11,7 @@ from app.models.customers import Customer
 from app.models.endpoints import Endpoint, EndpointModel, EndpointModelSource
 from app.models.prompts import Prompt, PromptKind, PromptVersion
 from app.models.runs import (
+    RatedVia,
     Rating,
     ResultStatus,
     Run,
@@ -38,6 +39,7 @@ __all__ = [
     "Prompt",
     "PromptKind",
     "PromptVersion",
+    "RatedVia",
     "Rating",
     "ResultStatus",
     "Run",

@@ -43,8 +43,16 @@ from app.mcp.server import (
     KIND_VALUES,
     _call,
     _parse_kind,
+    _tools_called,
     mcp_server,
     raw_arguments,
+)
+from app.services.llm import ToolCall
+from app.services.tool_loop import (
+    TranscriptMessage,
+    TurnMetrics,
+    serialize_transcript,
+    serialize_turns,
 )
 
 
@@ -401,6 +409,99 @@ class TestPromptSlotArguments:
             parse_row_ref({}, '"task_prompt"')
         with pytest.raises(McpToolError, match='"system_prompt"'):
             parse_row_ref("   ", '"system_prompt"')
+
+
+# ---------------------------------------------------------------------------
+# Reading a result back
+# ---------------------------------------------------------------------------
+
+
+def _transcript(*messages: TranscriptMessage) -> str:
+    """A stored `transcript_json` built by the real serializer, so these tests
+    cannot pass against a shape the executor never writes.
+    """
+    return serialize_transcript(messages)
+
+
+def _calls(*names: str) -> list[ToolCall]:
+    return [
+        ToolCall(id=f"call_{index}", name=name, arguments="{}")
+        for index, name in enumerate(names)
+    ]
+
+
+class TestToolsCalled:
+    """`tools_called`: the mechanically checkable half of a tool test's rubric,
+    answered from the row `get_run` already returns.
+    """
+
+    def test_names_come_back_in_call_order_across_turns(self) -> None:
+        raw = _transcript(
+            TranscriptMessage(role="user", content="Reconcile 4711"),
+            TranscriptMessage(
+                role="assistant", content="", turn=0, tool_calls=_calls("lookup_invoice")
+            ),
+            TranscriptMessage(role="tool", content="{}", name="lookup_invoice", turn=0),
+            TranscriptMessage(
+                role="assistant",
+                content="",
+                turn=1,
+                tool_calls=_calls("lookup_po", "convert_currency"),
+            ),
+            TranscriptMessage(role="assistant", content="Done.", turn=2),
+        )
+        assert _tools_called(raw) == ["lookup_invoice", "lookup_po", "convert_currency"]
+
+    def test_repetitions_are_kept_so_called_twice_is_checkable(self) -> None:
+        raw = _transcript(
+            TranscriptMessage(
+                role="assistant", content="", turn=0, tool_calls=_calls("lookup_invoice")
+            ),
+            TranscriptMessage(
+                role="assistant", content="", turn=1, tool_calls=_calls("lookup_invoice")
+            ),
+        )
+        assert _tools_called(raw) == ["lookup_invoice", "lookup_invoice"]
+
+    def test_a_definitions_only_row_still_reports_what_was_asked_for(self) -> None:
+        # Nothing was executed, so there is no tool message to read — the
+        # assistant's own calls are the record.
+        raw = _transcript(
+            TranscriptMessage(role="assistant", content="", turn=0, tool_calls=_calls("send_email"))
+        )
+        assert _tools_called(raw) == ["send_email"]
+
+    def test_a_run_that_called_nothing_is_an_empty_list(self) -> None:
+        raw = _transcript(
+            TranscriptMessage(role="user", content="Hello"),
+            TranscriptMessage(role="assistant", content="Hi.", turn=0),
+        )
+        assert _tools_called(raw) == []
+
+    def test_a_missing_or_malformed_transcript_never_raises(self) -> None:
+        # Same rule as `_json_value`: a bad snapshot must not keep a past run
+        # from being read, so every one of these reads as "called nothing".
+        for raw in (None, "", "not json", "{}", '{"turns": 2}', "[]", '[1, "x", null]'):
+            assert _tools_called(raw) == []
+
+    def test_the_per_turn_metrics_column_is_not_what_this_reads(self) -> None:
+        # `turns_json` counts calls without naming them; pointed at it, this
+        # degrades rather than inventing names.
+        turns = serialize_turns(
+            [
+                TurnMetrics(
+                    index=0,
+                    ttft_ms=10,
+                    duration_ms=50,
+                    prompt_tokens=1,
+                    completion_tokens=2,
+                    tokens_estimated=False,
+                    finish_reason="tool_calls",
+                    tool_call_count=2,
+                )
+            ]
+        )
+        assert _tools_called(turns) == []
 
 
 # ---------------------------------------------------------------------------

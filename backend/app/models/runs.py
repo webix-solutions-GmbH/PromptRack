@@ -39,6 +39,11 @@ StoppedReason = Literal["stop", "max_turns", "definitions_only"]
 #: the test case needs work rather than the model.
 Rating = Literal["good", "meh", "bad"]
 
+#: Which credential type set the current rating — `Actor.via`'s vocabulary
+#: (`app.auth.guards`): a browser session (a human, in the UI) or an API
+#: token (an agent/judge, over MCP or the REST route with a token).
+RatedVia = Literal["session", "token"]
+
 
 class Run(Base):
     """One suite executed against one model on one endpoint."""
@@ -153,6 +158,12 @@ class RunResult(Base):
     # --- manual verdict ----------------------------------------------------
     rating: Mapped[Rating | None] = mapped_column(Text)
     rating_note: Mapped[str | None]
+    #: Which credential type set the verdict: a human in the UI (`session`) or
+    #: an API token, i.e. an agent judging over MCP (`token`). Null on an
+    #: unrated row and on anything rated before this column existed. Written
+    #: only alongside the rating itself, so editing the note never restates who
+    #: decided.
+    rated_via: Mapped[RatedVia | None] = mapped_column(Text)
 
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]

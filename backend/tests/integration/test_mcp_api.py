@@ -31,6 +31,7 @@ from app.auth.policy import Role
 from app.auth.tokens import create_token
 from app.main import app
 from app.repos.endpoints import create_endpoint
+from app.repos.runs import list_run_results
 from app.repos.test_cases import create_test_group
 from app.scope import Scope
 
@@ -529,6 +530,48 @@ async def test_mcp_endpoint(
             )
             assert failed
             assert "still pending" in message
+
+            # --- rating provenance ------------------------------------------
+            # One row finished by hand: what is under test is who a verdict is
+            # attributed to, not the executor that produced the answer.
+            results = await list_run_results(acme, session, run_id)
+            results[0].status = "ok"
+            results[0].response_text = "PO-4711"
+            await session.commit()
+
+            failed, payload = await call(
+                client,
+                token,
+                "set_rating",
+                {
+                    "customer": "Acme",
+                    "result_id": result_id,
+                    "rating": "good",
+                    "note": "canary present",
+                },
+            )
+            assert not failed
+            assert payload["result"]["rating"] == "good"
+            # An API token judged this, and the run detail view badges it as
+            # such until a human re-rates the row.
+            assert payload["result"]["rated_via"] == "token"
+
+            # The stored column rather than the payload alone: the badge reads
+            # the column, so a view field derived from something else would
+            # still pass here.
+            session.expire_all()
+            assert (await list_run_results(acme, session, run_id))[0].rated_via == "token"
+
+            failed, payload = await call(
+                client, token, "get_run", {"customer": "Acme", "run_id": run_id}
+            )
+            assert not failed
+            graded = payload["results"][0]
+            assert graded["rated_via"] == "token"
+            # A one-shot row offers a grading loop no tool names to check, so
+            # the key is absent rather than an empty list claiming it called
+            # nothing.
+            assert "tools_called" not in graded
 
             # The run belongs to Acme, so Globex cannot see it at all.
             failed, message = await call(

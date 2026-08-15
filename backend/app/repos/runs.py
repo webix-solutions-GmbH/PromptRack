@@ -297,6 +297,7 @@ class RatedResult:
     run_id: int
     rating: str | None
     rating_note: str | None
+    rated_via: str | None
 
 
 async def rate_result(
@@ -307,30 +308,42 @@ async def rate_result(
     rating: str | None,
     rating_note: str | None = None,
     write_note: bool = False,
+    write_rating: bool = True,
+    rated_via: str | None = None,
 ) -> RatedResult | None:
     """Sets a result's verdict.
 
     Only a result id is available here (both the UI and MCP have one), so the
     scope comes through the parent run. ``write_note`` is what distinguishes
     "clear the note" from "leave it alone": an omitted note must not wipe one,
-    which is what the UI's rating buttons already do.
+    which is what the UI's rating buttons already do. ``write_rating`` is the
+    same distinction on the other side, which a note-only edit needs: restating
+    the rating it already holds would restamp ``rated_via`` and quietly claim
+    whoever fixed a typo had re-judged the row.
+
+    ``rated_via`` travels with the rating and only with it — it is ignored
+    unless the rating is written, and forced to ``None`` when the rating is
+    cleared, because "unrated" has nobody to attribute.
 
     Returns what was stored, or ``None`` when nothing matched.
     """
-    values: dict[str, Any] = {"rating": rating}
+    values: dict[str, Any] = {}
+    if write_rating:
+        values["rating"] = rating
+        values["rated_via"] = None if rating is None else rated_via
     if write_note:
         values["rating_note"] = rating_note
 
     statement = apply_where(update(RunResult), _result_by_id(scope, result_id))
     result = await session.execute(
         statement.values(**values).returning(
-            RunResult.run_id, RunResult.rating, RunResult.rating_note
+            RunResult.run_id, RunResult.rating, RunResult.rating_note, RunResult.rated_via
         )
     )
     row = result.first()
     if row is None:
         return None
-    return RatedResult(run_id=row[0], rating=row[1], rating_note=row[2])
+    return RatedResult(run_id=row[0], rating=row[1], rating_note=row[2], rated_via=row[3])
 
 
 async def set_result_note(
