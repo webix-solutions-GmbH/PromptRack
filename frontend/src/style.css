@@ -135,6 +135,13 @@ pre {
   background: var(--p-content-hover-background);
 }
 
+/* Tags keep PrimeVue's default size, which towers over 0.8125rem cell text —
+ * scale them with the row instead. */
+.list-table .p-tag {
+  font-size: 0.6875rem;
+  padding: 0.125rem 0.4rem;
+}
+
 /* Same teleport reasoning as .form-dialog: dialog width rules must be global. */
 .diff-dialog {
   width: min(72rem, 95vw);
