@@ -23,15 +23,18 @@ from typing import Any
 
 from app.services.compare import (
     CompareCellView,
+    CompareRowView,
     CompareTestCaseView,
     LiveTexts,
     ModelColumnResult,
     ModelColumnRun,
     annotate_drift,
+    annotate_live_rubric,
     build_compare_matrix,
     build_model_columns,
     build_model_matrix,
     describe_row_drift,
+    live_rubrics_by_test_case,
     live_texts_by_test_case,
     model_column_key,
     parse_compare_mode,
@@ -111,6 +114,9 @@ def live(**overrides: Any) -> LiveTexts:
         "test_case_text": "text",
         "system_prompt_text": None,
         "task_prompt_text": None,
+        # Never sent, and compared on different terms — see
+        # `TestTheRubricIsComparedOnDifferentTerms` at the bottom of this file.
+        "expected_output": None,
     }
     return LiveTexts(**{**defaults, **overrides})
 
@@ -980,3 +986,182 @@ class TestSharedExpectedOutput:
         )
 
         assert annotate_drift(rows)[0].expected_output == "the PO"
+
+
+# ---------------------------------------------------------------------------
+# The live rubric beside the frozen one
+# ---------------------------------------------------------------------------
+
+
+def run_row(**overrides: Any) -> list[CompareRowView]:
+    """One run-mode row over test case 10, built the way the API builds it."""
+    return build_compare_matrix([1], [cell(1, test_case_id=10, **overrides)])
+
+
+class TestTheRubricIsComparedOnDifferentTerms:
+    """The rubric is frozen like the sent texts and read unlike them.
+
+    The model never saw it, so an edit does not invalidate the result the way
+    an edited prompt does — it moves the standard the result is graded by. So
+    the row offers *both* copies where they differ (the frozen one explains the
+    ratings on screen, the live one is what to rate by now), rather than
+    swapping one for the other or hiding the difference.
+    """
+
+    def test_a_rubric_added_after_the_runs_is_offered_but_is_not_an_edit(self) -> None:
+        [row] = annotate_live_rubric(run_row(), live_by_test_case={10: "the PO number"})
+
+        assert row.expected_output is None
+        assert row.live_expected_output == "the PO number"
+        # Nothing was edited: there was no rubric here to edit.
+        assert row.rubric_edited_since is False
+
+    def test_a_rewritten_rubric_carries_both_copies(self) -> None:
+        [row] = annotate_live_rubric(
+            run_row(expected_output="the PO number"),
+            live_by_test_case={10: "the PO number and the total"},
+        )
+
+        assert row.expected_output == "the PO number"
+        assert row.live_expected_output == "the PO number and the total"
+        assert row.rubric_edited_since is True
+
+    def test_an_unchanged_rubric_says_nothing_twice(self) -> None:
+        # Same normalization as everywhere else: a trailing newline is not an
+        # edit, and a second identical block beside the frozen one is noise.
+        [row] = annotate_live_rubric(
+            run_row(expected_output="the PO  number"),
+            live_by_test_case={10: " the PO number\n"},
+        )
+
+        assert row.expected_output == "the PO  number"
+        assert row.live_expected_output is None
+        assert row.rubric_edited_since is False
+
+    def test_a_removed_rubric_is_an_edit_with_nothing_to_show(self) -> None:
+        [row] = annotate_live_rubric(
+            run_row(expected_output="the PO number"), live_by_test_case={10: None}
+        )
+
+        assert row.live_expected_output is None
+        assert row.rubric_edited_since is True
+
+    def test_a_blanked_rubric_is_the_same_as_a_removed_one(self) -> None:
+        [row] = annotate_live_rubric(
+            run_row(expected_output="the PO number"), live_by_test_case={10: "  \n"}
+        )
+
+        assert row.live_expected_output is None
+        assert row.rubric_edited_since is True
+
+    def test_cells_that_disagree_still_get_the_live_rubric_but_no_edit_claim(
+        self,
+    ) -> None:
+        # There is no single frozen rubric an edit could have moved *from*, and
+        # the disagreement is already named in `drift` — saying it again in a
+        # second vocabulary would double-report it.
+        rows = build_compare_matrix(
+            [1, 2],
+            [
+                cell(1, test_case_id=10, expected_output="the PO"),
+                cell(2, test_case_id=10, expected_output="the total"),
+            ],
+        )
+
+        [row] = annotate_live_rubric(
+            annotate_drift(rows), live_by_test_case={10: "the PO and the total"}
+        )
+
+        assert row.expected_output is None
+        assert row.drift == ["expected output"]
+        assert row.live_expected_output == "the PO and the total"
+        assert row.rubric_edited_since is False
+
+    def test_a_deleted_test_case_reports_neither(self) -> None:
+        # Absence from the map means the case is gone, which is not the same as
+        # its rubric being empty: nothing may claim the rubric was removed.
+        deleted = build_compare_matrix(
+            [1], [cell(1, test_case_id=None, expected_output="the PO", scope_key="x")]
+        )
+        [row] = annotate_live_rubric(deleted, live_by_test_case={})
+
+        assert row.expected_output == "the PO"
+        assert row.live_expected_output is None
+        assert row.rubric_edited_since is False
+
+        # Same for a row whose case id is simply not in the map.
+        [other] = annotate_live_rubric(
+            run_row(expected_output="the PO"), live_by_test_case={99: "something else"}
+        )
+        assert other.live_expected_output is None
+        assert other.rubric_edited_since is False
+
+    def test_model_mode_rows_are_annotated_the_same_way(self) -> None:
+        # Both pivots, one rule: "what would I grade this by today" is a fair
+        # question of a hand-picked pair of runs as much as of a model column.
+        cases = [live_case(10, expected_output="the PO number and the total")]
+        matrix = build_model_matrix(
+            ["1|a"],
+            cases,
+            [model_cell(1, "1|a", test_case_id=10, expected_output="the PO number")],
+        )
+
+        [row] = annotate_live_rubric(
+            matrix.rows, live_by_test_case=live_rubrics_by_test_case(cases)
+        )
+
+        assert row.expected_output == "the PO number"
+        assert row.live_expected_output == "the PO number and the total"
+        assert row.rubric_edited_since is True
+
+
+class TestTheRubricDriftNote:
+    """Model mode's sentence for a rubric rewritten after every compared run.
+
+    Run mode never says it: its rows are a set of runs, not a claim about what
+    the suite says today — the two row fields carry the live rubric there
+    instead.
+    """
+
+    def test_flags_a_rubric_edited_after_every_compared_run(self) -> None:
+        assert describe_row_drift(
+            [cell(1, expected_output="the PO"), cell(2, expected_output="the PO")],
+            live(expected_output="the PO and the total"),
+        ) == ["expected output edited since"]
+
+    def test_does_not_flag_a_rubric_that_still_matches_live(self) -> None:
+        assert (
+            describe_row_drift(
+                [cell(1, expected_output="the PO  number")],
+                live(expected_output=" the PO number\n"),
+            )
+            == []
+        )
+
+    def test_does_not_repeat_a_rubric_already_drifting_across_the_row(self) -> None:
+        assert describe_row_drift(
+            [cell(1, expected_output="the PO"), cell(2, expected_output="the total")],
+            live(expected_output="something else"),
+        ) == ["expected output"]
+
+    def test_run_mode_gets_no_note_at_all(self) -> None:
+        rows = build_compare_matrix(
+            [1, 2],
+            [
+                cell(1, test_case_id=10, expected_output="the PO"),
+                cell(2, test_case_id=10, expected_output="the PO"),
+            ],
+        )
+
+        assert annotate_drift(rows)[0].drift == []
+
+    def test_model_mode_reads_it_off_the_live_test_case(self) -> None:
+        cases = [live_case(10, text="text", expected_output="the PO and the total")]
+        rows = build_model_matrix(
+            ["1|a"],
+            cases,
+            [model_cell(1, "1|a", test_case_id=10, expected_output="the PO")],
+        ).rows
+
+        drift = annotate_drift(rows, live_by_test_case=live_texts_by_test_case(cases))
+        assert drift[0].drift == ["expected output edited since"]

@@ -116,7 +116,8 @@ const columnHeaders = computed<ColumnHeader[]>(() => {
  * live test case, everything else compares the cells against each other. The
  * three text parts are named separately now ("system prompt", "task prompt",
  * "test case text"), so the old single-string special case would have missed
- * two of them. */
+ * two of them — and "expected output edited since" joins the same voice,
+ * matched by the suffix rather than by an enumeration of parts. */
 function driftLabel(drift: string[]): string {
   const edited = drift.filter((entry) => entry.endsWith('edited since'))
   const differs = drift.filter((entry) => !entry.endsWith('edited since'))
@@ -312,12 +313,51 @@ function promptsPeek(row: CompareRowView): PeekContent {
   }
 }
 
+/** The rubric peek, which is the one peek that can hold *two* texts.
+ *
+ * The rubric is frozen per result like everything else, but the model never
+ * saw it — so editing it does not invalidate a past answer the way editing a
+ * sent part does, it moves the standard that answer is graded by. Both copies
+ * therefore matter and neither may quietly replace the other: the frozen one
+ * explains the ratings already on screen, the live one is what to rate by now.
+ *
+ * The common case — one rubric, never touched — stays exactly as it was, a
+ * single unlabelled block: labels on a peek that holds one text are noise.
+ * Everything else is labelled, and "added after" is told apart from "the cells
+ * disagree" the only way it can be, since the backend nulls `expected_output`
+ * for both: a disagreement is already named in `drift`.
+ */
 function expectedPeek(row: CompareRowView): PeekContent {
-  return {
-    source: 'Expected output',
-    caseTitle: row.test_case_title,
-    blocks: [{ key: 'expected', label: null, badge: null, text: row.expected_output ?? '' }],
+  const frozen = row.expected_output
+  const live = row.live_expected_output
+  const blocks: PeekBlock[] = []
+
+  if (live !== null) {
+    const addedAfter = frozen === null && !row.drift.includes('expected output')
+    blocks.push({
+      key: 'expected-live',
+      label: addedAfter ? 'Current — added after these runs' : 'Current',
+      badge: null,
+      text: live,
+    })
   }
+  if (frozen !== null) {
+    // Alone and unchanged: no sub-heading, which is the shape this peek has
+    // always had.
+    const alone = blocks.length === 0 && !row.rubric_edited_since
+    blocks.push({
+      key: 'expected-frozen',
+      label: alone
+        ? null
+        : live === null
+          ? 'At run time — removed since these runs'
+          : 'At run time — edited since these runs',
+      badge: null,
+      text: frozen,
+    })
+  }
+
+  return { source: 'Expected output', caseTitle: row.test_case_title, blocks }
 }
 
 /** The parsed shape of `tools_snapshot` this peek reads — a projection of the
@@ -507,18 +547,21 @@ function tokenLabel(cell: CompareCellView): string | null {
                 a sticky column narrow enough to leave room for the answers.
                 Each button hides when it has nothing to show: a null
                 `test_case_text` (a task prompt can be the whole user
-                message), an empty prompt row, a row with no rubric — the
-                last also covering the cells disagreeing about the rubric
-                (the row's `expected_output` is null then and `drift` says
-                "expected output"): showing one cell's rubric as the row's
-                would be a claim about how the other cells were graded.
+                message), an empty prompt row, a row with neither a frozen
+                rubric nor a live one. Showing one cell's rubric as the row's
+                would be a claim about how the other cells were graded, so
+                cells that disagree still null `expected_output` and say
+                "expected output" in `drift` — but the *live* rubric is a
+                property of the test case rather than of any cell, so it opens
+                the peek even then (see `expectedPeek`).
               -->
               <div
                 v-if="
                   row.test_case_text ||
                   rowPromptBlocks(row).length > 0 ||
                   toolsFor(row) !== null ||
-                  row.expected_output
+                  row.expected_output ||
+                  row.live_expected_output
                 "
                 class="row-peeks"
               >
@@ -571,7 +614,7 @@ function tokenLabel(cell: CompareCellView): string | null {
                   {{ toolsLabel(row) }}
                 </button>
                 <button
-                  v-if="row.expected_output"
+                  v-if="row.expected_output || row.live_expected_output"
                   type="button"
                   class="peek-button"
                   @mouseenter="peekEnter($event, expectedPeek(row))"

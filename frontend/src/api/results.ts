@@ -115,12 +115,26 @@ export interface CompareRowView {
    * `drift` is: one answer to "identical across the row", under one
    * normalization. */
   expected_output: string | null
+  /** The rubric the live test case carries **today**, when that is something
+   * `expected_output` above does not already say: it was edited since these
+   * runs, or there is no frozen copy to show. `null` otherwise, and always
+   * when the test case itself is gone. Set in *both* pivots
+   * (`app.services.compare.annotate_live_rubric`) — the model never saw the
+   * rubric, so an edit does not invalidate a result, it moves the standard the
+   * result is graded by, which is worth knowing about a hand-picked pair of
+   * runs as much as about a model column. */
+  live_expected_output: string | null
+  /** Whether the live rubric differs from the one this row's cells froze —
+   * only ever true when there *was* a single frozen rubric to differ from, so
+   * "added after the runs" and "the cells disagree" are both false here. */
+  rubric_edited_since: boolean
   /** Conditions not held constant across this row's cells. The three frozen
    * texts are named separately — `"system prompt"`, `"task prompt"`,
    * `"test case text"` — alongside `"expected output"`, `"tools"`,
    * `"tool mode"`, `"tool choice"`, `"params"` and `"max turns"`; model mode
-   * adds `"<part> edited since"` for a *sent* part rewritten after every
-   * compared run (never the rubric, which is not sent). Computed server-side
+   * adds `"<part> edited since"`, for a *sent* part rewritten after every
+   * compared run and for the rubric, which is not sent and so carries the
+   * different meaning `live_expected_output` describes. Computed server-side
    * (`app.services.compare.describe_row_drift`); nothing here re-derives it. */
   drift: string[]
 }

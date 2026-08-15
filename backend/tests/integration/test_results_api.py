@@ -564,6 +564,123 @@ class TestExpectedOutputOnTheWire:
         row = body["rows"][0]
         assert row["expected_output"] is None
         assert row["drift"] == ["expected output"]
+        # The live rubric is a property of the test case rather than of either
+        # cell, so it is still offered — but nothing calls it an edit, since
+        # there is no single frozen copy it could have been edited from.
+        assert row["live_expected_output"] == "the PO number and the total"
+        assert row["rubric_edited_since"] is False
+
+
+class TestTheLiveRubricOnTheWire:
+    """The current rubric beside the frozen one, in both pivots.
+
+    `tests/test_compare.py` pins when each is offered; what only the route can
+    show is that the live rubric is actually *read* — run mode reads it for the
+    rows on screen (`live_expected_outputs`), model mode off the test-case rows
+    it already loads, and a matrix that stopped selecting it would report
+    `null` on every row and look exactly like a suite nobody has edited.
+    """
+
+    async def _rubric_suite(
+        self, scope: Scope, session: AsyncSession, rubric: str | None
+    ) -> tuple[int, int]:
+        endpoint = await create_endpoint(scope, session, name="Box", base_url="http://box/v1")
+        group = await create_test_group(scope, session, name="Group")
+        await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="First",
+            content="Invoice 4711",
+            expected_output=rubric,
+        )
+        await session.commit()
+        return endpoint.id, group.id
+
+    async def _rewrite_rubric(
+        self, scope: Scope, session: AsyncSession, group_id: int, rubric: str | None
+    ) -> None:
+        [case] = await list_test_cases(scope, session, group_id=group_id)
+        await update_test_case(scope, session, case.id, {"expected_output": rubric})
+        await session.commit()
+        session.expire_all()
+
+    async def test_both_pivots_carry_a_rubric_edited_after_the_run(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # The result stays valid — the model never saw the rubric — so both
+        # copies are offered: the frozen one explains the ratings already
+        # recorded, the live one is what to rate by now.
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await self._rubric_suite(scope, session, "the PO number")
+        first = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        second = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        await self._rewrite_rubric(
+            scope, session, group_id, "the PO number and the total"
+        )
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        by_runs = (await matrix(client, mode="runs", runs=f"{first},{second}"))["rows"][0]
+        assert by_runs["expected_output"] == "the PO number"
+        assert by_runs["live_expected_output"] == "the PO number and the total"
+        assert by_runs["rubric_edited_since"] is True
+        # Run mode's rows are a set of runs, not a claim about today's suite:
+        # the two fields say it, `drift` stays silent.
+        assert by_runs["drift"] == []
+
+        by_models = (await matrix(client, models=[f"{endpoint_id}|test-model"]))["rows"][0]
+        assert by_models["expected_output"] == "the PO number"
+        assert by_models["live_expected_output"] == "the PO number and the total"
+        assert by_models["rubric_edited_since"] is True
+        assert by_models["drift"] == ["expected output edited since"]
+
+    async def test_an_untouched_rubric_is_not_offered_twice(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await self._rubric_suite(scope, session, "the PO number")
+        await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        row = (await matrix(client, models=[f"{endpoint_id}|test-model"]))["rows"][0]
+        assert row["expected_output"] == "the PO number"
+        assert row["live_expected_output"] is None
+        assert row["rubric_edited_since"] is False
+
+    async def test_a_rubric_written_after_the_run_is_offered_as_an_addition(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # Nothing was edited — the run simply predates the rubric — so the row
+        # offers the live copy without a frozen one to compare it against.
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await self._rubric_suite(scope, session, None)
+        first = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        second = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        await self._rewrite_rubric(scope, session, group_id, "the PO number")
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        by_runs = (await matrix(client, mode="runs", runs=f"{first},{second}"))["rows"][0]
+        assert by_runs["expected_output"] is None
+        assert by_runs["live_expected_output"] == "the PO number"
+        assert by_runs["rubric_edited_since"] is False
+
+        by_models = (await matrix(client, models=[f"{endpoint_id}|test-model"]))["rows"][0]
+        assert by_models["expected_output"] is None
+        assert by_models["live_expected_output"] == "the PO number"
+        assert by_models["rubric_edited_since"] is False
+
+    async def test_a_suite_with_no_rubric_at_all_reports_neither(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await self._rubric_suite(scope, session, None)
+        await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        row = (await matrix(client, models=[f"{endpoint_id}|test-model"]))["rows"][0]
+        assert row["expected_output"] is None
+        assert row["live_expected_output"] is None
+        assert row["rubric_edited_since"] is False
 
 
 class TestRouting:

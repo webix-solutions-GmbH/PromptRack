@@ -279,6 +279,17 @@ class CompareRowView:
     #: difference cannot be silently dropped by one mechanism while the other
     #: stays quiet about it.
     expected_output: str | None
+    #: The rubric the live test case carries **today**, when that is something
+    #: the frozen copy above does not already say: the rubric was edited since
+    #: the runs, or there is no frozen copy to show. `None` otherwise (and
+    #: always when the test case is gone). Filled by
+    #: :func:`annotate_live_rubric`, in both pivots.
+    live_expected_output: str | None = None
+    #: Whether the live rubric differs from the one the row's cells froze.
+    #: Only ever `True` when there *was* a single frozen rubric to differ from,
+    #: so "added after the runs" and "the cells disagree" both read as `False`
+    #: here — neither is an edit of anything this row displayed.
+    rubric_edited_since: bool = False
     #: Conditions that are *not* held constant across the row; see
     #: :func:`describe_row_drift`. Filled by :func:`annotate_drift`.
     drift: list[str] = field(default_factory=list)
@@ -286,17 +297,24 @@ class CompareRowView:
 
 @dataclass(frozen=True)
 class LiveTexts:
-    """What a live test case would send *today*, in three separate parts.
+    """What a live test case holds *today* — the three parts it would send,
+    plus the rubric it would be graded by.
 
     Model mode anchors its rows to live test cases, so it can additionally
-    report that one of the three was edited after every compared run. Three
+    report that one of them was edited after every compared run. Separate
     values rather than one, because "the task prompt was rewritten" and "the
     data was corrected" are different findings.
+
+    The rubric is the odd one out and stays named apart for it: it is never
+    sent, so an edit to it does not invalidate a past result the way an edit to
+    the three sent parts does — it moves the standard those results are graded
+    by, which is a finding of its own rather than none.
     """
 
     test_case_text: str | None = None
     system_prompt_text: str | None = None
     task_prompt_text: str | None = None
+    expected_output: str | None = None
 
 
 @dataclass(frozen=True)
@@ -316,12 +334,17 @@ class CompareTestCaseView:
     text: str | None
     system_prompt_text: str | None = None
     task_prompt_text: str | None = None
+    #: The rubric the case carries today — never sent, and defaulted for the
+    #: same reason the two prompt texts are: a caller that has not read it
+    #: degrades to reporting nothing rather than to reporting a removal.
+    expected_output: str | None = None
 
     def live_texts(self) -> LiveTexts:
         return LiveTexts(
             test_case_text=self.text,
             system_prompt_text=self.system_prompt_text,
             task_prompt_text=self.task_prompt_text,
+            expected_output=self.expected_output,
         )
 
 
@@ -847,11 +870,17 @@ def describe_row_drift(
             (label, lambda cell, of=of: _text_key(of(cell)))
             for label, of in _TEXT_ASPECTS
         ),
-        # Deliberately outside `_TEXT_ASPECTS`: the rubric is not one of the
-        # three texts sent to the model, so it takes no "edited since"
-        # comparison (`LiveTexts` describes what a live case would *send*, and
-        # the rubric is never sent). Across the row it is drift like anything
-        # else — and it is what the row header falls back to reporting when
+        # Outside `_TEXT_ASPECTS` because it is not one of the three texts sent
+        # to the model — but it *is* compared against the live test case too
+        # (`_LIVE_ASPECTS` below), on different terms: the model never saw the
+        # rubric, so rewriting it does not invalidate a past result the way
+        # rewriting a sent part does. What moved is the standard those results
+        # were graded by, which is worth one sentence rather than silence.
+        # That difference is also why the row header's peek shows *both* copies
+        # — the frozen one explains the ratings already on screen, the live one
+        # is what to rate by now — instead of the row quietly swapping one text
+        # for the other. Across the row it is drift like anything else, and it
+        # is what the row header falls back to reporting when
         # `shared_expected_output` refuses to show one cell's rubric as the
         # row's.
         ("expected output", lambda cell: _text_key(cell.expected_output)),
@@ -871,7 +900,7 @@ def describe_row_drift(
 
     if live is not None:
         first = present[0]
-        for label, of in _TEXT_ASPECTS:
+        for label, of in _LIVE_ASPECTS:
             # Already drifting across the row: saying it also drifted from live
             # adds nothing a reader can act on.
             if label in drift:
@@ -883,11 +912,20 @@ def describe_row_drift(
     return drift
 
 
+#: What model mode additionally compares against the live test case: the three
+#: sent texts, plus the rubric — see the note at the `"expected output"` aspect
+#: for why the rubric belongs here despite never being sent.
+_LIVE_ASPECTS: tuple[tuple[str, Callable[[CompareCellView], str | None]], ...] = (
+    *_TEXT_ASPECTS,
+    ("expected output", lambda cell: cell.expected_output),
+)
+
 #: Which :class:`LiveTexts` field each aspect compares against.
 _LIVE_FIELD: dict[str, str] = {
     "system prompt": "system_prompt_text",
     "task prompt": "task_prompt_text",
     "test case text": "test_case_text",
+    "expected output": "expected_output",
 }
 
 
@@ -922,3 +960,68 @@ def live_texts_by_test_case(
 ) -> dict[int, LiveTexts]:
     """The map :func:`annotate_drift` takes in model mode."""
     return {row.id: row.live_texts() for row in test_case_rows}
+
+
+def _live_rubric(
+    cells: Sequence[CompareCellView | None], live: str | None
+) -> tuple[str | None, bool]:
+    """One row's `(live_expected_output, rubric_edited_since)`.
+
+    Blank and absent are the same rubric throughout, `_text_key` deciding it,
+    exactly as they are for the sent texts.
+    """
+    frozen = shared_expected_output(cells)
+    present = live if _text_key(live) else None
+    if frozen is None:
+        # Either no cell froze a rubric, or the cells disagree about theirs.
+        # Both collapse to the same answer: there is no single "at run time"
+        # rubric an edit could have moved *from*, so the live one is offered
+        # without calling it an edit. A rubric written after the runs was never
+        # edited, and a disagreement is already reported as `"expected output"`
+        # drift — saying it twice in two vocabularies helps nobody.
+        return present, False
+    edited = _text_key(frozen) != _text_key(live)
+    # Unchanged: the row already shows the frozen copy, and a second identical
+    # block beside it is noise, not reassurance.
+    return (present if edited else None), edited
+
+
+def annotate_live_rubric(
+    rows: Sequence[CompareRowView],
+    *,
+    live_by_test_case: Mapping[int, str | None],
+) -> list[CompareRowView]:
+    """Fills every row's `live_expected_output` / `rubric_edited_since`.
+
+    Runs in **both** pivots, unlike :func:`annotate_drift`'s live anchor: the
+    rubric is the one frozen text a later edit does not invalidate — the model
+    never saw it — so "what would I grade this by today" is a fair question of
+    a hand-picked pair of runs just as much as of a model column.
+
+    `live_by_test_case` maps a live test case id to its current rubric.
+    **Membership is the signal**: a key absent means the test case itself is
+    gone, which is not the same as it having no rubric, and leaves the row
+    exactly as it was rather than claiming the rubric was removed.
+    """
+    annotated: list[CompareRowView] = []
+    for row in rows:
+        if row.test_case_id is None or row.test_case_id not in live_by_test_case:
+            annotated.append(row)
+            continue
+        live, edited = _live_rubric(row.cells, live_by_test_case[row.test_case_id])
+        annotated.append(
+            replace(row, live_expected_output=live, rubric_edited_since=edited)
+        )
+    return annotated
+
+
+def live_rubrics_by_test_case(
+    test_case_rows: Sequence[CompareTestCaseView],
+) -> dict[int, str | None]:
+    """The map :func:`annotate_live_rubric` takes in model mode.
+
+    Run mode builds the same shape from a read of just the ids on screen
+    (`app.repos.test_cases.live_expected_outputs`); it has no reason to load
+    the whole suite the way model mode already does.
+    """
+    return {row.id: row.expected_output for row in test_case_rows}

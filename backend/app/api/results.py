@@ -46,7 +46,7 @@ from app.repos.results import (
     model_column_inputs,
     run_group_names,
 )
-from app.repos.test_cases import compare_test_case_rows
+from app.repos.test_cases import compare_test_case_rows, live_expected_outputs
 from app.scope import Scope
 from app.services.compare import (
     MAX_GROUP_FILTER,
@@ -61,9 +61,11 @@ from app.services.compare import (
     ModelColumnRun,
     ModelColumnView,
     annotate_drift,
+    annotate_live_rubric,
     build_compare_matrix,
     build_model_columns,
     build_model_matrix,
+    live_rubrics_by_test_case,
     live_texts_by_test_case,
     model_column_key,
     parse_compare_mode,
@@ -303,7 +305,19 @@ async def _run_mode(
         # Run mode passes no live anchor: its rows are a set of runs, not a
         # claim about what the suite says today, so "edited since" would be
         # meaningless here.
-        rows = annotate_drift(build_compare_matrix(selected_ids, cells))
+        compared = annotate_drift(build_compare_matrix(selected_ids, cells))
+        # The rubric is the exception, and the only live read this pivot makes:
+        # the model never saw it, so editing it does not invalidate these
+        # results — it moves the standard they are graded by, which is exactly
+        # what someone rating them here needs. Narrowed to the ids on screen.
+        rows = annotate_live_rubric(
+            compared,
+            live_by_test_case=await live_expected_outputs(
+                scope,
+                session,
+                [row.test_case_id for row in compared if row.test_case_id is not None],
+            ),
+        )
 
     return MatrixResponse(
         mode="runs",
@@ -365,6 +379,10 @@ async def _model_mode(
             # one. `compare_test_case_rows` joins `prompts` twice for them.
             system_prompt_text=row.system_prompt_text,
             task_prompt_text=row.task_prompt_text,
+            # Never sent, so it takes the *other* kind of comparison: a rubric
+            # rewritten since the runs leaves their results valid and moves the
+            # standard they are graded by.
+            expected_output=row.expected_output,
         )
         for row in await compare_test_case_rows(scope, session)
     ]
@@ -403,7 +421,10 @@ async def _model_mode(
         ]
 
     matrix = build_model_matrix(selected_keys, scoped_cases, cells)
-    rows = annotate_drift(matrix.rows, live_by_test_case=live_texts_by_test_case(scoped_cases))
+    rows = annotate_live_rubric(
+        annotate_drift(matrix.rows, live_by_test_case=live_texts_by_test_case(scoped_cases)),
+        live_by_test_case=live_rubrics_by_test_case(scoped_cases),
+    )
 
     return MatrixResponse(
         mode="models",

@@ -321,6 +321,11 @@ class CompareTestCaseRow:
     system prompt's current draft, its ``task_prompt_text`` against the task
     prompt's. Without the two draft texts the split drift report silently
     degrades to the one comparison it used to make.
+
+    ``expected_output`` rides along for a different reason: it is never sent, so
+    editing it does not invalidate a past result — it moves the standard that
+    result is graded by, which is what lets the matrix offer the current rubric
+    beside the frozen one rather than instead of it.
     """
 
     id: int
@@ -330,6 +335,7 @@ class CompareTestCaseRow:
     text: str | None
     system_prompt_text: str | None
     task_prompt_text: str | None
+    expected_output: str | None
 
 
 async def compare_test_case_rows(
@@ -353,6 +359,7 @@ async def compare_test_case_rows(
             TestCase.content,
             system_prompt.content,
             task_prompt.content,
+            TestCase.expected_output,
         )
         .join(TestGroup, TestCase.group_id == TestGroup.id)
         .outerjoin(system_prompt, TestCase.system_prompt_id == system_prompt.id)
@@ -374,9 +381,36 @@ async def compare_test_case_rows(
             text=row[4],
             system_prompt_text=row[5],
             task_prompt_text=row[6],
+            expected_output=row[7],
         )
         for row in rows.all()
     ]
+
+
+async def live_expected_outputs(
+    scope: Scope, session: AsyncSession, test_case_ids: Sequence[int]
+) -> dict[int, str | None]:
+    """The rubric each of those live test cases carries today, keyed by id.
+
+    Run mode's counterpart to :func:`compare_test_case_rows`: it needs the live
+    rubric for the rows already on screen, and nothing else about the suite, so
+    this reads only the ids it is given rather than every test case in scope.
+
+    **A missing key means the test case is gone**, which is a different fact
+    from a case whose rubric is empty (``run_results.test_case_id`` is
+    ``SET NULL``, and a row can equally point at a case deleted since): the
+    caller must not read the absence as "the rubric was removed".
+    """
+    if not test_case_ids:
+        return {}
+    statement = apply_where(
+        select(TestCase.id, TestCase.expected_output).join(
+            TestGroup, TestCase.group_id == TestGroup.id
+        ),
+        where_scoped(scope, TestGroup, TestCase.id.in_(list(test_case_ids))),
+    )
+    rows = await session.execute(statement)
+    return {row[0]: row[1] for row in rows.all()}
 
 
 # ---------------------------------------------------------------------------
