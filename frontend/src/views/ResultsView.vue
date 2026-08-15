@@ -241,7 +241,7 @@ function handleRatingChange(payload: {
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
 
     <template v-if="matrix">
-      <p v-if="!isModels && matrix.hidden_archived_runs > 0" class="hint-text">
+      <p v-if="!isModels && matrix.hidden_archived_runs > 0" class="hint hint-text">
         {{ matrix.hidden_archived_runs }} archived run{{ matrix.hidden_archived_runs === 1 ? ' is' : 's are' }}
         not listed below.
       </p>
@@ -442,10 +442,10 @@ function handleRatingChange(payload: {
   margin-top: 0.75rem;
 }
 
+/* Pulls the archived-runs note up against the header above; font/color come
+ * from the shared .hint class. */
 .hint-text {
   margin: -0.5rem 0 0;
-  font-size: 0.8125rem;
-  color: var(--p-text-muted-color);
 }
 
 .picker {

@@ -327,7 +327,7 @@ async function submit() {
       </div>
 
       <div class="field">
-        <span class="field-label">Test-case groups *</span>
+        <span class="label">Test-case groups *</span>
         <Message v-if="baselineNote" severity="info" :closable="false">{{ baselineNote }}</Message>
         <p v-if="groups.length === 0" class="hint">No groups yet — create one under Test Cases.</p>
         <div v-else class="group-list">
@@ -401,7 +401,7 @@ async function submit() {
 
 <style scoped>
 .page {
-  max-width: 42rem;
+  max-width: 56rem;
 }
 
 .form {
@@ -416,17 +416,11 @@ async function submit() {
 .field-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 1rem;
+  gap: 1.5rem;
 }
 
 .field {
   min-width: 0;
-}
-
-.field-label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
 }
 
 .field-header {
@@ -434,6 +428,14 @@ async function submit() {
   align-items: baseline;
   justify-content: space-between;
   gap: 0.5rem;
+}
+
+/* The Re-detect button must not make this header taller than the bare label
+ * the neighboring field has, or the two selects in the row drift out of
+ * alignment — cancel the button's own vertical padding with margins so the
+ * click target survives but the header keeps label height. */
+.field-header .p-button {
+  margin-block: -0.375rem;
 }
 
 .hint.warn {

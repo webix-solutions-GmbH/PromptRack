@@ -354,7 +354,7 @@ async function removeEndpoint() {
               Global — share this endpoint with every workspace
             </label>
 
-            <p class="meta">
+            <p class="hint">
               Created {{ formatDateTime(endpoint.created_at) }} · Updated
               {{ formatDateTime(endpoint.updated_at) }}
             </p>
@@ -487,12 +487,6 @@ async function removeEndpoint() {
 
 .field.grow {
   flex: 1;
-}
-
-.meta {
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-  margin: 0;
 }
 
 .dialog-actions.start {

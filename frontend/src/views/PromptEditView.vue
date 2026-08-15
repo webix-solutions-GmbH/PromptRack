@@ -309,7 +309,7 @@ async function removePrompt() {
           <Tag v-if="prompt.dirty" value="uncommitted" severity="warn" />
         </h1>
         <p class="status-line">{{ describeVersionStatus(prompt) }}</p>
-        <p v-if="prompt.deployed_at" class="meta">
+        <p v-if="prompt.deployed_at" class="hint meta">
           Deployed {{ formatDateTime(prompt.deployed_at) }}
           <template v-if="prompt.deployed_by_name">by {{ prompt.deployed_by_name }}</template>
         </p>
@@ -422,7 +422,7 @@ async function removePrompt() {
       :header="diffTarget ? `Diff v${diffTarget.version}` : 'Diff'"
       class="diff-dialog"
     >
-      <div class="diff-controls">
+      <div class="diff-controls field">
         <label for="diff-against">Compare against</label>
         <Select
           id="diff-against"
@@ -458,9 +458,9 @@ async function removePrompt() {
   margin: 0;
 }
 
+/* Nudges the deployed line up under the status line; font/color come from
+ * the shared .hint class. */
 .meta {
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
   margin: 0.125rem 0 0;
 }
 
@@ -477,24 +477,20 @@ async function removePrompt() {
 
 .mono-input :deep(textarea) {
   font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-size: 0.8125rem;
 }
 
 .view-textarea {
   width: 100%;
 }
 
+/* Overrides .field's column layout for this one row: label beside the
+ * control rather than above it. The label itself needs no rule here — it
+ * inherits the shared `.field label` style from style.css. */
 .diff-controls {
-  display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 0.75rem;
   margin-bottom: 1rem;
-}
-
-.diff-controls label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
 }
 </style>
 

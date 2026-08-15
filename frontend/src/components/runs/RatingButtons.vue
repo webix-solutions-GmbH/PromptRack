@@ -186,7 +186,6 @@ async function saveNote() {
   flex: 1 1 8rem;
   min-width: 8rem;
   max-width: 24rem;
-  font-size: 0.8125rem;
 }
 
 </style>

@@ -414,7 +414,7 @@ async function removeTool(tool: Tool) {
             Global — share this toolset with every workspace
           </label>
 
-          <p class="meta">Updated {{ formatDateTime(toolset.updated_at) }}</p>
+          <p class="hint">Updated {{ formatDateTime(toolset.updated_at) }}</p>
 
           <Message v-if="saveError" severity="error" :closable="false">{{ saveError }}</Message>
           <div class="dialog-actions start">
@@ -552,13 +552,6 @@ async function removeTool(tool: Tool) {
 
 .mono-input :deep(textarea) {
   font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-size: 0.8125rem;
-}
-
-.meta {
-  font-size: 0.75rem;
-  color: var(--p-text-muted-color);
-  margin: 0;
 }
 
 .dialog-actions.start {

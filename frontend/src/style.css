@@ -146,6 +146,26 @@ pre {
   font-size: 0.6875rem;
 }
 
+/* Form controls down to the app's form-density scale, next to .list-table
+ * above for the same reason: PrimeVue's Aura default (1rem) was sized for
+ * controls on their own, and towers over both the table density and the
+ * form-field labels below. The padding half of this cut lives in main.ts's
+ * `definePreset` instead of here, because that IS a token
+ * (`semantic.formField`); font-size is not — PrimeVue hardcodes
+ * `font-size: 1rem` in its base component CSS, so the only way to change it
+ * is to override the class directly. Button *padding* needs nothing here:
+ * Aura derives it from the same `formField` tokens the preset overrides
+ * (plus a button-specific paddingX there), so a blanket padding rule would
+ * only erase the `size="small"` variant. */
+.p-inputtext,
+.p-select,
+.p-select-option,
+.p-textarea,
+.p-button,
+.p-message-text {
+  font-size: 0.875rem;
+}
+
 /* Companion to .list-table for tables whose rows navigate on click. */
 .row-nav .p-datatable-tbody > tr {
   cursor: pointer;

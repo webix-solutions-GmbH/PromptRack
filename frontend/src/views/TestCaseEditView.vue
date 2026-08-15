@@ -559,7 +559,7 @@ async function removeTestCase() {
               beside it scroll.
             -->
             <div class="preview-column">
-              <div class="preview-sticky">
+              <div class="preview-sticky field">
                 <span class="label">As it will be sent</span>
                 <div class="assembled">
                   <!-- Outer caption + box name the channel; everything inside
@@ -845,15 +845,10 @@ async function removeTestCase() {
   gap: 1rem;
 }
 
-.preview-sticky .label {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--p-text-muted-color);
-}
-
+/* Mono textareas keep their monospace family; font-size is the global
+ * 0.875rem control size like every other input. */
 .mono-input :deep(textarea) {
   font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-size: 0.8125rem;
 }
 
 .preview {
@@ -880,12 +875,11 @@ async function removeTestCase() {
    `100vh - 3.5rem`), so its scrollport already starts below the pinned
    topbar and an offset of 3.5rem here would only strand the preview that far
    down. */
+/* display/flex-direction/gap come from the global `.field` class alongside
+ * this one in the template; only the sticky positioning is local. */
 .preview-sticky {
   position: sticky;
   top: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
 }
 
 .assembled {

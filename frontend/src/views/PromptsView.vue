@@ -63,12 +63,13 @@ onMounted(load)
 // --- kind filter --------------------------------------------------------
 
 // The standard suite alone puts ~20 rows on this page, so "show me only the
-// task prompts" is the difference between a list and a haystack. `null` is
-// "all kinds" — a filter, not a selection, so it never hides a row silently.
-const kindFilter = ref<PromptKind | null>(null)
+// task prompts" is the difference between a list and a haystack. 'all' is a
+// sentinel like the status filter's, not `null` — SelectButton never shows a
+// null value as the selected option, so "All" would look unselected on load.
+const kindFilter = ref<PromptKind | 'all'>('all')
 
 const kindFilterOptions = [
-  { label: 'All', value: null },
+  { label: 'All', value: 'all' },
   ...PROMPT_KINDS.map((kind) => ({ label: kind.label, value: kind.value })),
 ]
 
@@ -116,14 +117,14 @@ const visiblePrompts = computed(() => {
   const query = nameFilter.value.trim().toLowerCase()
   return prompts.value.filter(
     (prompt) =>
-      (kindFilter.value === null || prompt.kind === kindFilter.value) &&
+      (kindFilter.value === 'all' || prompt.kind === kindFilter.value) &&
       matchesStatus(prompt, statusFilter.value) &&
       (query === '' || prompt.name.toLowerCase().includes(query)),
   )
 })
 
 const hasActiveFilters = computed(
-  () => nameFilter.value.trim() !== '' || kindFilter.value !== null || statusFilter.value !== 'all',
+  () => nameFilter.value.trim() !== '' || kindFilter.value !== 'all' || statusFilter.value !== 'all',
 )
 
 // --- create dialog -----------------------------------------------------
@@ -312,6 +313,5 @@ async function submitForm() {
 
 .mono-input :deep(textarea) {
   font-family: var(--p-font-family-mono, ui-monospace, monospace);
-  font-size: 0.8125rem;
 }
 </style>
