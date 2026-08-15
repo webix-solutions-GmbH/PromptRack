@@ -146,6 +146,11 @@ pre {
   font-size: 0.6875rem;
 }
 
+/* Companion to .list-table for tables whose rows navigate on click. */
+.row-nav .p-datatable-tbody > tr {
+  cursor: pointer;
+}
+
 /* Same teleport reasoning as .form-dialog: dialog width rules must be global. */
 .diff-dialog {
   width: min(72rem, 95vw);

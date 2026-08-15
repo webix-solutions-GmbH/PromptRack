@@ -402,10 +402,6 @@ async function submitForm() {
   cursor: pointer;
 }
 
-.row-nav :deep(.p-datatable-tbody > tr) {
-  cursor: pointer;
-}
-
 .unused {
   color: var(--p-text-muted-color);
 }

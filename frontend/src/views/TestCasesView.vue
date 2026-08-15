@@ -45,6 +45,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
+import type { DataTableRowClickEvent } from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
@@ -313,6 +314,15 @@ async function removeGroup(group: TestGroup) {
 
 const deletingCaseId = ref<number | null>(null)
 
+// Same row-navigation contract as /prompts: the whole row opens the case,
+// while anchors and buttons inside a cell (the title link, Delete) keep
+// their own actions.
+function onCaseRowClick(event: DataTableRowClickEvent) {
+  const target = event.originalEvent.target as HTMLElement | null
+  if (target?.closest('a, button')) return
+  void router.push(`/test-cases/${(event.data as TestCase).id}`)
+}
+
 function confirmDeleteCase(testCase: TestCase) {
   confirm.require({
     header: 'Delete test case',
@@ -392,7 +402,15 @@ async function removeCase(testCase: TestCase) {
     </div>
 
     <template v-if="viewMode === 'flat'">
-      <DataTable :value="flatRows" data-key="id" sort-field="group_name" :sort-order="1" class="table">
+      <DataTable
+        :value="flatRows"
+        data-key="id"
+        sort-field="group_name"
+        :sort-order="1"
+        removable-sort
+        class="table list-table row-nav"
+        @row-click="onCaseRowClick"
+      >
         <template #empty>No test cases match.</template>
         <Column field="group_name" header="Group" sortable />
         <Column field="title" header="Title" sortable>
@@ -486,9 +504,15 @@ async function removeCase(testCase: TestCase) {
 
         <p v-if="group.description" class="group-description">{{ group.description }}</p>
 
-        <DataTable :value="casesFor(group.id)" data-key="id" class="table">
+        <DataTable
+          :value="casesFor(group.id)"
+          data-key="id"
+          removable-sort
+          class="table list-table row-nav"
+          @row-click="onCaseRowClick"
+        >
           <template #empty>No test cases in this group yet.</template>
-          <Column field="title" header="Title">
+          <Column field="title" header="Title" sortable>
             <template #body="{ data }: { data: TestCase }">
               <RouterLink :to="`/test-cases/${data.id}`" class="name-link">{{ data.title }}</RouterLink>
             </template>
