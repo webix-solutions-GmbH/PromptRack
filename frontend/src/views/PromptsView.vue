@@ -140,7 +140,7 @@ async function submitForm() {
       />
     </div>
 
-    <DataTable :value="visiblePrompts" :loading="loading" data-key="id" class="table">
+    <DataTable :value="visiblePrompts" :loading="loading" data-key="id" class="table list-table">
       <template #empty>No prompts yet — add one with "New prompt".</template>
       <Column field="name" header="Name">
         <template #body="{ data }: { data: Prompt }">

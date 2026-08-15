@@ -106,6 +106,35 @@ pre {
   max-width: 90vw;
 }
 
+/* Restyles a PrimeVue DataTable to the density of /results' hand-rolled
+ * picker-table (0.8125rem body, slim uppercase header, bordered, row hover),
+ * so both table styles read as one design. Global because it reaches into
+ * PrimeVue's own .p-datatable-* classes, and shared so any list view can opt
+ * in with `class="table list-table"`. */
+.list-table .p-datatable-table-container {
+  border: 1px solid var(--p-content-border-color);
+  border-radius: var(--p-content-border-radius);
+}
+
+.list-table .p-datatable-thead > tr > th {
+  background: var(--p-content-hover-background);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--p-text-muted-color);
+  padding: 0.5rem 0.75rem;
+}
+
+.list-table .p-datatable-tbody > tr > td {
+  font-size: 0.8125rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.list-table .p-datatable-tbody > tr:hover {
+  background: var(--p-content-hover-background);
+}
+
 /* Same teleport reasoning as .form-dialog: dialog width rules must be global. */
 .diff-dialog {
   width: min(72rem, 95vw);
