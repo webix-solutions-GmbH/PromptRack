@@ -30,7 +30,7 @@ services:
   # repo is private the GHCR package is too, so the host needs
   # `docker login ghcr.io` with a read:packages PAT.
   promptrack:
-    image: ghcr.io/philphilphil/promptrack:${PROMPTRACK_TAG:-main}
+    image: ghcr.io/webix-solutions-gmbh/promptrack:${PROMPTRACK_TAG:-main}
     container_name: promptrack
     restart: unless-stopped
     depends_on:

@@ -60,8 +60,8 @@ and recreate a column instead), so a rename needs the generated file hand-edited
 `op.alter_column`/`op.rename_table`.
 
 Git: default branch is `main`. One remote: `origin` is GitHub
-(`philphilphil/PromptRack`, private; note the capitalisation — the lowercase URL only
-resolves through GitHub's redirect).
+(`webix-solutions-GmbH/PromptRack`, private; note the capitalisation — the lowercase URL
+only resolves through GitHub's redirect).
 
 ## What this is
 
@@ -888,7 +888,7 @@ it would otherwise miss the repo-root `.env` entirely and fail on `POSTGRES_PASS
 nothing from the environment.
 
 `docker/compose.yml` only has an `image:` stanza — it pulls
-`ghcr.io/philphilphil/promptrack:${PROMPTRACK_TAG:-main}` rather than building. Deploy is
+`ghcr.io/webix-solutions-gmbh/promptrack:${PROMPTRACK_TAG:-main}` rather than building. Deploy is
 `docker compose -f docker/compose.yml --env-file .env pull` then `... up -d`, or
 `make docker-up`, which wraps both. `docker/compose.build.yml` is the override that adds
 `build:` back for a local build instead: `-f docker/compose.yml -f
@@ -901,9 +901,9 @@ succeed.
 `v*` tags, and on manual dispatch — `linux/amd64` only. It authenticates with the
 built-in `GITHUB_TOKEN` (no configured secret) and tags the image with the branch name,
 `sha-<short>`, and, on a version tag, the semver (full and `major.minor`) plus `latest`.
-The image name is hardcoded lowercase (`ghcr.io/philphilphil/promptrack`) rather than
-interpolated from `github.repository`, because that variable is mixed-case
-(`philphilphil/PromptRack`) and GHCR rejects uppercase in image names outright. It passes
+The image name is hardcoded lowercase (`ghcr.io/webix-solutions-gmbh/promptrack`) rather
+than interpolated from `github.repository`, because that variable is mixed-case
+(`webix-solutions-GmbH/PromptRack`) and GHCR rejects uppercase in image names outright. It passes
 `PROMPTRACK_COMMIT=${{ github.sha }}` into the `ARG` the Dockerfile already declares, so
 `GET /api/version` reports the exact commit a running container was built from. It
 deliberately runs no tests before pushing — a known gap, not an oversight, so don't

@@ -27,10 +27,10 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v6
         with:
-          # Hardcoded lowercase: the repo is philphilphil/PromptRack (capital
-          # P), and GHCR rejects uppercase in image names, so
-          # ghcr.io/${{ github.repository }} would fail.
-          images: ghcr.io/philphilphil/promptrack
+          # Hardcoded lowercase: the repo is webix-solutions-GmbH/PromptRack
+          # (capitals in both halves), and GHCR rejects uppercase in image
+          # names, so ghcr.io/${{ github.repository }} would fail.
+          images: ghcr.io/webix-solutions-gmbh/promptrack
           tags: |
             type=ref,event=branch
             type=sha,format=short

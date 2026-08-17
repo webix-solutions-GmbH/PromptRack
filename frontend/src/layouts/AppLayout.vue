@@ -279,7 +279,7 @@ const currentThemeLabel = computed(
                   @click="toggleThemeMenu"
                 />
                 <a
-                  href="https://github.com/philphilphil/promptrack"
+                  href="https://github.com/webix-solutions-GmbH/PromptRack"
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="PromptRack on GitHub"
