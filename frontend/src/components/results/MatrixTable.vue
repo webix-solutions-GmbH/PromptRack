@@ -30,7 +30,7 @@
 // `backend/app/api/results.py`'s `_tallies`), so this component takes both
 // column shapes and picks per `mode` rather than making the caller normalize
 // them into one.
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import Dialog from 'primevue/dialog'
 import Popover from 'primevue/popover'
@@ -55,12 +55,22 @@ const props = defineProps<{
   modelColumns: ModelColumnView[]
   columnTallies: ColumnTally[]
   canWrite: boolean
+  /** Fill the parent's remaining height instead of bounding the scrollport
+   * against the viewport — what `/results`' fullscreen overlay needs. A prop
+   * rather than a `:deep()` override from the caller because the height rule
+   * below is load-bearing for the sticky headers (see `.matrix-wrap`): the two
+   * ways of sizing this box belong together, in the block that explains why. */
+  fill?: boolean
 }>()
 
 const emit = defineEmits<{
   ratingChange: [
     payload: { cell: CompareCellView; patch: { rating?: Rating | null; ratingNote?: string | null } },
   ]
+  /** Whether a peek is pinned open. Only `/results`' fullscreen mode listens:
+   * both it and the pinned dialog leave on Escape, and one keypress must
+   * unwind one layer (see `onKeydown` there). */
+  peekPinned: [open: boolean]
 }>()
 
 interface ColumnHeader {
@@ -488,6 +498,11 @@ function pin(content: PeekContent) {
   pinnedVisible.value = true
 }
 
+// Watched rather than emitted from `pin`, because the dialog also closes on
+// its own — the X, Escape, PrimeVue's own handling — and only the state itself
+// sees every one of those.
+watch(pinnedVisible, (open) => emit('peekPinned', open))
+
 onBeforeUnmount(() => {
   clearTimeout(showTimer)
   clearTimeout(hideTimer)
@@ -502,7 +517,7 @@ function tokenLabel(cell: CompareCellView): string | null {
 </script>
 
 <template>
-  <div class="matrix-wrap">
+  <div class="matrix-wrap" :class="{ 'matrix-fill': fill }">
     <table class="matrix">
       <thead>
         <tr>
@@ -758,6 +773,21 @@ function tokenLabel(cell: CompareCellView): string | null {
   max-height: calc(100vh - 5rem);
   border: 1px solid var(--p-content-border-color);
   border-radius: var(--p-content-border-radius);
+  /* A bounded scrollport that reaches its end hands the wheel to the page
+     behind it; here that page is the app content column, which jumps while
+     the reader is still in the table. */
+  overscroll-behavior: contain;
+}
+
+/* Fullscreen (`fill`): the caller is a flex column that already owns the
+   viewport, so the constraint the sticky headers need comes from *it* rather
+   than from `100vh` — `flex: 1` plus the `min-height: 0` that stops a flex
+   item from refusing to shrink below its content. Same bounded box, measured
+   from a different parent. */
+.matrix-wrap.matrix-fill {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
 }
 
 .matrix {

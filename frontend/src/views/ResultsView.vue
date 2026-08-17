@@ -10,8 +10,9 @@
 // the matrix and then rewrites the URL from the server's *actual* selection
 // (foreign/archived/over-the-cap ids get silently dropped there), so the
 // address bar can never claim a selection the table does not show.
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -191,6 +192,71 @@ const groupOptions = computed(() =>
     label: `${group.name} (${group.test_case_count})`,
     value: group.id,
   })),
+)
+
+// --- fullscreen ------------------------------------------------------------
+
+// Not the browser's Fullscreen API, deliberately: that one takes over the
+// whole screen, hides the tab strip and the address bar, and can only be left
+// through a browser-drawn affordance — too heavy for "give the table the
+// window". This is the app's own maximise instead: `.matrix-section` becomes a
+// fixed overlay over the shell (see the style block), the matrix keeps every
+// behaviour it has in place — sticky headers, peeks, rating — and Esc leaves.
+//
+// It stays out of the URL: the pickers are reconciled against the server on
+// every load and `syncUrl` rewrites the query from that, whereas this is a
+// transient way of looking at the page rather than part of the selection a
+// link is supposed to carry.
+const expanded = ref(false)
+
+/** A peek pinned open over the matrix — see the Escape handling below. */
+const peekPinned = ref(false)
+
+function toggleExpanded() {
+  expanded.value = !expanded.value
+}
+
+function onKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || !expanded.value) return
+  // One keypress, one layer: a pinned rubric is dismissed and the matrix
+  // stays maximised (dismissing a rubric is not leaving the view), and the
+  // next Escape leaves.
+  //
+  // Which is why this listens in the *capture* phase — see the registration
+  // below. PrimeVue's dialog closes on the same Escape without stopping the
+  // event, and a bubble-phase listener reads `peekPinned` after Vue has
+  // already flushed it back to false: the reactivity queue is drained at the
+  // microtask checkpoint between two listener callbacks, so "check a flag the
+  // earlier handler just invalidated" cannot work in that order. Capture runs
+  // before any of it.
+  if (peekPinned.value) return
+  expanded.value = false
+}
+
+// The overlay covers the shell but the content column underneath still
+// scrolls, so a wheel event that reaches past the table would move a page
+// nobody can see. One class on <body>, cleaned up by the same watcher on the
+// way out and by unmount, so navigating away mid-fullscreen cannot strand it.
+watch(expanded, (on) => {
+  document.body.classList.toggle('results-fullscreen', on)
+})
+
+// Capture, for the ordering `onKeydown` depends on — and nothing else inside
+// the matrix handles Escape, so running first costs no other handler its key.
+onMounted(() => window.addEventListener('keydown', onKeydown, true))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown, true)
+  document.body.classList.remove('results-fullscreen')
+})
+
+// Nothing to maximise is nothing to stay maximised over: emptying the
+// selection while expanded unmounts the section the exit button lives in, so
+// the state has to follow the matrix rather than outlive it.
+watch(
+  () => belowMinimum.value || rows.value.length === 0,
+  (empty) => {
+    if (empty) expanded.value = false
+  },
 )
 
 // --- rating write-through ------------------------------------------------
@@ -465,16 +531,35 @@ function handleRatingChange(payload: {
             : 'The selected runs have no results to compare.'
         }}
       </div>
-      <section v-else class="matrix-section">
+      <!-- Fullscreen is this same section promoted to a fixed overlay, not a
+           second copy of it behind a `v-if`: the heading is already the strip
+           above the table, so expanded it simply becomes the overlay's
+           toolbar, and the matrix below it is the one that was on the page a
+           moment ago — same component, same scroll position, same open
+           peeks. -->
+      <section v-else class="matrix-section" :class="{ 'matrix-section-expanded': expanded }">
         <div class="matrix-heading">
           <h2>
             {{ rows.length }} test case{{ rows.length === 1 ? '' : 's' }} × {{ columnCount }}
             {{ isModels ? 'model' : 'run' }}{{ columnCount === 1 ? '' : 's' }}
           </h2>
-          <span v-if="isModels && matrix.uncovered_test_cases > 0" class="uncovered-note">
-            {{ matrix.uncovered_test_cases }} test case{{ matrix.uncovered_test_cases === 1 ? '' : 's' }} in scope
-            not answered by any selected model
-          </span>
+          <div class="matrix-heading-actions">
+            <span v-if="isModels && matrix.uncovered_test_cases > 0" class="uncovered-note">
+              {{ matrix.uncovered_test_cases }} test case{{ matrix.uncovered_test_cases === 1 ? '' : 's' }} in scope
+              not answered by any selected model
+            </span>
+            <span v-if="expanded" class="esc-hint"><kbd>Esc</kbd> to exit</span>
+            <Button
+              :icon="expanded ? 'pi pi-window-minimize' : 'pi pi-window-maximize'"
+              :label="expanded ? 'Exit fullscreen' : 'Fullscreen'"
+              text
+              size="small"
+              severity="secondary"
+              class="fullscreen-button"
+              :title="expanded ? 'Back to the page (Esc)' : 'Give the matrix the whole window'"
+              @click="toggleExpanded"
+            />
+          </div>
         </div>
 
         <MatrixTable
@@ -484,7 +569,9 @@ function handleRatingChange(payload: {
           :model-columns="matrix.model_columns"
           :column-tallies="matrix.column_tallies"
           :can-write="auth.canWrite"
+          :fill="expanded"
           @rating-change="handleRatingChange"
+          @peek-pinned="peekPinned = $event"
         />
       </section>
     </template>
@@ -556,8 +643,86 @@ function handleRatingChange(payload: {
   color: var(--p-text-color);
 }
 
+.matrix-heading-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
 .uncovered-note {
   font-size: 0.75rem;
   color: var(--p-text-muted-color);
+}
+
+/* Quiet until wanted: it sits above every screenful of the matrix, so it
+ * reads as a caption with a label rather than a button competing with the
+ * column headers below it. */
+.fullscreen-button {
+  color: var(--p-text-muted-color);
+  font-size: 0.75rem;
+}
+
+.fullscreen-button:hover {
+  color: var(--p-text-color);
+}
+
+/* --- fullscreen -----------------------------------------------------------
+ *
+ * `position: fixed` against the viewport, not the content column: `.app-content`
+ * sets `overflow: auto`, which does not make a containing block for a fixed
+ * descendant (only a transform/filter/contain would), so the overlay clears
+ * the topbar and the side nav for free.
+ *
+ * z-index 15 sits above the shell's sticky topbar (2) and far below PrimeVue's
+ * overlay layer (~1100+), which is what keeps the peek popover and the pinned
+ * dialog usable on top of the maximised matrix — the whole reason for
+ * maximising it is reading answers against the rubric. */
+.matrix-section-expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  padding: 0.875rem 1.25rem 1.25rem;
+  gap: 0.625rem;
+  background: var(--p-content-background);
+  animation: matrix-expand 120ms ease-out;
+}
+
+/* From the table's own edge outwards, so the expansion reads as the matrix
+ * growing into the window rather than a panel appearing over it. */
+@keyframes matrix-expand {
+  from {
+    opacity: 0;
+    transform: scale(0.99);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .matrix-section-expanded {
+    animation: none;
+  }
+}
+
+.esc-hint {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+}
+
+.esc-hint kbd {
+  font-family: inherit;
+  font-size: 0.6875rem;
+  padding: 0.0625rem 0.3125rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: var(--p-border-radius-sm, 4px);
+  background: var(--p-content-hover-background);
+}
+</style>
+
+<style>
+/* The overlay hides the content column but does not stop it scrolling, so a
+ * wheel event past the end of the table would move a page nobody can see.
+ * Unscoped because the element is <body>, which no scoped selector reaches. */
+body.results-fullscreen {
+  overflow: hidden;
 }
 </style>
