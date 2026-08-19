@@ -15,12 +15,14 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
+from app.models.toolsets import ToolSource
 from app.services.llm import ChatMessage, LlmResult, ToolCall, compute_tokens_per_sec
 from app.services.tool_loop import (
+    TOOL_SOURCES,
     Aggregates,
     SnapshotTool,
     ToolExecutionOutcome,
@@ -548,6 +550,40 @@ class TestToolFailures:
             "No executor is configured for MCP tools in this run."
         )
 
+    async def test_routes_a_document_tool_to_the_executor_not_to_a_canned_response(self):
+        # The bug this pins: a `documents` tool carries no `mock_response`, so
+        # reading its source as `manual` answered every document call with "this
+        # tool has no canned response configured" instead of reaching the corpus.
+        executed: list[str] = []
+
+        async def executor(one: ToolCall) -> ToolExecutionOutcome:
+            executed.append(one.name)
+            return ToolExecutionOutcome('{"document_count": 0}', False)
+
+        streamer = ScriptedStreamer(
+            llm_result(tool_calls=[call(name="list_documents")]), llm_result(text="Nothing there.")
+        )
+
+        content = await self._answer(
+            streamer,
+            snapshot=[tool("list_documents", source="documents", mock_response=None)],
+            execute_tool=executor,
+        )
+
+        assert executed == ["list_documents"]
+        assert json.loads(content) == {"document_count": 0}
+
+    async def test_reports_a_document_tool_with_no_executor_wired_up(self):
+        streamer = ScriptedStreamer(llm_result(tool_calls=[call()]), llm_result(text="Sorry."))
+
+        content = await self._answer(
+            streamer, snapshot=[tool(source="documents", mock_response=None)]
+        )
+
+        assert json.loads(content)["error"] == (
+            "No executor is configured for document tools in this run."
+        )
+
     async def test_serializes_an_executor_that_raises_instead_of_failing_the_row(self):
         async def executor(_call: ToolCall) -> ToolExecutionOutcome:
             raise RuntimeError("Odoo said no.")
@@ -646,6 +682,53 @@ class TestSerialization:
         assert parse_tools_snapshot("not json") == []
         assert parse_tools_snapshot('{"definition":{}}') == []
         assert parse_tools_snapshot('[{"definition":{"function":{}}}]') == []
+
+    def test_round_trips_a_documents_tool_with_its_corpus_shape(self):
+        snapshot = [
+            SnapshotTool(
+                definition=tool("read_document").definition,
+                source="documents",
+                toolset_id=7,
+                toolset_name="Support Handbook",
+                document_count=12,
+                corpus_updated_at="2026-08-17T09:30:00+00:00",
+            )
+        ]
+
+        assert parse_tools_snapshot(serialize_tools_snapshot(snapshot)) == snapshot
+
+    def test_keeps_documents_as_its_own_source_rather_than_manual(self):
+        # A `documents` tool has no canned response, so reading it as `manual`
+        # would answer every call with "no canned response configured" instead
+        # of reaching the corpus.
+        parsed = parse_tools_snapshot(
+            json.dumps([{**tool().to_json(), "source": "documents", "mock_response": None}])
+        )
+
+        assert [entry.source for entry in parsed] == ["documents"]
+
+    def test_omits_the_corpus_keys_from_a_manual_or_mcp_snapshot(self):
+        stored = json.loads(serialize_tools_snapshot([tool()]))
+
+        assert "document_count" not in stored[0]
+        assert "corpus_updated_at" not in stored[0]
+
+    def test_reads_a_snapshot_frozen_before_the_corpus_keys_existed(self):
+        legacy = json.dumps([{**tool().to_json(), "source": "documents"}])
+
+        parsed = parse_tools_snapshot(legacy)
+
+        assert (parsed[0].document_count, parsed[0].corpus_updated_at) == (None, None)
+
+    def test_every_source_the_column_allows_survives_the_round_trip(self):
+        # The same bug one level lower, where it can be prevented rather than
+        # fixed: `TOOL_SOURCES` is read off the model's own `Literal`, so a
+        # fourth source added to the column cannot be reintroduced as a name
+        # this reader silently degrades to `manual`.
+        assert set(TOOL_SOURCES) == set(get_args(ToolSource))
+        for source in TOOL_SOURCES:
+            stored = json.dumps([{**tool().to_json(), "source": source}])
+            assert [entry.source for entry in parse_tools_snapshot(stored)] == [source], source
 
     def test_reads_an_unknown_tool_source_as_manual(self):
         # Safe direction: a manual tool with no canned response answers with an

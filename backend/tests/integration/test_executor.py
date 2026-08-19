@@ -14,6 +14,7 @@ was never reachable", and an interrupted row going back to `pending`.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
@@ -21,6 +22,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.repos.documents import create_document
 from app.repos.endpoints import create_endpoint
 from app.repos.prompts import create_prompt
 from app.repos.runs import get_run, list_run_results
@@ -32,6 +34,7 @@ from app.services.llm import LlmError, LlmResult, ToolCall
 from app.services.run_create import create_run_record
 from app.services.run_events import RunEvent
 from app.services.run_lock import acquire_run_lock
+from app.services.tool_loop import parse_tools_snapshot, parse_transcript
 
 CreateWorkspace = Callable[[str], Awaitable[tuple[int, Scope]]]
 
@@ -488,3 +491,326 @@ class TestToolRuns:
         assert "TurnStart" in emitted
         assert "ToolCallEvent" in emitted
         assert "ToolResultEvent" in emitted
+
+
+#: Two documents in one corpus, in the mixed German/English a customer's
+#: documentation actually arrives in. The target sentence sits under its own
+#: heading and well away from the top of the file, so a `ts_headline` fragment
+#: around it can only resolve to that heading — which is the citation a model is
+#: supposed to be able to act on.
+REFUNDS_MD = """# Rückgaberichtlinie
+
+Diese Richtlinie beschreibt, wie Kunden Artikel zurückgeben können und welche
+Fristen dabei gelten. Sie gilt für alle Bestellungen im Onlineshop.
+
+## Rückgabe innerhalb von 30 Tagen
+
+Kunden können Artikel innerhalb von 30 Tagen ohne Angabe von Gründen
+zurückgeben. Die Rücksendung ist für den Kunden kostenlos, sofern das
+beigelegte Etikett verwendet wird.
+
+## Refunds after 30 days
+
+A refund requested more than thirty days after delivery needs warehouse
+approval before the finance team may issue it. Ask the warehouse lead first and
+record the ticket number in the order notes.
+"""
+
+SHIPPING_MD = """# Versand
+
+Standardversand dauert zwei bis drei Werktage.
+
+## Express
+
+Express shipments leave the same day when the order arrives before 14:00.
+"""
+
+
+class TestDocumentRuns:
+    """A retrieval workload end to end: search, read, answer.
+
+    This is the whole point of the `documents` toolset kind, and it is here
+    rather than in the pure suite because every part of it that could go wrong
+    needs Postgres: the `simple`-configuration FTS match and its ranking, the
+    `ts_headline` fragment the heading is resolved from, and the frozen
+    `tools_snapshot` round trip that has to carry `source: "documents"` all the
+    way to the executor's dispatcher.
+    """
+
+    async def _corpus_run(
+        self,
+        scope: Scope,
+        session: AsyncSession,
+        *,
+        titles: Sequence[str] = ("Refund window",),
+    ) -> tuple[int, int]:
+        """A documents toolset with two documents, and a run over `titles`
+        selecting it. The three retrieval tools are seeded by `create_toolset`.
+        """
+        toolset = await create_toolset(scope, session, name="Handbook", kind="documents")
+        toolset_id = toolset.id
+        await create_document(
+            scope,
+            session,
+            toolset_id,
+            title="Rückgaberichtlinie",
+            path="guides/refunds.md",
+            content=REFUNDS_MD,
+        )
+        await create_document(
+            scope,
+            session,
+            toolset_id,
+            title="Versand",
+            path="guides/versand.md",
+            content=SHIPPING_MD,
+        )
+        await session.commit()
+
+        run_id = await make_run(
+            scope, session, titles=titles, tool_mode="execute", toolset_id=toolset_id
+        )
+        return run_id, toolset_id
+
+    async def test_the_model_searches_reads_and_answers_from_the_corpus(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        run_id, toolset_id = await self._corpus_run(scope, session)
+        stream, calls = scripted(
+            _result(
+                "",
+                tool_calls=[
+                    ToolCall(
+                        id="c1",
+                        name="search_documents",
+                        arguments='{"query": "warehouse approval"}',
+                    )
+                ],
+            ),
+            _result(
+                "",
+                tool_calls=[
+                    ToolCall(
+                        id="c2",
+                        name="read_document",
+                        # `limit` as a *string*: models emit it often enough that
+                        # refusing would measure their JSON habits, not retrieval.
+                        arguments='{"path": "guides/refunds.md", "limit": "120"}',
+                    )
+                ],
+            ),
+            _result("A refund past thirty days needs warehouse approval."),
+        )
+
+        events: list[RunEvent] = []
+        await execute_run(run_id, events.append, stream=stream)
+
+        results = await reload_results(scope, session, run_id)
+        assert results[0].status == "ok"
+        assert results[0].error is None
+        assert results[0].response_text == "A refund past thirty days needs warehouse approval."
+        assert results[0].turn_count == 3
+        assert results[0].tool_call_count == 2
+        assert results[0].stopped_reason == "stop"
+
+        # The search really ran in Postgres: one document matched, it is the
+        # right one, and the hit came back with the heading it sits under.
+        search = json.loads(calls[1][-1]["content"])
+        assert search["query"] == "warehouse approval"
+        assert search["match_count"] == 1
+        [match] = search["matches"]
+        assert match["path"] == "guides/refunds.md"
+        assert match["heading"] == "Refunds after 30 days"
+        assert "**warehouse**" in match["snippet"]
+
+        # And the read is a window of the live markdown, in characters, with the
+        # offset to continue from.
+        read = json.loads(calls[2][-1]["content"])
+        assert read["path"] == "guides/refunds.md"
+        assert read["offset"] == 0
+        assert read["chars"] == 120
+        assert read["total_chars"] == len(REFUNDS_MD)
+        assert read["truncated"] is True
+        assert read["next_offset"] == 120
+        assert read["content"] == REFUNDS_MD[:120]
+
+        transcript = parse_transcript(results[0].transcript_json)
+        assert transcript is not None
+        tool_messages = [message for message in transcript if message.role == "tool"]
+        assert [message.name for message in tool_messages] == [
+            "search_documents",
+            "read_document",
+        ]
+        # Neither is an error: a retrieval that worked must not read as one.
+        assert [message.tool_is_error for message in tool_messages] == [False, False]
+
+        # The frozen snapshot carried the source the dispatcher routes on, plus
+        # the two forward-compat corpus crumbs.
+        snapshot = parse_tools_snapshot(results[0].tools_snapshot)
+        assert sorted(tool.name for tool in snapshot) == [
+            "list_documents",
+            "read_document",
+            "search_documents",
+        ]
+        assert {tool.source for tool in snapshot} == {"documents"}
+        assert {tool.toolset_id for tool in snapshot} == {toolset_id}
+        assert {tool.mock_response for tool in snapshot} == {None}
+        assert {tool.document_count for tool in snapshot} == {2}
+        assert all(tool.corpus_updated_at for tool in snapshot)
+
+    async def test_a_bad_path_is_a_tool_result_and_never_a_failed_row(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        """The app's standing rule, on the path that most invites breaking it.
+
+        A `path` the model invents is one more value in a `WHERE` clause — there
+        is no filesystem behind it, so `../../etc/passwd` is not a traversal, it
+        is a miss. What matters is that the miss reaches the *model*, with the
+        paths that do exist in it, and that the row still finishes `ok`: a model
+        recovering from its own bad guess is exactly the behaviour this workload
+        is here to measure.
+        """
+        run_id, _ = await self._corpus_run(scope, session)
+        stream, calls = scripted(
+            _result(
+                "",
+                tool_calls=[
+                    ToolCall(
+                        id="c1",
+                        name="read_document",
+                        arguments='{"path": "../../etc/passwd"}',
+                    )
+                ],
+            ),
+            _result("I could not find that file; the corpus has guides/refunds.md."),
+        )
+
+        await execute_run(run_id, lambda _event: None, stream=stream)
+
+        results = await reload_results(scope, session, run_id)
+        assert results[0].status == "ok"
+        assert results[0].error is None
+        assert results[0].turn_count == 2
+
+        answer = json.loads(calls[1][-1]["content"])
+        assert 'There is no document at "../../etc/passwd"' in answer["error"]
+        assert "guides/refunds.md" in answer["error"]
+        assert "guides/versand.md" in answer["error"]
+
+        transcript = parse_transcript(results[0].transcript_json)
+        assert transcript is not None
+        [tool_message] = [message for message in transcript if message.role == "tool"]
+        # Flagged as an error *inside* the transcript, which is what the run
+        # detail view colours — while the row itself is a completed measurement.
+        assert tool_message.tool_is_error is True
+
+        session.expire_all()
+        run = await get_run(scope, session, run_id)
+        assert run is not None and run.status == "completed"
+
+    async def test_an_argument_postgres_refuses_costs_one_row_not_the_run(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        """The blast radius of a bad tool argument is one row. It has to be.
+
+        The document tools are the only ones that query on the executor's *own*
+        session, and a statement Postgres refuses leaves that session's
+        transaction aborted — after which every later statement on it raises. The
+        row's own `ok` write happens after the tool loop returns and therefore
+        *outside* the per-row handler, so without the closure's rollback this
+        sequence failed that write, took the remaining rows down with it and left
+        the run stuck `running` — one argument the model chose costing the whole
+        suite.
+
+        A NUL byte is the reachable way in: no corpus row can hold one (every
+        write door refuses it), so the call was always a miss — but asyncpg
+        rejects it as a bind parameter rather than returning no rows. The second
+        row is the assertion that matters; a single-row run would pass either way.
+        """
+        run_id, _ = await self._corpus_run(
+            scope, session, titles=("Refund window", "Shipping window")
+        )
+        stream, calls = scripted(
+            _result(
+                "",
+                tool_calls=[
+                    ToolCall(
+                        id="c1",
+                        name="search_documents",
+                        arguments='{"query": "R\\u0000ckgabe"}',
+                    )
+                ],
+            ),
+            _result("I could not search for that term."),
+            _result("Shipping takes three days."),
+        )
+
+        await execute_run(run_id, lambda _event: None, stream=stream)
+
+        results = await reload_results(scope, session, run_id)
+        # The refused statement reached the model as an ordinary tool error...
+        assert results[0].status == "ok"
+        assert results[0].error is None
+        answer = json.loads(calls[1][-1]["content"])
+        assert "corpus could not be queried" in answer["error"]
+
+        # ...and the *second* row still ran, which is the whole point.
+        assert results[1].status == "ok", results[1].error
+        assert results[1].response_text == "Shipping takes three days."
+
+        session.expire_all()
+        run = await get_run(scope, session, run_id)
+        assert run is not None and run.status == "completed"
+
+    async def test_a_search_that_matches_nothing_is_not_an_error(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        """A miss is a normal answer with a next step in it.
+
+        The words a customer's documentation uses are frequently not the words
+        the question used, so an empty result set carries a note pointing at
+        `list_documents` and is deliberately *not* flagged as an error: mislabelling
+        it would report an ordinary retrieval miss as a malfunction in `/results`.
+        """
+        run_id, _ = await self._corpus_run(scope, session)
+        stream, calls = scripted(
+            _result(
+                "",
+                tool_calls=[
+                    ToolCall(
+                        id="c1",
+                        name="search_documents",
+                        arguments='{"query": "helicopter maintenance"}',
+                    )
+                ],
+            ),
+            _result(
+                "",
+                tool_calls=[ToolCall(id="c2", name="list_documents", arguments="{}")],
+            ),
+            _result("The handbook covers refunds and shipping only."),
+        )
+
+        await execute_run(run_id, lambda _event: None, stream=stream)
+
+        results = await reload_results(scope, session, run_id)
+        assert results[0].status == "ok"
+
+        miss = json.loads(calls[1][-1]["content"])
+        assert miss["match_count"] == 0
+        assert miss["matches"] == []
+        assert "list_documents" in miss["note"]
+
+        listing = json.loads(calls[2][-1]["content"])
+        assert listing["document_count"] == 2
+        assert [document["path"] for document in listing["documents"]] == [
+            "guides/refunds.md",
+            "guides/versand.md",
+        ]
+        assert listing["documents"][0]["chars"] == len(REFUNDS_MD)
+
+        transcript = parse_transcript(results[0].transcript_json)
+        assert transcript is not None
+        assert [
+            message.tool_is_error for message in transcript if message.role == "tool"
+        ] == [False, False]

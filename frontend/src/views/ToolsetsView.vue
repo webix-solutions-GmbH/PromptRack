@@ -20,6 +20,7 @@ import {
   toolsetsApi,
   TOOLSET_KIND_OPTIONS,
   toolsetKindLabel,
+  toolsetKindSeverity,
   type Toolset,
   type ToolsetKind,
 } from '../api/toolsets'
@@ -121,7 +122,9 @@ async function submitForm() {
         <p class="subtitle">
           Bundles of callable functions a test case can be run with. A manual toolset answers with
           canned responses, which keeps a multi-turn test deterministic; an MCP toolset discovers
-          its tools from a server over HTTP and really executes them.
+          its tools from a server over HTTP and really executes them; a documents toolset holds a
+          markdown corpus and offers three retrieval tools over it, so "answer from the customer's
+          documentation" becomes a measurable workload.
         </p>
       </div>
       <Button v-if="auth.canAdminister" label="New toolset" icon="pi pi-plus" @click="openCreate" />
@@ -142,7 +145,7 @@ async function submitForm() {
         <template #body="{ data }: { data: Toolset }">
           <div class="name-cell">
             <RouterLink :to="`/toolsets/${data.id}`" class="name-link">{{ data.name }}</RouterLink>
-            <Tag :value="toolsetKindLabel(data.kind)" :severity="data.kind === 'mcp' ? 'info' : 'secondary'" />
+            <Tag :value="toolsetKindLabel(data.kind)" :severity="toolsetKindSeverity(data.kind)" />
             <Tag v-if="data.is_global" value="Global" severity="info" />
           </div>
           <span v-if="data.description" class="description">{{ data.description }}</span>
@@ -151,6 +154,9 @@ async function submitForm() {
       <Column header="Tools" class="fit-column">
         <template #body="{ data }: { data: Toolset }">
           {{ data.enabled_tool_count }}/{{ data.tool_count }} enabled
+          <span v-if="data.kind === 'documents'" class="description">
+            {{ data.document_count }} document{{ data.document_count === 1 ? '' : 's' }}
+          </span>
         </template>
       </Column>
       <Column field="updated_at" header="Updated" sortable class="fit-column">
@@ -192,6 +198,11 @@ async function submitForm() {
             />
           </div>
         </template>
+        <p v-else-if="form.kind === 'documents'" class="hint">
+          Creating this adds its three retrieval tools — <span class="mono">list_documents</span>,
+          <span class="mono">search_documents</span> and <span class="mono">read_document</span> —
+          straight away. Upload or write the markdown on the toolset's own page afterwards.
+        </p>
         <label v-if="auth.isBaseWorkspace" class="checkbox-option" for="toolset-is-global">
           <Checkbox v-model="form.is_global" binary input-id="toolset-is-global" />
           Global — share this toolset with every workspace

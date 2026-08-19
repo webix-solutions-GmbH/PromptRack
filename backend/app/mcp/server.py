@@ -1,10 +1,11 @@
 """This app *as* an MCP server.
 
-An agent (Claude Code, say) can push another project's real prompts and test
-cases in here, commit a version, start a run against a registered endpoint and
-read the measurements back — instead of retyping someone else's prompts into
-the web UI by hand. The point is that the interesting test cases already exist
-in other repositories: a customer's own agent repo is where the job is defined.
+An agent (Claude Code, say) can push another project's real prompts, test cases
+and documentation in here, commit a version, start a run against a registered
+endpoint and read the measurements back — instead of retyping someone else's
+prompts into the web UI by hand. The point is that the interesting test cases
+already exist in other repositories: a customer's own agent repo is where the
+job is defined, and its `docs/` is what the agent is expected to answer from.
 
 Built on the official Python SDK's `MCPServer` (the ergonomic FastMCP surface),
 which handles protocol negotiation, `tools/list` schemas (derived from each
@@ -38,6 +39,13 @@ with billing behind it). `deploy` joins them for the same reason spelled out in
 the spec: marking a version deployed is a human claim about a customer's
 production system.
 
+One of those lines is drawn a level lower than the others. A `documents`
+toolset's **markdown corpus** *is* writable here (`list_documents`,
+`create_document`, `update_document`): the container is a toolset and stays a UI
+act, but the documents inside it are content — the documentation another
+repository already holds, which is exactly what this surface exists to move. So
+every corpus tool names an existing toolset and none of them creates one.
+
 Transport is streamable HTTP in **stateless** mode: every POST is
 self-contained, nothing survives a restart, and more than one app process is
 therefore safe.
@@ -49,6 +57,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -83,6 +92,7 @@ from app.mcp.refs import (
     truncate,
 )
 from app.models import (
+    Document,
     Prompt,
     PromptKind,
     PromptVersion,
@@ -90,11 +100,20 @@ from app.models import (
     RunResult,
     TestCase,
     TestGroup,
+    Toolset,
 )
 from app.repos.customers import (
     count_customer_content,
     count_test_cases_by_customer,
     list_customers,
+)
+from app.repos.documents import (
+    DocumentMeta,
+    DocumentPathConflictError,
+    create_document,
+    get_document,
+    list_documents,
+    update_document,
 )
 from app.repos.endpoints import list_endpoint_models, list_endpoints, list_loaded_models
 from app.repos.prompt_versions import (
@@ -138,9 +157,14 @@ from app.repos.test_cases import (
     update_test_case,
 )
 from app.repos.test_cases import create_test_group as create_test_group_row
-from app.repos.toolsets import list_toolsets
+from app.repos.toolsets import list_tools, list_toolsets
 from app.scope import CrossCustomerError, Scope
 from app.services.attribution import VersionRef, head_version, is_dirty
+from app.services.documents import (
+    clean_document_path,
+    derive_document_title,
+    normalize_markdown,
+)
 from app.services.executor import execute_run, run_in_background
 from app.services.llm_info import parse_llm_info
 from app.services.message_assembly import NoUserMessageError
@@ -178,6 +202,10 @@ INSTRUCTIONS = (
     "them. Endpoints, toolsets and workspaces are deliberately read-only here — they hold "
     "credentials, or are a human decision — and marking a version deployed stays a human claim "
     "made in the UI. "
+    "The markdown corpus inside a documents toolset is the one thing writable at a level "
+    "below that: the toolset is created in the UI, its documents are content, so push a "
+    "repository's documentation in with create_document and a test case then measures how well "
+    "a model retrieves from it. "
     "Every call acts as the owner of the API token it carries, with that account's role: a "
     "read-only account is refused every tool that writes."
 )
@@ -1165,6 +1193,376 @@ def _blank_to_none(value: str | None) -> str | None:
     if value is None:
         return None
     return value if value.strip() else None
+
+
+# ---------------------------------------------------------------------------
+# Document corpora — the retrieval workload
+#
+# A `documents` toolset is a markdown corpus plus the three real tools a model
+# reaches it through at run time (`list_documents`, `search_documents`,
+# `read_document`), which is what turns "the agent answers from the customer's
+# documentation" into something measurable: whether the model searches well,
+# opens the right document, answers from the corpus and recovers from a path it
+# invented.
+#
+# The container is a toolset and therefore not creatable here, for the reason
+# every other toolset is not: it is where credentials would live, and making one
+# is a human act in the UI. Its documents are the opposite — pure content, and
+# the single most likely thing an agent driving this surface already has on
+# disk — so filling a corpus is the primary reason these three tools exist.
+# ---------------------------------------------------------------------------
+
+# How much markdown one document may hold is `MAX_DOCUMENT_CHARS`, and it is
+# `normalize_markdown` that asks it — not this module. The reasoning it encodes
+# is the same here as at the other two write doors: a readable refusal instead of
+# a multi-megabyte row travelling through a JSON-RPC message, and a nudge towards
+# the split that retrieval is actually being measured on, since a handbook a
+# reader would open by section wants to be that many documents. `read_document`
+# windows by characters anyway, so nothing past the first window would be read in
+# one call regardless.
+
+
+def _pick_corpus(rows: Sequence[Toolset], value: Any, label: str = '"toolset"') -> Toolset:
+    """The documents toolset a call names, refusing anything that is not one.
+
+    Resolution runs over every *visible* toolset rather than only the corpora, so
+    naming a manual or MCP toolset is answered with what is wrong with that row
+    instead of with "no such toolset" about a row sitting right there — the same
+    distinction `assert_prompt_slot` draws between a prompt that is missing and
+    one of the wrong kind. The refusal then lists the corpora that do exist,
+    which is the discovery path a caller that guessed needs.
+
+    A workspace holding no documents toolset at all is refused before the
+    reference is even resolved: no value could be right, and the one actionable
+    fact is that the container is made in the UI.
+    """
+    corpora = [row for row in rows if row.kind == "documents"]
+    if not corpora:
+        raise McpToolError(
+            "This workspace has no documents toolset. A corpus lives inside one, and the "
+            "toolset itself is created in the web UI: a toolset is the container that can hold "
+            "credentials, so it is not writable here — the documents inside one are content, "
+            "and they are."
+        )
+
+    toolset = resolve_row_ref(parse_row_ref(value, label), rows, "toolset")
+    if toolset.kind != "documents":
+        known = ", ".join(f"{row.name} ({row.id})" for row in corpora)
+        raise McpToolError(
+            f'Toolset "{toolset.name}" ({toolset.id}) is kind "{toolset.kind}", not '
+            f'"documents", so it holds no markdown corpus. Corpora here: {known}.'
+        )
+    return toolset
+
+
+def _assert_own_corpus(scope: Scope, toolset: Toolset) -> None:
+    """A corpus borrowed from Base is read-only, said out loud.
+
+    Sharing needs no permission layer — a write asks the ownership predicate and
+    a borrowed row simply matches nothing — but that silence is the wrong answer
+    for an agent, which would read the unchanged row back as a successful edit.
+    So the refusal is explicit, exactly as `app.api.toolsets._refuse_if_borrowed`
+    makes the same no-op an explicit 403. `create_document` is already refused
+    underneath by `assert_same_customer`; naming the reason up here keeps both
+    writes refusing in the same words.
+    """
+    if toolset.customer_id == scope.customer_id:
+        return
+    raise McpToolError(
+        f'Toolset "{toolset.name}" ({toolset.id}) is shared from the Base workspace, so its '
+        "corpus is read-only here. Name that workspace as `customer` to change it."
+    )
+
+
+@dataclass(frozen=True)
+class _DocumentRow:
+    """A document presented the way `resolve_row_ref` resolves rows: `path` as
+    its name.
+
+    A document has no name column — `path` is its identifier, and it is the very
+    string `read_document` is called with, so an agent that pushed
+    "guides/refunds.md" can name it back without looking an id up. Going through
+    `resolve_row_ref` is what makes a wrong path list the corpus's real paths,
+    the same courtesy a wrong group name gets.
+    """
+
+    meta: DocumentMeta
+
+    @property
+    def id(self) -> int:
+        return self.meta.id
+
+    @property
+    def name(self) -> str:
+        return self.meta.path
+
+
+def _document_view(row: Document | DocumentMeta, toolset: Toolset) -> dict[str, Any]:
+    """One document without its text — what all three tools answer with.
+
+    `chars` rather than `content` on purpose: the corpus exists to be read by the
+    *model* at execution time, so echoing a megabyte of markdown back to the
+    agent that just sent it would only spend the context it needs for the next
+    file. `path` is reported because it is the key `read_document` is called with
+    and the one `update_document` accepts.
+    """
+    chars = row.chars if isinstance(row, DocumentMeta) else len(row.content)
+    return {
+        "id": row.id,
+        "toolset": {"id": toolset.id, "name": toolset.name},
+        "path": row.path,
+        "title": row.title,
+        "chars": chars,
+        "created_at": _millis(row.created_at),
+        "updated_at": _millis(row.updated_at),
+    }
+
+
+def _document_path(value: str) -> str:
+    """`path` as the corpus stores it, through the one rule both write doors ask.
+
+    `read_document` matches the stored string exactly
+    (`app.repos.documents.get_document_by_path`) and `UNIQUE (toolset_id, path)`
+    is all that keeps one document from becoming two, so what counts as a key
+    cannot be a per-door decision: an agent pushing "./guides/refunds.md" here
+    and a colleague uploading the same file in the UI have to land on the same
+    row rather than on two spellings the model is then made to choose between.
+    That rule is `app.services.documents.clean_document_path`; the only thing
+    left to do here is say its refusal in this transport's vocabulary.
+    """
+    try:
+        return clean_document_path(value)
+    except ValueError as exc:
+        raise McpToolError(f"{exc} It is the key read_document is called with.") from exc
+
+
+def _document_content(value: str) -> str:
+    """The markdown, in this door's vocabulary.
+
+    Nothing is reformatted beyond what storing a document means at every door
+    (`app.services.documents.normalize_markdown`: a leading BOM dropped, CRLF
+    folded to LF). That is not cosmetic here — an agent pushing a repository's
+    `docs/` out of a Windows checkout would otherwise store CRLF, and
+    `read_document` windows by *characters* and reports those offsets back to the
+    model, so one file would have two lengths and offer two different windows
+    depending on which door it arrived through.
+
+    The size ceiling and the NUL refusal come from that same shared rule rather
+    than living here, so this door cannot accept a document the upload route would
+    reject or vice versa. All this adds is the translation into `McpToolError`,
+    which is what makes a refusal `isError` content the calling model can read and
+    act on instead of a JSON-RPC error — exactly what `_document_path` does with
+    the same `ValueError`.
+    """
+    try:
+        text = normalize_markdown(value)
+    except ValueError as exc:
+        raise McpToolError(str(exc)) from exc
+    if not text.strip():
+        raise McpToolError('"content" cannot be blank.')
+    return text
+
+
+@_tool(
+    "list_documents",
+    "List the markdown corpora this workspace can retrieve from, and the documents in each: "
+    "path, title and size, never the text (the model itself reads that at run time through "
+    "read_document). Omit `toolset` for every corpus, which is also how you find out which "
+    "documents toolsets exist — toolsets are not writable here, so this is the step before "
+    "create_document. Each corpus also reports its three retrieval tools and whether they are "
+    "enabled: a corpus with search_documents disabled is a deliberate test of navigating by "
+    "list and read alone.",
+    write=False,
+)
+async def list_documents_tool(
+    ctx: Context,
+    toolset: Annotated[
+        str | int | None,
+        Field(description="Name or id of one documents toolset. Omit for every corpus."),
+    ] = None,
+    customer: CustomerArg = None,
+) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "list_documents") as (session, scope, _):
+        rows = await list_toolsets(scope, session)
+        # No `_pick_corpus` when nothing is named: a read that answers "there are
+        # no corpora yet" is a true answer, and only a write has to refuse.
+        targets = (
+            [row for row in rows if row.kind == "documents"]
+            if toolset is None
+            else [_pick_corpus(rows, toolset)]
+        )
+        toolset_ids = [row.id for row in targets]
+
+        metas = await list_documents(scope, session, toolset_ids=toolset_ids)
+        tools = await list_tools(scope, session, toolset_ids=toolset_ids)
+        by_id = {row.id: row for row in targets}
+
+        corpora: list[dict[str, Any]] = []
+        for row in targets:
+            own = [meta for meta in metas if meta.toolset_id == row.id]
+            corpora.append(
+                {
+                    "id": row.id,
+                    "name": row.name,
+                    "description": row.description,
+                    # Shared from Base: retrievable from every engagement,
+                    # editable only where it lives.
+                    "is_global": row.is_global,
+                    "editable": row.customer_id == scope.customer_id,
+                    "document_count": len(own),
+                    "chars": sum(meta.chars for meta in own),
+                    "corpus_updated_at": _millis(
+                        max((meta.updated_at for meta in own), default=None)
+                    ),
+                    "retrieval_tools": [
+                        {"name": tool.name, "enabled": tool.enabled}
+                        for tool in tools
+                        if tool.toolset_id == row.id
+                    ],
+                }
+            )
+
+        return {
+            "corpora": corpora,
+            "count": len(metas),
+            "documents": [_document_view(meta, by_id[meta.toolset_id]) for meta in metas],
+        }
+
+
+@_tool(
+    "create_document",
+    "Add one markdown document to a corpus — how another repository's documentation becomes a "
+    "measurable workload. At run time the model is offered list_documents, search_documents and "
+    "read_document over exactly these documents, and the test case measures how well it "
+    "navigates them. `path` is the corpus key: the string read_document is called with and the "
+    'one search hits report back, so keep the repository\'s own layout, e.g. '
+    '"guides/refunds.md". The toolset that holds the corpus is created in the web UI; its '
+    "documents belong here. A path the corpus already holds is refused — use update_document.",
+    write=True,
+)
+async def create_document_tool(
+    ctx: Context,
+    toolset: Annotated[
+        str | int,
+        Field(description="Name or id of the documents toolset to add to (list_documents)."),
+    ],
+    path: Annotated[
+        str,
+        Field(
+            description='Corpus key, e.g. "guides/refunds.md". Matched exactly at run time, so '
+            "it is the string the model has to quote back; no normalisation is applied."
+        ),
+    ],
+    content: Annotated[str, Field(description="The markdown, verbatim.")],
+    title: Annotated[
+        str | None,
+        Field(
+            description="Label shown in list_documents and beside search hits. Defaults to "
+            "the markdown's own first heading, falling back to the path's file stem."
+        ),
+    ] = None,
+    customer: CustomerArg = None,
+) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "create_document") as (session, scope, _):
+        rows = await list_toolsets(scope, session)
+        corpus = _pick_corpus(rows, toolset)
+        _assert_own_corpus(scope, corpus)
+
+        cleaned_path = _document_path(path)
+        cleaned_content = _document_content(content)
+
+        try:
+            document = await create_document(
+                scope,
+                session,
+                corpus.id,
+                # An agent walking a repository has a path for every file and
+                # often no title at all, so a missing one is derived rather than
+                # refused — through the rule the upload route already uses, so
+                # one file gets one label whichever door it came in through: the
+                # markdown's own first heading, then the path's file stem.
+                title=(title or "").strip()
+                or derive_document_title(cleaned_content, cleaned_path),
+                path=cleaned_path,
+                content=cleaned_content,
+            )
+        except DocumentPathConflictError as exc:
+            raise McpToolError(f"{exc} Use update_document to change it.") from exc
+        except CrossCustomerError as exc:  # pragma: no cover - `_assert_own_corpus` first
+            raise McpToolError(str(exc)) from exc
+
+        await session.commit()
+        return {"document": _document_view(document, corpus)}
+
+
+@_tool(
+    "update_document",
+    "Replace one document's markdown, retitle it, or move it to another path. Address it by its "
+    "path or its id within the corpus; only the fields you pass are touched. Finished runs keep "
+    "the measurements and the tool definitions they froze, but the corpus itself is read live at "
+    "execution time — so a re-run after an edit is retrieving from the edited corpus, which is "
+    "the point when the documentation is what changed. Moving a document changes the key "
+    "read_document has to be called with.",
+    write=True,
+)
+async def update_document_tool(
+    ctx: Context,
+    toolset: Annotated[
+        str | int, Field(description="Name or id of the documents toolset holding it.")
+    ],
+    document: Annotated[
+        str | int,
+        Field(description='Path (e.g. "guides/refunds.md") or id of the document to change.'),
+    ],
+    content: Annotated[str | None, Field(description="New markdown, verbatim.")] = None,
+    title: Annotated[str | None, Field(description="New label.")] = None,
+    path: Annotated[
+        str | None,
+        Field(
+            description="Move the document to this corpus key. Refused if another document in "
+            "the same corpus already holds it."
+        ),
+    ] = None,
+    customer: CustomerArg = None,
+) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "update_document") as (session, scope, _):
+        rows = await list_toolsets(scope, session)
+        corpus = _pick_corpus(rows, toolset)
+        _assert_own_corpus(scope, corpus)
+
+        # The candidate list is this corpus's documents only, so an id belonging
+        # to another corpus reads as "no such document" — the scoped-read rule
+        # `_resolve_prompt` follows, one level down.
+        metas = await list_documents(scope, session, toolset_ids=[corpus.id])
+        target = resolve_row_ref(
+            parse_row_ref(document, '"document"'),
+            [_DocumentRow(meta) for meta in metas],
+            "document",
+        ).meta
+
+        values: dict[str, Any] = {}
+        if title is not None:
+            if not title.strip():
+                raise McpToolError('"title" cannot be blank.')
+            values["title"] = title.strip()
+        if content is not None:
+            values["content"] = _document_content(content)
+        if path is not None:
+            values["path"] = _document_path(path)
+
+        if values:
+            try:
+                await update_document(scope, session, target.id, values)
+            except DocumentPathConflictError as exc:
+                raise McpToolError(str(exc)) from exc
+            await session.commit()
+
+        # Re-read rather than merging the patch into the view: the write went out
+        # as a bulk UPDATE, and `updated_at` is the column's own `onupdate`.
+        written = await get_document(scope, session, target.id)
+        if written is None:  # pragma: no cover - deleted between the two statements
+            raise McpToolError(f"No document with id {target.id}.")
+        return {"document": _document_view(written, corpus), "changed": sorted(values)}
 
 
 # ---------------------------------------------------------------------------

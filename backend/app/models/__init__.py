@@ -21,6 +21,9 @@ from app.models.runs import (
 )
 from app.models.test_cases import TestCase, TestCaseToolset, TestGroup
 from app.models.toolsets import (
+    DOCUMENT_SEARCH_CONFIG,
+    DOCUMENT_TSV_EXPRESSION,
+    Document,
     Tool,
     ToolChoice,
     ToolMode,
@@ -30,9 +33,12 @@ from app.models.toolsets import (
 )
 
 __all__ = [
+    "DOCUMENT_SEARCH_CONFIG",
+    "DOCUMENT_TSV_EXPRESSION",
     "ApiToken",
     "Base",
     "Customer",
+    "Document",
     "Endpoint",
     "EndpointModel",
     "EndpointModelSource",

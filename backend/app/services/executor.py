@@ -20,6 +20,13 @@ credentials: the endpoint's `base_url`/`api_key` and an MCP toolset's URL and
 headers. A moved endpoint must not break Resume. The frozen half — text, tool
 definitions, a manual tool's canned response — travels with the run.
 
+A `documents` toolset's markdown is a third live read and the one that is *not*
+a credential: the three document tools query the corpus per call, through the
+scoped repository, on the session this module already holds for the run's
+duration. That is a real limitation rather than a preference — this version
+freezes no corpus, only `document_count` and `corpus_updated_at` beside each
+definition, so that a later one can say the corpus moved under a run.
+
 This is also where the two messages are **assembled**
 (`app.services.message_assembly`): the run's three frozen texts become a system
 message and a user message here, at dispatch, rather than at run creation. The
@@ -50,6 +57,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import async_session
 from app.models.runs import Run, RunStatus
+from app.repos.documents import (
+    document_summary,
+    get_document_by_path,
+    list_documents,
+    search_documents,
+)
 from app.repos.endpoints import get_endpoint
 from app.repos.runs import (
     count_pending_results,
@@ -63,6 +76,17 @@ from app.repos.runs import (
 from app.repos.scoped import utc_now
 from app.repos.toolsets import list_mcp_servers
 from app.scope import Scope
+from app.services.documents import (
+    LIST_DOCUMENTS,
+    READ_DOCUMENT,
+    SEARCH_DOCUMENTS,
+    list_documents_payload,
+    read_document_payload,
+    search_documents_payload,
+    unknown_path_message,
+    unknown_tool_message,
+    window_document,
+)
 from app.services.llm import LlmError, ToolCall, stream_chat
 from app.services.mcp_client import call_mcp_tool
 from app.services.message_assembly import assert_user_message, system_message, user_message
@@ -227,6 +251,45 @@ def _error_message(exc: BaseException) -> str:
     return str(exc) or "Unknown error."
 
 
+async def _build_tool_executor(
+    scope: Scope, session: AsyncSession, snapshot: list[SnapshotTool]
+) -> ToolExecutor | None:
+    """Builds the executor for everything a result cannot answer from its
+    snapshot, or None when it has no such tool.
+
+    Two sources need this layer, and they need opposite things from it, which is
+    why this is a dispatcher over two closures rather than one closure with a
+    branch in it:
+
+    * **MCP** needs credentials the snapshot deliberately does not hold, looked
+      up once here, up front.
+    * **documents** needs a scoped query per call, because the corpus is not
+      frozen into the run (see `app.services.tool_loop`'s module docstring).
+
+    Routing is on `entry.source`, never on the tool's name: `list_documents` is
+    a name a manual toolset is free to use for something else, and the frozen
+    entry is the only thing that knows which it was. A name the snapshot does
+    not contain never reaches here — the loop answers that itself — so a miss
+    below means the snapshot named a source this build cannot execute, and the
+    model is told so rather than the row dying.
+    """
+    source_by_name = {tool.name: tool.source for tool in snapshot}
+    mcp = await _build_mcp_executor(scope, session, snapshot)
+    documents = _build_documents_executor(scope, session, snapshot)
+    if mcp is None and documents is None:
+        return None
+
+    async def execute(call: ToolCall) -> ToolExecutionOutcome:
+        chosen = documents if source_by_name.get(call.name) == "documents" else mcp
+        if chosen is None:
+            return ToolExecutionOutcome(
+                error_payload(f'"{call.name}" cannot be executed in this run.'), True
+            )
+        return await chosen(call)
+
+    return execute
+
+
 async def _build_mcp_executor(
     scope: Scope, session: AsyncSession, snapshot: list[SnapshotTool]
 ) -> ToolExecutor | None:
@@ -270,6 +333,179 @@ async def _build_mcp_executor(
         return ToolExecutionOutcome(outcome.content, outcome.is_error)
 
     return execute
+
+
+def _build_documents_executor(
+    scope: Scope, session: AsyncSession, snapshot: list[SnapshotTool]
+) -> ToolExecutor | None:
+    """Builds the executor for a result's document tools, or None when it has
+    none.
+
+    Unlike the MCP closure above, this one queries per call: the corpus is not
+    frozen into the run, so `search_documents` and `read_document` have to see
+    what the documents actually say now. That means touching the session between
+    model turns, which is safe because the loop is strictly sequential — the
+    executor awaits `run_tool_loop`, which awaits each tool call in turn, so no
+    other statement is ever in flight on this session.
+
+    **The corpus a call can reach is fixed by the frozen `toolset_id` plus this
+    run's scope, and that is the whole of the security story.** A `path` the model
+    invents (`../../etc/passwd`, another customer's handbook) is one more value in
+    a `WHERE` clause that matches nothing: there is no filesystem read here and
+    therefore no traversal to sanitize. The scope comes from the run row
+    (`scope_from_row`), so a borrowed global corpus stays readable — a visible
+    read, never an owned one, which is `app.repos.documents`' distinction and not
+    this closure's to make.
+
+    A missing path, an offset past the end, an empty corpus and a query that
+    matches nothing are all answers the model reads and recovers from — which is
+    exactly the retrieval behaviour this workload exists to measure, and the app's
+    standing rule that a tool failure is data.
+
+    **Querying per call is also why this closure owns a rollback.** It is the only
+    tool executor that runs a statement on the executor's *own* session, and a
+    statement Postgres refuses leaves that session's transaction aborted — after
+    which every later statement on it raises `InFailedSQLTransactionError`. The
+    row's own `ok` write happens *after* `run_tool_loop` returns and therefore
+    outside the per-row handler, so a poisoned session would fail that write, fail
+    the remaining rows with it and leave the run stuck `running`: one tool argument
+    costing the whole suite, precisely the blast radius the per-row handler exists
+    to prevent. Every call therefore runs inside a savepoint — see `execute` below
+    for why a savepoint and not a rollback — and the model reads what happened as
+    an ordinary tool error.
+    """
+    toolset_id_by_name = {
+        tool.name: tool.toolset_id for tool in snapshot if tool.source == "documents"
+    }
+    if not toolset_id_by_name:
+        return None
+
+    async def paths(toolset_id: int) -> list[str]:
+        """Every path in the corpus, for a bad-path message worth reading."""
+        metas = await list_documents(scope, session, toolset_ids=[toolset_id])
+        return [meta.path for meta in metas]
+
+    async def answer(call: ToolCall) -> ToolExecutionOutcome:
+        toolset_id = toolset_id_by_name[call.name]
+        # The loop already validated the arguments; parse again for the values.
+        arguments = parse_tool_arguments(call.arguments).value or {}
+
+        if call.name == LIST_DOCUMENTS:
+            metas = await list_documents(scope, session, toolset_ids=[toolset_id])
+            return _json_outcome(
+                list_documents_payload([meta.summary() for meta in metas])
+            )
+
+        if call.name == SEARCH_DOCUMENTS:
+            query = _text_argument(arguments.get("query"))
+            matches = await search_documents(
+                scope,
+                session,
+                toolset_id,
+                query=query,
+                limit=_int_argument(arguments.get("limit")),
+            )
+            return _json_outcome(search_documents_payload(query, matches))
+
+        if call.name == READ_DOCUMENT:
+            # Verbatim, deliberately: `get_document_by_path` matches exactly, so
+            # the path the model quoted back from a listing is the path it gets
+            # and anything else is an honest miss it is told about. Trimming here
+            # would be normalisation by the back door.
+            path = _text_argument(arguments.get("path"))
+            document = await get_document_by_path(scope, session, toolset_id, path)
+            if document is None:
+                return ToolExecutionOutcome(
+                    error_payload(unknown_path_message(path, await paths(toolset_id))),
+                    True,
+                )
+            window = window_document(
+                document.content,
+                _int_argument(arguments.get("offset")),
+                _int_argument(arguments.get("limit")),
+            )
+            return _json_outcome(
+                read_document_payload(document_summary(document), window)
+            )
+
+        # A run frozen by a build that offered a fourth document tool. The
+        # snapshot survives; the model is told which tools this corpus has.
+        return ToolExecutionOutcome(error_payload(unknown_tool_message(call.name)), True)
+
+    async def execute(call: ToolCall) -> ToolExecutionOutcome:
+        # A SAVEPOINT, not a plain `rollback()`, and the difference is the whole
+        # reason this wrapper is subtle. A refused statement aborts the session's
+        # transaction, and `session.rollback()` does clear that — but it also
+        # **expires every instance in the identity map**, so the next row's
+        # attribute read becomes lazy IO in a context that cannot await it
+        # (`greenlet_spawn has not been called`). The suite would keep running and
+        # fail every row after the first. Rolling back to a savepoint clears the
+        # aborted state and leaves the identity map alone, which is the same
+        # nested-safety `app.repos.scoped.transaction` already relies on.
+        try:
+            async with session.begin_nested():
+                return await answer(call)
+        except Exception as exc:  # noqa: BLE001 - a tool failure is data, not a crash
+            # Deliberately not `BaseException`: a `CancelledError` has to keep
+            # propagating so the executor can reset the in-flight row to
+            # `pending`, exactly as `tool_loop.execute_one` argues.
+            #
+            # The reachable case is an argument the *model* chose. A `query` or
+            # `path` carrying a NUL byte cannot be a bind parameter at all —
+            # asyncpg raises `CharacterNotInRepertoireError` — and no corpus row
+            # could hold one either, since `normalize_markdown` and
+            # `clean_document_path` refuse it at every write door. So the call was
+            # always going to be a miss; this is what keeps it a miss for *this
+            # row* instead of for every row after it.
+            return ToolExecutionOutcome(
+                error_payload(f"The corpus could not be queried: {exc}"), True
+            )
+
+    return execute
+
+
+def _json_outcome(payload: dict[str, Any]) -> ToolExecutionOutcome:
+    """A successful document tool answer, as the tool message the model reads.
+
+    `ensure_ascii=False` because these corpora are frequently German: escaping
+    every umlaut would hand the model `R\\u00fcckgabe` to read and pay tokens for,
+    where the request body is UTF-8 either way.
+    """
+    return ToolExecutionOutcome(json.dumps(payload, ensure_ascii=False), False)
+
+
+def _text_argument(value: Any) -> str:
+    """A string argument, or `""` for a model that sent something else.
+
+    Empty rather than refused: a blank `path` falls through to the bad-path
+    message, which lists what does exist, and a blank `query` to the no-match
+    note that suggests `list_documents`. Both are a usable next step, where a
+    complaint about JSON types is a turn spent on nothing.
+    """
+    return value if isinstance(value, str) else ""
+
+
+def _int_argument(value: Any) -> int | None:
+    """An integer argument, or None to let the pure default apply.
+
+    A numeric string counts, because models emit `"limit": "10"` often enough
+    that refusing it would measure their JSON habits rather than their retrieval.
+    `True` is not a number. Out-of-range values are *not* corrected here —
+    `app.services.documents` clamps every one of them, in one place, next to the
+    ceilings it clamps to.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +621,7 @@ async def _execute(
         snapshot = parse_tools_snapshot(result.tools_snapshot)
         tool_run = bool(snapshot) and result.tool_mode != "none"
         execute_tool = (
-            await _build_mcp_executor(scope, session, snapshot)
+            await _build_tool_executor(scope, session, snapshot)
             if result.tool_mode == "execute"
             else None
         )

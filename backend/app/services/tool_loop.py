@@ -28,6 +28,15 @@ at execution time — the same line an endpoint's `base_url`/`api_key` sits on.
 Which is why the loop takes an `execute_tool` callable rather than looking a
 server up itself: building that executor needs a scoped database read, and is
 the executor's job.
+
+A `documents` toolset sits on that line differently, and it is worth being
+explicit about: its three tool *definitions* freeze like any others, but the
+markdown they read is queried live, so a corpus edited between two runs is not
+something a past run can currently prove it saw. Hence `document_count` and
+`corpus_updated_at` below — two keys in a dict that was being serialized
+anyway, frozen so a later version can report that drift without needing a
+migration to discover it. They describe the corpus; they are not the corpus,
+and nothing in this build reads them back.
 """
 
 from __future__ import annotations
@@ -36,7 +45,7 @@ import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from time import monotonic
-from typing import Any, NamedTuple, Protocol
+from typing import Any, NamedTuple, Protocol, get_args
 
 from app.models.runs import StoppedReason
 from app.models.toolsets import ToolChoice, ToolMode, ToolSource
@@ -66,6 +75,14 @@ TurnDeltaCallback = Callable[[int, str], None]
 # ---------------------------------------------------------------------------
 
 
+#: Every tool source, derived from the column's own `Literal` rather than
+#: repeated here — which is the whole point: :func:`parse_tools_snapshot` used to
+#: name its sources by hand, so `documents` arriving in the column was silently
+#: read as `manual` and every document tool answered "no canned response
+#: configured". A source added to the model can no longer be missing from here.
+TOOL_SOURCES: tuple[ToolSource, ...] = get_args(ToolSource)
+
+
 @dataclass(frozen=True)
 class SnapshotTool:
     """One frozen tool in a `run_results.tools_snapshot`."""
@@ -74,9 +91,17 @@ class SnapshotTool:
     source: ToolSource
     toolset_id: int
     toolset_name: str
-    #: A manual tool's canned response, returned verbatim. None for MCP tools
-    #: (and for a manual tool nobody configured, which the loop reports).
+    #: A manual tool's canned response, returned verbatim. None for MCP and
+    #: document tools (and for a manual tool nobody configured, which the loop
+    #: reports).
     mock_response: str | None = None
+    #: How much corpus a `documents` toolset held when this run was created, and
+    #: when it had last changed (ISO-8601, or None for a corpus that has never
+    #: had a document in it). None on both for every other source. Frozen for
+    #: later drift reporting only — see the module docstring — and a string
+    #: rather than a `datetime` so the JSON round trip stays lossless.
+    document_count: int | None = None
+    corpus_updated_at: str | None = None
 
     @property
     def name(self) -> str:
@@ -89,13 +114,20 @@ class SnapshotTool:
         return ""
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "definition": self.definition,
             "source": self.source,
             "toolset_id": self.toolset_id,
             "toolset_name": self.toolset_name,
             "mock_response": self.mock_response,
         }
+        # Omitted rather than written as nulls, so a manual or MCP tool's frozen
+        # entry stays byte-identical to what this column has always held.
+        if self.document_count is not None:
+            payload["document_count"] = self.document_count
+        if self.corpus_updated_at is not None:
+            payload["corpus_updated_at"] = self.corpus_updated_at
+        return payload
 
 
 def serialize_tools_snapshot(snapshot: Sequence[SnapshotTool]) -> str:
@@ -118,13 +150,24 @@ def _json_array(raw: str | None) -> list[Any]:
     return parsed if isinstance(parsed, list) else []
 
 
+def _tool_source(value: Any) -> ToolSource:
+    """A stored `source`, or `manual` for anything this build does not know.
+
+    The same fail-closed shape as `app.auth.policy.parse_role`, and for the same
+    reason: the column is plain text, so a value written by a later build has to
+    degrade to the one source that needs nothing looked up. It answers the model
+    with an error it can read instead of calling a server — or a corpus — nobody
+    named.
+    """
+    return value if value in TOOL_SOURCES else "manual"  # type: ignore[return-value]
+
+
 def parse_tools_snapshot(raw: str | None) -> list[SnapshotTool]:
     """Reads a `tools_snapshot` column back, skipping anything malformed.
 
-    An entry whose `source` is unrecognized is read as `manual`, which is the
-    safe reading: a manual tool with no canned response answers with an error
-    the model can see, whereas guessing `mcp` would try to call a server that
-    was never named.
+    Every reader degrades: an unrecognized `source` becomes `manual`
+    (:func:`_tool_source`), and the two corpus keys are absent from every
+    snapshot frozen before they existed, so they read as None there.
     """
     tools: list[SnapshotTool] = []
     for entry in _json_array(raw):
@@ -145,10 +188,12 @@ def parse_tools_snapshot(raw: str | None) -> list[SnapshotTool]:
         tools.append(
             SnapshotTool(
                 definition=definition,
-                source="mcp" if source == "mcp" else "manual",
+                source=_tool_source(source),
                 toolset_id=toolset_id if isinstance(toolset_id, int) else 0,
                 toolset_name=toolset_name if isinstance(toolset_name, str) else "",
                 mock_response=mock_response if isinstance(mock_response, str) else None,
+                document_count=_optional_int(entry.get("document_count")),
+                corpus_updated_at=_optional_str(entry.get("corpus_updated_at")),
             )
         )
     return tools
@@ -377,9 +422,10 @@ class ToolExecutionOutcome(NamedTuple):
     is_error: bool
 
 
-#: Runs one MCP call. Required for `execute` mode with MCP tools, unused
-#: otherwise. Built by the executor, which has the scope needed to look a
-#: server's live URL and headers up.
+#: Runs one call the loop cannot answer from the snapshot alone — an MCP tool or
+#: a document tool. Required for `execute` mode with either, unused otherwise.
+#: Built by the executor, which holds the scope and the session needed to look a
+#: server's live URL and headers, or a corpus's markdown, up.
 ToolExecutor = Callable[[ToolCall], Awaitable[ToolExecutionOutcome]]
 
 
@@ -420,8 +466,13 @@ async def _execute_one(
         return ToolExecutionOutcome(entry.mock_response, False)
 
     if execute_tool is None:
+        # Reachable when the toolset behind the call was deleted or switched
+        # kind after the run was frozen, so the executor found nothing live to
+        # build against. Naming which kind of tool went unanswered is the
+        # difference between a readable transcript and a puzzle.
+        kind = "document tools" if entry.source == "documents" else "MCP tools"
         return ToolExecutionOutcome(
-            error_payload("No executor is configured for MCP tools in this run."), True
+            error_payload(f"No executor is configured for {kind} in this run."), True
         )
 
     try:

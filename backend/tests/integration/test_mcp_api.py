@@ -163,7 +163,14 @@ async def test_mcp_endpoint(
             assert init["result"]["serverInfo"]["name"] == "promptrack"
 
             listed = await rpc(client, token, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-            assert len(listed["result"]["tools"]) == 20
+            # The registry is asserted exhaustively in `tests/test_mcp.py`; what
+            # the wire adds is that every registered tool really reaches a client,
+            # with the `readOnlyHint` the `_WRITES` declaration derives.
+            advertised = {tool["name"]: tool for tool in listed["result"]["tools"]}
+            assert len(advertised) == 23
+            assert advertised["list_documents"]["annotations"]["readOnlyHint"] is True
+            assert advertised["create_document"]["annotations"]["readOnlyHint"] is False
+            assert advertised["update_document"]["annotations"]["readOnlyHint"] is False
 
             # --- which workspace a call runs in -----------------------------
             failed, message = await call(client, token, "list_test_groups", {})

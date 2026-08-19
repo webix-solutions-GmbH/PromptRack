@@ -16,6 +16,13 @@ dependencies = [
     "authlib>=1.3",
     "itsdangerous>=2.2",
     "mcp>=2.0.0",
+    # Starlette parses a multipart body through this and nothing else, so the
+    # markdown-corpus upload (`POST /api/toolsets/{id}/documents/upload`) needs
+    # it. Named explicitly even though `mcp` already pulls it in: as a transitive
+    # dependency it would vanish the day `mcp` stopped needing it, and the
+    # breakage would surface as an ImportError from a route that has nothing to
+    # do with MCP.
+    "python-multipart>=0.0.20",
 ]
 
 [dependency-groups]

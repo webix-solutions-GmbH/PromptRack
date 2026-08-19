@@ -8,6 +8,11 @@ toolset read-only outside Base without a permission layer. Setting
 (:func:`~app.repos.customers.assert_base_workspace`, from inside the two write
 functions). *Un*-sharing one and deleting one are both guarded while another
 workspace's test cases still select it — see :class:`ToolsetInUseError`.
+
+A ``documents`` toolset's three retrieval tools are `tools` rows like any other,
+synthesized here rather than authored or discovered — see
+:func:`sync_document_tools`. The corpus those rows read from lives in
+:mod:`app.repos.documents`.
 """
 
 from collections.abc import Mapping, Sequence
@@ -21,6 +26,7 @@ from app.models import Customer, TestCase, TestCaseToolset, TestGroup, Tool, Too
 from app.repos.customers import assert_base_workspace, assert_same_customer
 from app.repos.scoped import apply_where, scope_through_parent, utc_now
 from app.scope import Scope, combine, scope_values, where_scoped, where_visible
+from app.services.documents import DOCUMENT_TOOLS
 
 
 class ToolsetInUseError(Exception):
@@ -86,6 +92,13 @@ async def create_toolset(
     mcp_headers: str | None = None,
     is_global: bool = False,
 ) -> Toolset:
+    """Writes a toolset, seeding a ``documents`` one with its three tools.
+
+    The seeding happens here rather than in the route so that no call site can
+    create a documents toolset that offers nothing — the API, an MCP tool and a
+    test fixture all get the same three rows, the same way `create_tool` and
+    `create_test_case` keep their own invariants inside the repository.
+    """
     if is_global:
         await assert_base_workspace(session, scope, subject="A toolset")
     toolset = Toolset(
@@ -99,6 +112,8 @@ async def create_toolset(
     )
     session.add(toolset)
     await session.flush()
+    if kind == "documents":
+        await sync_document_tools(scope, session, toolset.id)
     return toolset
 
 
@@ -113,6 +128,11 @@ async def update_toolset(
     dangling behind a row that workspace can no longer see, which its next save
     of the case turns into a real unlink. Both refusals happen before the
     ``UPDATE``, so a refused patch writes nothing at all.
+
+    A patch that switches ``kind`` to ``documents`` re-asserts the three
+    retrieval tools, so a toolset converted after the fact is as usable as one
+    created that way. Switching *away* deliberately does nothing: see
+    :func:`sync_document_tools` on why the ``enabled`` flag belongs to the human.
     """
     if not values:
         return
@@ -123,7 +143,12 @@ async def update_toolset(
     statement = apply_where(
         update(Toolset), where_scoped(scope, Toolset, Toolset.id == toolset_id)
     )
-    await session.execute(statement.values(**values))
+    result = await session.execute(statement.values(**values))
+    # `rowcount` and not just the patch: a write against a row this workspace
+    # only borrows is a no-op under the strict predicate, and it has to stay one
+    # rather than becoming a refusal from the seeding underneath it.
+    if values.get("kind") == "documents" and result.rowcount:
+        await sync_document_tools(scope, session, toolset_id)
 
 
 @dataclass(frozen=True)
@@ -424,3 +449,95 @@ async def sync_discovered_tools(
 
     await session.flush()
     return ToolSync(discovered=len(discovered), retired=len(retired))
+
+
+# ---------------------------------------------------------------------------
+# documents — the three synthesized tools
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DocumentToolSync:
+    """What one re-assertion of the three document tools changed."""
+
+    created: int
+    refreshed: int
+
+
+async def sync_document_tools(
+    scope: Scope, session: AsyncSession, toolset_id: int
+) -> DocumentToolSync:
+    """Asserts that a documents toolset offers exactly the three retrieval tools.
+
+    They are **real `tools` rows**, and that is the entire design: because they
+    are rows, `assert_tool_config`'s collision and "no enabled tools" checks,
+    `tools_snapshot`, the toolset detail UI and the `enabled` flag all cover them
+    with no code learning a new case. What makes them different from every other
+    row is only where they come from — neither hand-authored like a `manual` tool
+    nor reported by a server like an `mcp` one, but *synthesized* from
+    `app.services.documents.DOCUMENT_TOOLS`, so every corpus in every engagement
+    offers the same three functions with the same descriptions and the same
+    schemas. A retrieval measurement that could be explained by a differently
+    worded tool description would measure the description instead of the model.
+
+    Called from `create_toolset` (and from `update_toolset` when a toolset is
+    converted), so a documents toolset never exists without them; exposed as
+    well, because a build that improves a description needs a way to push it
+    onto corpora that already exist.
+
+    **It never touches `enabled` on a row that already exists.** Disabling
+    `search_documents` and leaving the model to navigate by `list_documents` and
+    `read_document` alone is one of the more interesting things this feature can
+    measure, and a sync that helpfully re-enabled it would silently destroy that
+    test case. Only rows this call creates start out enabled.
+
+    Ownership-checked without ``allow_global``, exactly like
+    `sync_discovered_tools`: writing `tools` rows by id is the path that would
+    otherwise let a borrowing workspace rewrite a shared toolset's definitions.
+    """
+    await assert_same_customer(session, scope, Toolset, toolset_id)
+    now = utc_now()
+    by_name = {
+        row.name: row for row in await list_tools(scope, session, toolset_ids=[toolset_id])
+    }
+
+    created = 0
+    refreshed = 0
+    for tool in DOCUMENT_TOOLS:
+        row = by_name.get(tool.name)
+        if row is None:
+            session.add(
+                Tool(
+                    toolset_id=toolset_id,
+                    name=tool.name,
+                    description=tool.description,
+                    parameters_json=tool.parameters_json,
+                    mock_response=None,
+                    enabled=True,
+                    source="documents",
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+            )
+            created += 1
+            continue
+
+        await session.execute(
+            update(Tool)
+            .where(Tool.id == row.id)
+            .values(
+                description=tool.description,
+                parameters_json=tool.parameters_json,
+                # A row that was authored by hand under one of these three names
+                # (or discovered under it) becomes the synthesized one: two
+                # answers to "what does read_document do" is the state nothing
+                # downstream can resolve, and the corpus is the truthful one.
+                source="documents",
+                mock_response=None,
+                last_seen_at=now,
+            )
+        )
+        refreshed += 1
+
+    await session.flush()
+    return DocumentToolSync(created=created, refreshed=refreshed)

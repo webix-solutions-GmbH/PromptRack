@@ -18,15 +18,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import async_session
-from app.models import Endpoint, EndpointModel, Run, RunResult, Tool
 
 # Aliased away from the `Test`-prefixed names: pytest's default collector
 # treats any class visible at test-module level whose *name* starts with
 # `Test` as a candidate test class, and warns when it can't be instantiated
 # with no arguments (these are SQLAlchemy declarative models).
+from app.models import Document as DocumentModel
+from app.models import Endpoint, EndpointModel, Run, RunResult, Tool
 from app.models import TestCase as CaseModel
 from app.models import TestCaseToolset as CaseToolsetModel
 from app.models.prompts import PromptVersion
+from app.repos.documents import create_document, delete_document, update_document
 from app.repos.endpoints import create_endpoint, delete_endpoint, sync_discovered_models
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt, delete_prompt
@@ -330,6 +332,129 @@ async def test_nulls_the_task_version_column_keeping_both_frozen_texts(
         assert result.system_prompt_version_id == ids["system_version_id"]
         assert result.system_prompt_text == "SYSTEM"
         assert result.task_prompt_text == "TASK"
+
+
+async def _seed_corpus(session: AsyncSession, scope: Scope) -> dict[str, int]:
+    """A documents toolset with one document and the three synthesized tools.
+
+    Its own seeding rather than `_seed_everything`'s, because a `documents`
+    toolset arrives with three `tools` rows and the tests above assert that
+    deleting a *manual* toolset leaves `tools` empty.
+    """
+    toolset = await create_toolset(scope, session, name="Handbook", kind="documents")
+    document = await create_document(
+        scope,
+        session,
+        toolset.id,
+        title="Refund policy",
+        path="guides/refunds.md",
+        content="# Rückgabe\n\nA refund past thirty days needs warehouse approval.\n",
+    )
+    await session.commit()
+    return {"toolset_id": toolset.id, "document_id": document.id}
+
+
+async def test_the_generated_tsvector_is_populated_and_recomputed(
+    session: AsyncSession, scope: Scope
+):
+    """`content_tsv` is `GENERATED ALWAYS AS ... STORED`, so nothing in the app
+    ever writes it — which means the only proof it holds what search needs is a
+    real Postgres computing it.
+
+    Both halves matter: the title *and* the content are indexed (a document
+    findable only by its body would miss "Refund policy" entirely), and an edit
+    recomputes the column rather than leaving the old lexemes behind, which would
+    make a corrected document keep answering searches with what it used to say.
+    The configuration is `simple` and not `english`, so the German word survives
+    unstemmed and lowercased next to the English ones.
+    """
+    ids = await _seed_corpus(session, scope)
+
+    async with async_session() as fresh:
+        stored = await fresh.get(DocumentModel, ids["document_id"])
+        assert stored is not None
+        lexemes = stored.content_tsv
+        assert "'warehouse'" in lexemes
+        assert "'approval'" in lexemes
+        # From the title column, not the markdown.
+        assert "'policy'" in lexemes
+        # `simple`, so no stemming and no ASCII folding: the umlaut is kept.
+        assert "'rückgabe'" in lexemes
+
+    await update_document(
+        scope,
+        session,
+        ids["document_id"],
+        {"content": "# Versand\n\nExpress shipments leave the same day.\n"},
+    )
+    await session.commit()
+
+    async with async_session() as fresh:
+        edited = await fresh.get(DocumentModel, ids["document_id"])
+        assert edited is not None
+        assert "'warehouse'" not in edited.content_tsv
+        assert "'shipments'" in edited.content_tsv
+
+
+async def test_cascades_documents_when_toolset_deleted(session: AsyncSession, scope: Scope):
+    """`documents.toolset_id` is `ON DELETE CASCADE`, the same as `tools`: the
+    corpus is part of the toolset and has no meaning without it — and a past run
+    renders from its own snapshot regardless, so nothing is lost that a run
+    needed.
+    """
+    ids = await _seed_corpus(session, scope)
+
+    await delete_toolset(scope, session, ids["toolset_id"])
+    await session.commit()
+
+    async with async_session() as fresh:
+        assert (await fresh.scalars(select(DocumentModel))).all() == []
+        assert (await fresh.scalars(select(Tool))).all() == []
+
+
+async def test_deleting_a_document_leaves_its_toolset_and_tools_alone(
+    session: AsyncSession, scope: Scope
+):
+    """The cascade runs one way only. An emptied corpus still offers all three
+    retrieval tools, which is what lets `list_documents` say it is empty instead
+    of the tool disappearing mid-suite.
+    """
+    ids = await _seed_corpus(session, scope)
+
+    await delete_document(scope, session, ids["document_id"])
+    await session.commit()
+
+    async with async_session() as fresh:
+        assert (await fresh.scalars(select(DocumentModel))).all() == []
+        tools = (await fresh.scalars(select(Tool))).all()
+        assert sorted(tool.name for tool in tools) == [
+            "list_documents",
+            "read_document",
+            "search_documents",
+        ]
+        assert {tool.source for tool in tools} == {"documents"}
+
+
+async def test_two_corpora_may_hold_the_same_path(session: AsyncSession, scope: Scope):
+    """`UNIQUE(toolset_id, path)` and not `UNIQUE(path)`: the path is the key
+    `read_document` takes, and it is only unique *within* one corpus.
+    """
+    ids = await _seed_corpus(session, scope)
+    other = await create_toolset(scope, session, name="Archive", kind="documents")
+    twin = await create_document(
+        scope,
+        session,
+        other.id,
+        title="Superseded refund policy",
+        path="guides/refunds.md",
+        content="# Rückgabe (alt)\n\nSuperseded.\n",
+    )
+    await session.commit()
+
+    async with async_session() as fresh:
+        rows = (await fresh.scalars(select(DocumentModel))).all()
+        assert sorted(row.id for row in rows) == sorted([ids["document_id"], twin.id])
+        assert {row.path for row in rows} == {"guides/refunds.md"}
 
 
 async def test_a_content_less_test_case_round_trips_as_null(

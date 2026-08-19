@@ -38,6 +38,16 @@ from app.repos.customers import (
     count_customer_content,
     delete_customer,
 )
+from app.repos.documents import (
+    create_document,
+    delete_document,
+    get_document,
+    get_document_by_path,
+    list_corpus_stats,
+    list_documents,
+    search_documents,
+    update_document,
+)
 from app.repos.endpoints import (
     EndpointInUseError,
     create_endpoint,
@@ -846,3 +856,186 @@ class TestGlobals:
         assert unshared is not None and unshared.is_global is False
         base_still_pending = await list_runs(base, session, run_ids=[base_run.run_id])
         assert [run.status for run in base_still_pending] == ["pending"]
+
+    async def test_a_global_corpus_reads_everywhere_and_writes_only_in_base(
+        self, session: AsyncSession, create_workspace: CreateWorkspace
+    ):
+        """`documents` is a child of `toolsets`, so sharing a corpus needed no
+        new rule: the reads ask `visible_where` through the parent and the writes
+        keep asking `scope_where`.
+
+        Reading a borrowed corpus *including its markdown* is the point — a run
+        in this workspace retrieves from exactly these documents at execution
+        time — while every write is the strict predicate matching nothing.
+        `app.api.toolsets` turns that no-op into a 403 so a caller is not told it
+        succeeded; here it is asserted where the predicate actually lives.
+        """
+        _, base = await _make_base(session, create_workspace)
+        _, a = await create_workspace("A")
+
+        shared_id = (
+            await create_toolset(
+                base, session, name="Shared handbook", kind="documents", is_global=True
+            )
+        ).id
+        # Captured before `expire_all()` below: an expired attribute needs an
+        # `await` to refresh, and these are plain references here.
+        document_id = (
+            await create_document(
+                base,
+                session,
+                shared_id,
+                title="Refunds",
+                path="guides/refunds.md",
+                content="# Refunds\n\n## After 30 days\n\nNeeds warehouse approval.\n",
+            )
+        ).id
+        # Base's *own* unshared corpus: being Base shares nothing by itself.
+        private_id = (
+            await create_toolset(base, session, name="Base only", kind="documents")
+        ).id
+        await create_document(
+            base,
+            session,
+            private_id,
+            title="Internal",
+            path="internal.md",
+            content="# Internal\n\nOur own warehouse notes.\n",
+        )
+
+        # Every read, from A: the list, both lookups, the count, and the search.
+        assert [(meta.toolset_id, meta.path) for meta in await list_documents(a, session)] == [
+            (shared_id, "guides/refunds.md")
+        ]
+        by_id = await get_document(a, session, document_id)
+        assert by_id is not None and "warehouse approval" in by_id.content
+        by_path = await get_document_by_path(a, session, shared_id, "guides/refunds.md")
+        assert by_path is not None and by_path.id == document_id
+        stats = await list_corpus_stats(a, session, [shared_id, private_id])
+        assert stats[shared_id].document_count == 1
+        assert stats[shared_id].updated_at is not None
+        # The unshared corpus is invisible, not merely unwritable — and it is
+        # zero-filled rather than missing, so a snapshot needs no defaulting.
+        assert stats[private_id].document_count == 0
+
+        matches = await search_documents(a, session, shared_id, query="warehouse approval")
+        assert [match.path for match in matches] == ["guides/refunds.md"]
+        assert matches[0].heading == "After 30 days"
+        # The same words are in Base's private corpus, and A cannot reach them.
+        assert await search_documents(a, session, private_id, query="warehouse") == []
+
+        # Every write, from A: refused or a no-op, never a change.
+        with pytest.raises(CrossCustomerError):
+            await create_document(
+                a, session, shared_id, title="Mine", path="mine.md", content="# mine"
+            )
+        await update_document(a, session, document_id, {"title": "hijacked"})
+        await update_document(
+            a, session, document_id, {"path": "hijacked.md", "content": "# hijacked"}
+        )
+        await delete_document(a, session, document_id)
+
+        session.expire_all()
+        still = await get_document(base, session, document_id)
+        assert still is not None
+        assert (still.title, still.path) == ("Refunds", "guides/refunds.md")
+        assert "warehouse approval" in still.content
+
+        # And Base can still do all three.
+        await update_document(base, session, document_id, {"title": "Refund policy"})
+        session.expire_all()
+        renamed = await get_document(base, session, document_id)
+        assert renamed is not None and renamed.title == "Refund policy"
+
+    async def test_a_document_read_can_never_cross_a_toolset_or_a_workspace(
+        self, session: AsyncSession, create_workspace: CreateWorkspace
+    ):
+        """The claim the executor's whole security story rests on.
+
+        A `path` is an identifier, never a filesystem lookup: the corpus a call
+        can reach is `toolset_id` plus the run's scope, so a path the model
+        invents — or copies verbatim out of another engagement's handbook — is one
+        more value in a `WHERE` clause. Byte-identical paths in three corpora,
+        two of them in another workspace, is the shape that would expose a lookup
+        keyed on the path alone.
+        """
+        _, a = await create_workspace("A")
+        _, b = await create_workspace("B")
+
+        path = "guides/refunds.md"
+        # Every id captured eagerly: `expire_all()` at the end would otherwise
+        # make reading one an implicit refresh from a sync context.
+        a_toolset_id = (
+            await create_toolset(a, session, name="A handbook", kind="documents")
+        ).id
+        a_document_id = (
+            await create_document(
+                a,
+                session,
+                a_toolset_id,
+                title="A refunds",
+                path=path,
+                content="# A\n\nA's warehouse approval rule.\n",
+            )
+        ).id
+        b_toolset_id = (
+            await create_toolset(b, session, name="B handbook", kind="documents")
+        ).id
+        b_document_id = (
+            await create_document(
+                b,
+                session,
+                b_toolset_id,
+                title="B refunds",
+                path=path,
+                content="# B\n\nB's warehouse approval rule.\n",
+            )
+        ).id
+        # A second corpus in B, holding the same key again: the unique constraint
+        # is per corpus, and a lookup has to name which one it means.
+        b_other_id = (
+            await create_toolset(b, session, name="B archive", kind="documents")
+        ).id
+        b_archived_id = (
+            await create_document(
+                b,
+                session,
+                b_other_id,
+                title="B archived refunds",
+                path=path,
+                content="# B archive\n\nSuperseded warehouse rule.\n",
+            )
+        ).id
+
+        # Across the workspace boundary: nothing resolves, by either key.
+        assert await get_document_by_path(b, session, a_toolset_id, path) is None
+        assert await get_document(b, session, a_document_id) is None
+        assert await search_documents(b, session, a_toolset_id, query="warehouse") == []
+        foreign_stats = await list_corpus_stats(b, session, [a_toolset_id])
+        assert foreign_stats[a_toolset_id].document_count == 0
+
+        # Inside B, the toolset id — not the path — decides which document.
+        mine = await get_document_by_path(b, session, b_toolset_id, path)
+        archived = await get_document_by_path(b, session, b_other_id, path)
+        assert mine is not None and mine.id == b_document_id
+        assert archived is not None and archived.id == b_archived_id
+        own_matches = await search_documents(
+            b, session, b_toolset_id, query="warehouse approval"
+        )
+        assert [match.path for match in own_matches] == [path]
+
+        assert [(meta.toolset_id, meta.path) for meta in await list_documents(b, session)] == [
+            (b_toolset_id, path),
+            (b_other_id, path),
+        ]
+        assert [(meta.toolset_id, meta.path) for meta in await list_documents(a, session)] == [
+            (a_toolset_id, path)
+        ]
+
+        # And a write from B against A's document changes nothing.
+        await update_document(b, session, a_document_id, {"content": "# hijacked"})
+        await delete_document(b, session, a_document_id)
+        session.expire_all()
+        untouched = await get_document(a, session, a_document_id)
+        assert untouched is not None
+        assert "A's warehouse approval rule." in untouched.content

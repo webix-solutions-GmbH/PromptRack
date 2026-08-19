@@ -42,6 +42,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Endpoint, Prompt, TestCase, TestGroup
+from app.repos.documents import list_corpus_stats
 from app.repos.endpoints import get_endpoint, touch_endpoint_model
 from app.repos.prompt_versions import list_version_refs
 from app.repos.prompts import list_prompts_by_ids
@@ -253,7 +254,13 @@ async def _resolve_tool_snapshots(
 
     Definitions and canned responses are content and travel with the run; an
     MCP tool only records which toolset it came from, because its endpoint and
-    auth are credentials that must be read live at execution time.
+    auth are credentials that must be read live at execution time. A document
+    tool records the same, for a different reason: this version freezes no
+    corpus, so the three tools query the live markdown at execution time and only
+    the *shape* of the corpus is frozen here (`document_count`,
+    `corpus_updated_at`) — two keys in a dict that was being serialized anyway,
+    so a later version can report "the corpus changed after this run" without
+    needing a migration to find out.
 
     `list_snapshot_tool_rows` is scoped on `toolsets`, which is what closes the
     cross-workspace path: a case linked to a foreign toolset contributes no
@@ -263,10 +270,20 @@ async def _resolve_tool_snapshots(
     if not tool_case_ids:
         return {}
 
+    rows = [
+        row
+        for row in await list_snapshot_tool_rows(scope, session, tool_case_ids)
+        if row.enabled
+    ]
+    corpora = await list_corpus_stats(
+        scope,
+        session,
+        list(dict.fromkeys(row.toolset_id for row in rows if row.source == "documents")),
+    )
+
     by_case: dict[int, list[SnapshotTool]] = {}
-    for row in await list_snapshot_tool_rows(scope, session, tool_case_ids):
-        if not row.enabled:
-            continue
+    for row in rows:
+        stats = corpora.get(row.toolset_id) if row.source == "documents" else None
         by_case.setdefault(row.test_case_id, []).append(
             SnapshotTool(
                 definition=_tool_definition(row),
@@ -274,6 +291,12 @@ async def _resolve_tool_snapshots(
                 toolset_id=row.toolset_id,
                 toolset_name=row.toolset_name,
                 mock_response=row.mock_response,
+                document_count=None if stats is None else stats.document_count,
+                corpus_updated_at=(
+                    None
+                    if stats is None or stats.updated_at is None
+                    else stats.updated_at.isoformat()
+                ),
             )
         )
     return by_case

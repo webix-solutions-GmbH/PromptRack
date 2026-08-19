@@ -6,7 +6,7 @@ Point an agent at this directory and say *"set up this suite in PromptRack"*, or
 
 ## The split: you do the toolsets, the agent does the test cases
 
-**Toolsets and their tools are not writable over MCP** — a toolset holds an MCP server URL and headers, which are credentials, and PromptRack's line is content over the API, credentials in the UI. So the work divides:
+**Toolsets and their tools are not writable over MCP** — a toolset holds an MCP server URL and headers, which are credentials, and PromptRack's line is content over the API, credentials in the UI. (The one thing inside a toolset that *is* writable over MCP is a `documents` toolset's markdown corpus, since markdown is content. This suite has no documents toolset, so it does not apply here.) So the work divides:
 
 | Step | Who | Where |
 | --- | --- | --- |
@@ -50,7 +50,7 @@ list_customers      → confirms the token and workspace are wired up
 list_test_groups    → what already exists
 ```
 
-Toolsets have no MCP listing tool (not writable over MCP means not readable over it either) — check **Toolsets** in the UI to confirm step 1 landed the 3 toolsets from `toolsets.md` before creating the six test cases that reference them.
+Manual and MCP toolsets have no MCP listing tool (not writable over MCP means not readable over it either — `list_documents` lists only `documents` toolsets, and this suite has none) — check **Toolsets** in the UI to confirm step 1 landed the 3 toolsets from `toolsets.md` before creating the six test cases that reference them.
 
 ## Step 2b: the prompts
 

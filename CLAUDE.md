@@ -57,7 +57,12 @@ Migrations are committed under `backend/alembic/versions/`. `alembic revision
 --autogenerate` compares the SQLAlchemy models to the database and writes a migration —
 read it before committing: autogenerate does not reliably infer a *rename* (it will drop
 and recreate a column instead), so a rename needs the generated file hand-edited into an
-`op.alter_column`/`op.rename_table`.
+`op.alter_column`/`op.rename_table`. It renders `sa.Computed` and a GIN index no better,
+which is why `0007_documents` is hand-written. Revision ids here are the sequential
+`NNNN_slug` the filenames show, not alembic's default random hex, so pass `--rev-id
+0008_whatever` — and whatever you write by hand, `uv run alembic check` is the confirmation
+that the model and the migration actually agree ("No new upgrade operations detected"). It
+answers that without writing a file, which also makes it the cheaper of the two.
 
 Git: default branch is `main`. One remote: `origin` is GitHub
 (`webix-solutions-GmbH/PromptRack`, private; note the capitalisation — the lowercase URL
@@ -94,7 +99,12 @@ matrix by model or by run. A test case can also be a **tool test**: offer the mo
 of functions and either record what it wanted to call, or really execute the calls
 through an MCP server and loop until it answers — which is how an invoice agent or a
 RAG-backed assistant gets evaluated as the agent it will actually be, not as a chat
-completion.
+completion. One of those tool sets is a **markdown corpus** the model searches and reads
+through three real functions, which is how "answers questions from the customer's own
+documentation" becomes a measurable workload rather than a claim: what is being measured
+there is retrieval *behaviour* — whether the model searches well, opens the right document,
+answers from what it read and recovers from a path it invented. See "Document corpora"
+below.
 
 **PromptRack is also "git for your customers' prompts."** The system prompt behind an
 agentic tool is a versioned asset, not a text field on a test case: a mutable draft, an
@@ -177,6 +187,16 @@ The line between frozen and live is **content vs. credentials**: test-case text,
 definitions and a manual tool's canned response travel with the run; an endpoint's
 `base_url`/`api_key` and a toolset's `mcp_url`/headers are read live at execution time so
 a moved endpoint doesn't break Resume.
+
+A `documents` toolset's markdown corpus is the one piece of *content* that is read live, and
+that is a v1 decision rather than an oversight — the same one an MCP toolset already forces,
+since an MCP server's answers were never freezable either. Its tool *definitions* are frozen
+like any others; the markdown is not, so a re-run after editing the documentation retrieves
+from the edited corpus, which is exactly the measurement wanted when the documentation is
+what changed. A frozen run's `response_text` and metrics are untouched by such an edit, so
+the invariant above still holds — what is missing is drift *detection*, and the crumb for a
+later version to light it up is in the snapshot already (`document_count`,
+`corpus_updated_at`). See "Document corpora" below.
 
 ### Prompt versioning
 
@@ -329,9 +349,9 @@ signed-in user can switch into any of them. It is what keeps one engagement's
 endpoints — i.e. base URLs with API keys — from mixing with another's.
 
 - The five root tables (`endpoints`, `prompts`, `toolsets`, `test_groups`, `runs`) carry
-  `customer_id NOT NULL`. The child tables (`endpoint_models`, `tools`, `test_cases`,
-  `test_case_toolsets`, `run_results`, `prompt_versions`) carry **nothing**: they inherit
-  scope through their parent FK. Cross-root references can only be checked in app
+  `customer_id NOT NULL`. The child tables (`endpoint_models`, `tools`, `documents`,
+  `test_cases`, `test_case_toolsets`, `run_results`, `prompt_versions`) carry **nothing**:
+  they inherit scope through their parent FK. Cross-root references can only be checked in app
   code — a test case's group, a test case's toolsets, a run's endpoint, a prompt's
   `deployed_version_id`, a version's `baseline_run_id` — via `assert_same_customer`
   (`backend/app/repos/customers.py`), called from inside the repository functions so no
@@ -372,6 +392,12 @@ credential per customer and guaranteeing that half the copies go stale. Prompts,
 groups, test cases and runs are never shareable: they are the engagement's own work
 product, and keeping one customer's suite out of another's is the whole reason a
 workspace exists.
+
+A shared toolset brings **both** of its children with it, `tools` and `documents` alike,
+since neither carries a `customer_id` of its own — which is what lets a shared reference
+corpus (a product manual, a compliance handbook every engagement asks the same questions
+of) be registered once in Base and retrieved from everywhere, while remaining editable only
+there.
 
 Sharing costs **no new permission layer** — it is a consequence of the read/write split
 `visible_where` draws (see "Data access" above). A global endpoint or toolset is visible to
@@ -574,13 +600,13 @@ selected toolsets are refused, both in the test-case editor and again in run cre
 the one shared function `assert_tool_config`
 (`backend/app/services/tool_config.py`).
 
-- **Toolsets** are `manual` (tools authored in the UI, answering with `mock_response`
-  verbatim — what keeps a multi-turn test deterministic) or `mcp` (tools discovered from a
-  streamable-HTTP MCP server and really executed against it,
+- **Toolsets** come in three kinds. `manual` (tools authored in the UI, answering with
+  `mock_response` verbatim — what keeps a multi-turn test deterministic), `mcp` (tools
+  discovered from a streamable-HTTP MCP server and really executed against it,
   `backend/app/services/mcp_client.py`, the official `mcp` SDK, connections opened
-  per-operation, never pooled). `tools` rows follow the `endpoint_models` rule:
-  discovery upserts and **never deletes** — a tool absent from `tools/list` only flips
-  `enabled` false.
+  per-operation, never pooled), and `documents` (a markdown corpus the model retrieves
+  from — see below). `tools` rows follow the `endpoint_models` rule: discovery upserts and
+  **never deletes** — a tool absent from `tools/list` only flips `enabled` false.
 - **A tool failure is never a failed row.** The error text is serialized back to the
   model as that tool's output — what a real agent sees, and itself worth measuring. Only
   connection-level `LlmError`s can fail a row.
@@ -592,6 +618,136 @@ the one shared function `assert_tool_config`
   only (tool wait time excluded, and living per call in the transcript). Tool detail is
   *added alongside* in `transcript_json` / `turns_json` / `turn_count` / `tool_call_count`,
   all null when `tool_mode = "none"`.
+
+### Document corpora (the `documents` toolset kind)
+
+"The agent answers from the customer's own documentation" is a workload a consultancy sells
+and no other test-case shape can reach: a canned `mock_response` measures whether a model
+*calls* a tool, and a corpus measures whether it **retrieves** — does it search well, open
+the right document, answer from what it read, and recover from a path it invented. That is
+the whole reason this kind exists, and it is why the corpus is markdown rather than a
+key/value store: the customer's handbook already is markdown, in sections a reader opens
+separately.
+
+- **`documents` is a second child table of `toolsets`**, sitting beside `tools`
+  (`backend/app/models/toolsets.py`, migration `0007_documents`): `toolset_id` CASCADE,
+  `title`, `path`, `content`, a generated `content_tsv`, `UNIQUE (toolset_id, path)` and a
+  GIN index. **No `customer_id`**, like `tools` and `endpoint_models` — scope is inherited
+  through the parent and expressed once in `scope_through_parent` (`visible=True` on a read,
+  never on a write). That is not just consistency: a second, independently-writable answer
+  to "whose corpus is this" would break sharing, because a global toolset borrowed by
+  another engagement has to bring its documents with it. `app/scope.py`'s `_SHAREABLE` map
+  therefore needs no entry — only root tables appear there.
+- **The three tools are real `tools` rows, synthesized rather than authored or discovered**:
+  `list_documents`, `search_documents(query, limit)` and `read_document(path, offset,
+  limit)`, `source: "documents"`, `mock_response` NULL, definitions fixed in
+  `backend/app/services/documents.py` (`DOCUMENT_TOOLS`). Real rows are the point —
+  `assert_tool_config`'s collision and `enabled` checks, `tools_snapshot`, the toolset
+  detail UI and `run_create`'s definition builder all work on them untouched, with nothing
+  learning a new case. `sync_document_tools` (`backend/app/repos/toolsets.py`, called from
+  inside `create_toolset`/`update_toolset` so no route or MCP tool can forget it, and
+  re-assertable through `POST /{id}/documents/sync` the way MCP tools are re-read through
+  `/discover`) is idempotent and **never touches `enabled` on a row that already exists**:
+  disabling `search_documents` to see whether a small model can navigate by list-and-read
+  alone is one of the measurements, and a helpful re-enable would silently destroy it. For
+  the same reason nothing disables the three rows when a toolset is converted back to
+  `manual` — the flag belongs to the human. Hand-authoring a *fourth* tool on a documents
+  toolset is refused (`_refuse_hand_authored_tool`, a 400), since the executor routes on
+  `source` and a `manual` row there would be offered to the model as a canned-response tool
+  with no corpus behind it.
+- **Search is Postgres FTS under the `'simple'` configuration, never `'english'`.** These
+  are a consultancy's customer documents and they are frequently German; English stemming
+  over German text degrades retrieval in a way that surfaces in `/results` as a *model*
+  failure, which is the one misattribution this app exists to prevent. `simple` folds case
+  and stems nothing, which is the honest default across a mixed-language corpus — and the
+  cost worth knowing before authoring one is that it does not stem at all, so "Rückgaben"
+  does not match a query for "Rückgabe". Two mechanical traps: a **generated column needs an
+  IMMUTABLE expression**, so it must be the two-argument `to_tsvector('simple', …)` (the
+  one-argument form reads `default_text_search_config` at call time and Postgres rejects it
+  outright); and every query has to name the same configuration, cast as
+  `cast(DOCUMENT_SEARCH_CONFIG, REGCONFIG)` — a bare bound parameter arrives as `text` and
+  leaves no matching `websearch_to_tsquery`/`ts_headline` overload at all. A hit is ranked
+  with `ts_rank`, snippetted with `ts_headline`, and ordered `rank DESC, path ASC` so a
+  measurement does not reshuffle between runs.
+- **A snippet is reported under its nearest preceding heading**, because "somewhere in
+  refunds.md" tells the model nothing while "under *## Refunds after 30 days*" tells it
+  whether to open the document at all. `heading_for_snippet` resolves it from the **first
+  highlighted word**, not from the fragment's start: `ts_headline`'s `MinWords` pads a
+  fragment backwards until it is long enough, so a match near the top of a section routinely
+  arrives inside a fragment that *begins* in the previous one. Read from the fragment's
+  start, such a hit is cited under the wrong section — and a wrong citation reads in
+  `/results` as the model misquoting the docs, which is worse than no citation at all.
+  `nearest_heading` tracks code fences for the same reason: a shell transcript full of
+  `# install the client` must not become the heading of everything below it.
+- **Execution routes on the frozen `source`, not on the tool's name.**
+  `_build_tool_executor` (`backend/app/services/executor.py`) is a dispatcher over two
+  closures — the MCP one unchanged, plus a documents one — and `list_documents` is a name a
+  manual toolset is free to use for something else, so only the frozen entry knows which it
+  was. `tool_loop.py` stays database-free: the documents closure lives in the executor and
+  reads through `app/repos/documents.py` on the session the executor already holds for the
+  run's duration. **The corpus is fixed by the frozen `toolset_id` plus the run's `Scope`**,
+  so the model's `path` argument can only select *within* that corpus — the scoping is a
+  `WHERE` clause, not a sanitizer, and since nothing opens a file there is no traversal
+  surface to defend.
+- **A bad path, a missing document or an empty result set is a tool result, never a failed
+  row** — the app's standing rule, and nothing in `app/services/documents.py` raises for
+  anything a *model* passes. A bad or unknown path answers `is_error: true` with the corpus's
+  real paths listed (which is the recovery the measurement is interested in); a search that
+  simply matched nothing answers `is_error: false` with a note steering the model to
+  `list_documents`, because a normal retrieval miss is not a malfunction and flagging it as
+  one would mislabel the transcript.
+- **Every corpus call runs inside a `SAVEPOINT`, and that is not boilerplate.** This is the
+  only tool executor that runs a statement on the executor's *own* session, and a statement
+  Postgres refuses aborts that session's transaction — after which the row's own `ok` write,
+  which happens *after* `run_tool_loop` returns and therefore outside the per-row handler,
+  fails and takes every remaining row down with it, leaving the run stuck `running`. One
+  argument the model chose would cost the whole suite. The reachable way in is a `query` or
+  `path` carrying a NUL byte: asyncpg refuses it as a bind parameter, so the call can never
+  even be the miss it was always going to be. `session.rollback()` is the **wrong** repair —
+  it clears the aborted state but also expires every instance in the identity map, so the
+  next row's attribute read becomes lazy IO in a context that cannot await it
+  (`greenlet_spawn has not been called`) and the suite fails from the second row on. Rolling
+  back to a savepoint clears the abort and leaves the identity map alone. Pinned by
+  `test_executor.py::test_an_argument_postgres_refuses_costs_one_row_not_the_run`, which
+  needs **two** rows to mean anything.
+- **The frozen/live line falls differently here, deliberately.** The tool *definitions* are
+  frozen into `tools_snapshot` like any others; the markdown is read **live** at execution
+  time, so a re-run after editing the documentation retrieves from the edited corpus — which
+  is the point when the documentation is what changed. There is **no corpus versioning or
+  freezing in v1**. A snapshot entry for a documents tool carries `document_count` and
+  `corpus_updated_at` as a forward-compat crumb (two keys in a dict already being
+  serialized, omitted when absent so a manual/MCP entry stays byte-identical); nothing reads
+  them yet.
+- **Roles follow the existing content-vs-credentials split with no new rule**: the toolset
+  is `Admin` (it is the container that *can* hold credentials), the documents inside are
+  `Writer`, because markdown never is. Sharing is allowed — `is_global` on a documents
+  toolset works like any other, settable only in Base, and a borrowed corpus is fully
+  readable and retrievable everywhere while every write is refused by name
+  (`_refuse_if_borrowed` over HTTP, `_assert_own_corpus` over MCP) rather than left as
+  `scope_where`'s silent no-op.
+- **A corpus has two write doors and one set of rules for what a document is.**
+  `app/api/toolsets.py` (a JSON body, and a multipart upload of `.md`/`.markdown` files
+  whose *filename is the corpus path*) and `app/mcp/server.py` (an agent pushing another
+  repo's `docs/` in) write the same table, `read_document` matches `path` exactly, and
+  `UNIQUE (toolset_id, path)` is all that keeps one document from becoming two. So
+  `clean_document_path`, `normalize_markdown` and `derive_document_title` live in
+  `app/services/documents.py` and **both doors call them**: separators normalised and a
+  leading `./` or `/` stripped (`..` refused as a second spelling of a key, not as a
+  danger), case never folded, a leading BOM dropped and CRLF folded to LF — that last one
+  because `read_document` windows by *characters* and reports those offsets back to the
+  model, so a corpus mixing line endings would hand out windows whose length depends on
+  which editor last saved the file. They raise plain `ValueError`; each door translates it
+  into its own vocabulary (a 422, an `ok: false` upload row, an `isError` content block).
+  Two refusals live in `normalize_markdown` for exactly that reason. **A NUL byte is
+  refused**, because Postgres cannot hold one in a `text` column — so the alternative is not
+  a document containing a NUL but an unhandled driver error, which in the multipart route
+  would discard the other twenty-nine files in a request that promises per-file isolation.
+  And **`MAX_DOCUMENT_CHARS` is one ceiling asked by all three write paths**: a per-door
+  character limit is the same class of bug as two spellings of one path, since the JSON
+  route, the upload route and MCP write the same table and a corpus must not end up holding
+  a row only one of them could have written. The upload route's separate 1 MiB *byte* check
+  is a different concern in a different unit — refusing before it decodes, which keeps a
+  dropped video out of memory rather than merely out of the column — and coexists on purpose.
 
 ### Results (`/results`): two pivots
 
@@ -699,21 +855,25 @@ measurements back — the interesting test cases already exist in other repos.
   workspaces. Nothing is guessed. `list_customers` is the one tool that needs no scope, and
   it's `readOnly` so a viewer's token can orient itself before being refused a write
   elsewhere.
-- **The 20 tools** (registered in `backend/app/mcp/server.py`):
+- **The 23 tools** (registered in `backend/app/mcp/server.py`):
   `list_customers`, `list_endpoints`, `list_prompts`, `create_prompt`, `update_prompt`,
   `commit_prompt`, `list_prompt_versions`, `get_prompt_version`, `set_baseline`,
   `list_test_groups`, `create_test_group` (name-idempotent — a second call returns the
   existing group, `created: false`), `list_test_cases`, `create_test_case`,
   `update_test_case` (patches only the keys present, and re-checks tool config as it will
-  be *after* the patch), `create_run`, `execute_run` (fire-and-forget — safe only because
+  be *after* the patch), `list_documents` / `create_document` / `update_document` (a
+  `documents` toolset's markdown corpus — `list_documents` doubles as the corpus discovery
+  path, since toolsets themselves are not listable here, and it reports metadata only,
+  never a document's text, which exists to be read by the *model* at execution time),
+  `create_run`, `execute_run` (fire-and-forget — safe only because
   the executor already persists every row as it finishes), `list_runs`, `get_run`,
   `get_run_result`, `set_rating` (refuses a still-pending/running row; omitting `note`
   leaves an existing one untouched, `"unrated"` clears the rating — JSON-RPC cannot
   distinguish "absent" from "null" by the time an argument reaches the tool, so presence is
   read off the raw `tools/call` params via `raw_arguments`). `mark_deployed` and
-  `delete_test_case`/`delete_prompt` are **deliberately absent** — deploying is a UI-only
-  human claim about a customer's production system, and there is no delete surface over MCP
-  at all.
+  `delete_test_case`/`delete_prompt`/`delete_document` are **deliberately absent** —
+  deploying is a UI-only human claim about a customer's production system, and there is no
+  delete surface over MCP at all.
 - **Prompt kinds on the wire.** `create_prompt` / `update_prompt` take `kind`
   (`"system"` default), `list_prompts` returns it, and `create_test_case` /
   `update_test_case` take `system_prompt` and `task_prompt` — both `RowRef`s resolving by
@@ -732,9 +892,17 @@ measurements back — the interesting test cases already exist in other repos.
   in the UI), customer workspaces (creating an engagement is a human decision with
   billing behind it), and a prompt's `deployed_version_id` (see "Prompt versioning").
   Versions themselves *are* writable over MCP (`commit_prompt`, `set_baseline`) because
-  they are content, not credentials. `list_endpoints` and `create_run`'s `endpoint`
-  argument see and accept **global** endpoints for free, since both are read paths that
-  already ask `visible_where` — nothing MCP-specific was needed to share them.
+  they are content, not credentials — and a `documents` toolset's **markdown corpus** is
+  writable for exactly the same reason, which is where that line now falls one level lower
+  than the table: the *toolset* stays uncreatable and uneditable here, the documents inside
+  one are content, and an agent that already has another project's `docs/` on disk is the
+  primary reason `create_document` exists. A corpus borrowed from Base is readable and
+  retrievable from every workspace but explicitly refused for writing
+  (`_assert_own_corpus`) — a named refusal rather than `scope_where`'s silent no-op, which
+  an agent would otherwise read back as a successful edit. `list_endpoints` and
+  `create_run`'s `endpoint` argument see and accept **global** endpoints for free, since
+  both are read paths that already ask `visible_where` — nothing MCP-specific was needed to
+  share them.
 - **A judge model reading these results is itself injectable.** `get_run_result` returns
   `system_prompt_text`, `task_prompt_text` and `test_case_text`, and for the
   `Prompt Injection & Instruction Hierarchy` group any of the three can carry a live
@@ -751,8 +919,9 @@ exercises the wired-up handler (real Postgres, no server process) via
 
 `docs/example-suite/` is the standard suite — 3 manual toolsets with 12 tools, 16 prompts
 and 38 test cases in 4 groups — written as **documentation an agent executes over MCP**,
-not a script. The split inside it is forced by the app's own rule: toolsets are not
-writable over MCP (they hold an MCP URL and headers, i.e. credentials), so `toolsets.md` is
+not a script. The split inside it is forced by the app's own rule: a toolset is not
+writable over MCP (the container is where an MCP URL and headers, i.e. credentials, live),
+so `toolsets.md` is
 instructions for a human in the UI and the four group files are for an agent to push in
 with `create_test_group` / `create_prompt` / `create_test_case`. Do the toolsets first: six
 test cases reference one by name, and `create_test_case` refuses a tool test whose toolsets
@@ -806,7 +975,10 @@ Two suites, split by whether they need a database.
 `pyproject.toml`'s `addopts`) is the pure one and must stay database-free and fast:
 `test_message_assembly.py` (both message parts present, each alone, whitespace-only on
 either side, both blank), `test_llm.py` (SSE fixtures per provider style), `test_compare.py`,
-`test_tool_config.py`, `test_tool_loop.py` (metric aggregation), `test_diff.py`,
+`test_tool_config.py`, `test_tool_loop.py` (metric aggregation, and every value of
+`ToolSource` surviving a `tools_snapshot` round trip), `test_documents.py` (which heading a
+search hit sits under, `read_document`'s windowing, and the key/markdown/title rules both
+write doors share), `test_diff.py`,
 `test_attribution.py` (version matching, dirty detection), `test_mcp.py`, `test_scope.py`
 (the branded `Scope`, `combine`, `resolve_active_customer_id` — written db-free
 precisely so it can live here), `test_policy.py`, `test_passwords.py`, `test_tokens.py`
@@ -826,8 +998,10 @@ executor end-to-end against the mock LLM (`test_executor.py`), cross-workspace i
 including the versioning cases and the Base/global-sharing cases
 (`test_workspaces.py::TestGlobals`, `test_versioning.py`), the
 login/session/sign-up-closes flow (`test_auth_flow.py`), and every domain router's CRUD
-(`test_*_api.py`, including `test_endpoints_api.py`, `test_users_api.py` and
-`test_invites_api.py`).
+(`test_*_api.py`, including `test_endpoints_api.py`, `test_users_api.py`,
+`test_invites_api.py` and `test_documents_api.py` — the last one is also the only place the
+multipart upload and real `websearch_to_tsquery`/`ts_headline` retrieval are exercised, and
+`test_executor.py` drives a document tool call end to end).
 
 For checking the running app itself (dev server, `http://localhost:5177`) there is a
 dedicated agent account in the local dev database: `claude-dev@example.com` /

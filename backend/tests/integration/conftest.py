@@ -163,6 +163,7 @@ ALL_TABLES = [
     "prompt_versions",
     "toolsets",
     "tools",
+    "documents",
     "test_groups",
     "test_cases",
     "test_case_toolsets",

@@ -14,6 +14,7 @@ registers with a valid signature and schema.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -41,12 +42,22 @@ from app.mcp.refs import (
 from app.mcp.server import (
     _WRITES,
     KIND_VALUES,
+    _assert_own_corpus,
     _call,
+    _document_content,
+    _document_path,
+    _document_view,
+    _DocumentRow,
     _parse_kind,
+    _pick_corpus,
     _tools_called,
     mcp_server,
     raw_arguments,
 )
+from app.models.toolsets import Document
+from app.repos.documents import DocumentMeta
+from app.scope import scope_for_customer
+from app.services.documents import MAX_DOCUMENT_CHARS
 from app.services.llm import ToolCall
 from app.services.tool_loop import (
     TranscriptMessage,
@@ -249,6 +260,12 @@ EXPECTED_TOOLS = {
     "create_test_case": True,
     "update_test_case": True,
     "list_test_cases": False,
+    # The one write that reaches inside a toolset: a markdown corpus is content,
+    # while the toolset containing it stays a UI act. Deleting a document is
+    # absent for the same reason nothing else here deletes.
+    "list_documents": False,
+    "create_document": True,
+    "update_document": True,
     "create_run": True,
     "execute_run": True,
     "get_run": False,
@@ -306,6 +323,18 @@ class TestRegistry:
         }
         assert set(tools["set_rating"].input_schema["required"]) == {"result_id", "rating"}
         assert set(tools["create_run"].input_schema["required"]) == {"endpoint", "groups"}
+        # A corpus key and the markdown are the document; `title` defaults to the
+        # path, since an agent walking a repository has one for every file.
+        assert set(tools["create_document"].input_schema["required"]) == {
+            "toolset",
+            "path",
+            "content",
+        }
+        assert set(tools["update_document"].input_schema["required"]) == {
+            "toolset",
+            "document",
+        }
+        assert not tools["list_documents"].input_schema.get("required")
 
     async def test_a_name_or_an_id_is_accepted_wherever_a_row_is_named(self) -> None:
         schema = (await _tools())["create_test_case"].input_schema
@@ -409,6 +438,248 @@ class TestPromptSlotArguments:
             parse_row_ref({}, '"task_prompt"')
         with pytest.raises(McpToolError, match='"system_prompt"'):
             parse_row_ref("   ", '"system_prompt"')
+
+
+# ---------------------------------------------------------------------------
+# Document corpora
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ToolsetRow:
+    """The four fields `_pick_corpus` and `_assert_own_corpus` read off a
+    toolset. Database-free on purpose: which row a name resolves to and whether
+    that row can hold a corpus are decisions, not queries.
+    """
+
+    id: int
+    name: str
+    kind: str
+    customer_id: int = 1
+
+
+def _meta(document_id: int, path: str) -> DocumentMeta:
+    stamp = datetime(2026, 8, 17, 12, 0, 0)
+    return DocumentMeta(
+        id=document_id,
+        toolset_id=9,
+        title=path,
+        path=path,
+        chars=len(path),
+        created_at=stamp,
+        updated_at=stamp,
+    )
+
+
+class TestPickCorpus:
+    rows = [
+        ToolsetRow(1, "Odoo MCP", "mcp"),
+        ToolsetRow(2, "Invoice mocks", "manual"),
+        ToolsetRow(3, "Handbook", "documents"),
+    ]
+
+    def test_resolves_a_corpus_by_name_or_id(self) -> None:
+        assert _pick_corpus(self.rows, "handbook").id == 3
+        assert _pick_corpus(self.rows, 3).name == "Handbook"
+
+    def test_a_toolset_of_another_kind_is_refused_by_kind_not_by_absence(self) -> None:
+        # The row is right there, so "no such toolset" would be a lie about it —
+        # the same distinction `assert_prompt_slot` draws for a wrong-kind prompt.
+        with pytest.raises(McpToolError) as excinfo:
+            _pick_corpus(self.rows, "Invoice mocks")
+        message = str(excinfo.value)
+        assert 'is kind "manual"' in message
+        # And it names where a corpus *can* go, which is the discovery path.
+        assert "Handbook (3)" in message
+
+    def test_an_unknown_name_still_lists_what_exists(self) -> None:
+        with pytest.raises(McpToolError, match="Known: Odoo MCP"):
+            _pick_corpus(self.rows, "Docs")
+
+    def test_a_workspace_with_no_corpus_is_refused_before_resolving(self) -> None:
+        # No argument could be right, and the actionable fact is that the
+        # container is created in the UI — toolsets are not writable here.
+        rows = [ToolsetRow(1, "Odoo MCP", "mcp")]
+        for value in ("Handbook", 1, 99):
+            with pytest.raises(McpToolError, match="no documents toolset"):
+                _pick_corpus(rows, value)
+
+    def test_the_label_names_the_argument_that_was_wrong(self) -> None:
+        with pytest.raises(McpToolError, match='"toolset"'):
+            _pick_corpus(self.rows, {})
+
+
+class TestOwnCorpus:
+    def test_a_corpus_this_workspace_owns_is_writable(self) -> None:
+        _assert_own_corpus(scope_for_customer(1), ToolsetRow(3, "Handbook", "documents", 1))
+
+    def test_a_borrowed_corpus_is_refused_rather_than_silently_ignored(self) -> None:
+        # The repository's write predicate would make this a no-op, and the agent
+        # would read the unchanged row back as a successful edit.
+        with pytest.raises(McpToolError, match="read-only here"):
+            _assert_own_corpus(scope_for_customer(2), ToolsetRow(3, "Handbook", "documents", 1))
+
+
+class TestDocumentReference:
+    """`path` is the name a document resolves under — the very key
+    `read_document` is called with.
+    """
+
+    rows = [_DocumentRow(_meta(11, "guides/refunds.md")), _DocumentRow(_meta(12, "index.md"))]
+
+    def test_resolves_by_path(self) -> None:
+        ref = parse_row_ref("guides/refunds.md", '"document"')
+        assert resolve_row_ref(ref, self.rows, "document").meta.id == 11
+
+    def test_resolves_by_id_too(self) -> None:
+        assert resolve_row_ref(RowRef.by_id(12), self.rows, "document").meta.path == "index.md"
+
+    def test_a_wrong_path_lists_the_paths_the_corpus_really_holds(self) -> None:
+        with pytest.raises(McpToolError, match=r"Known: guides/refunds.md \(11\), index.md \(12\)"):
+            resolve_row_ref(parse_row_ref("guides/refund.md", '"document"'), self.rows, "document")
+
+
+class TestDocumentPath:
+    """A corpus key means the same thing at both write doors.
+
+    `read_document` matches `path` exactly and `UNIQUE (toolset_id, path)` is all
+    that keeps one document from becoming two, so an agent pushing
+    "./guides/refunds.md" here and a colleague uploading the same file through
+    `app.api.toolsets` have to land on one row. These assertions are that door's
+    half of it; `tests/test_documents.py::TestCleanDocumentPath` owns the rule
+    itself.
+    """
+
+    def test_whitespace_is_trimmed(self) -> None:
+        assert _document_path("  guides/refunds.md \n") == "guides/refunds.md"
+
+    def test_the_key_is_normalised_the_same_way_the_upload_route_normalises_it(self) -> None:
+        for path in ("./guides/refunds.md", "/guides/refunds.md", "guides//refunds.md"):
+            assert _document_path(path) == "guides/refunds.md"
+        # Separators, but never case: "Refunds.MD" and "refunds.md" are two
+        # documents a corpus is entitled to hold, and folding them would delete
+        # one of them at the next upload.
+        assert _document_path("Guides\\Refunds.MD") == "Guides/Refunds.MD"
+
+    def test_a_blank_path_is_refused(self) -> None:
+        with pytest.raises(McpToolError, match="read_document is called with"):
+            _document_path("   ")
+
+    def test_a_traversal_spelling_is_refused_as_a_second_spelling_of_a_key(self) -> None:
+        with pytest.raises(McpToolError, match="it is a key, not a file path"):
+            _document_path("guides/../guides/refunds.md")
+
+
+class TestDocumentContent:
+    def test_markdown_is_passed_through_verbatim(self) -> None:
+        text = "# Refunds\n\n  Within 30 days.\n"
+        assert _document_content(text) == text
+
+    def test_a_windows_checkout_is_stored_with_the_line_endings_every_door_stores(self) -> None:
+        # The reason this is not cosmetic: `read_document` windows by characters
+        # and reports the offsets back to the model, so CRLF here and LF from the
+        # upload route would make one file two lengths.
+        assert _document_content("# Refunds\r\n\r\nWithin 30 days.\r\n") == (
+            "# Refunds\n\nWithin 30 days.\n"
+        )
+        assert _document_content("\ufeff# Refunds\n") == "# Refunds\n"
+
+    def test_blank_content_is_refused(self) -> None:
+        with pytest.raises(McpToolError, match='"content" cannot be blank'):
+            _document_content("  \n ")
+
+    def test_an_oversized_document_is_refused_with_the_split_suggested(self) -> None:
+        with pytest.raises(McpToolError, match="Split it into the sections"):
+            _document_content("x" * (MAX_DOCUMENT_CHARS + 1))
+
+
+class TestDocumentView:
+    """What the three corpus tools answer with: the key, the label and the size.
+
+    Never the markdown. The corpus exists to be read by the *model* at execution
+    time, so echoing a file back to the agent that just pushed it would only
+    spend the context it needs for the next one.
+    """
+
+    toolset = ToolsetRow(9, "Support Handbook", "documents")
+
+    def _row(self, content: str = "# Refunds\n\nWithin 30 days.\n") -> Document:
+        stamp = datetime(2026, 8, 17, 12, 0, 0)
+        return Document(
+            id=11,
+            toolset_id=9,
+            title="Refunds",
+            path="guides/refunds.md",
+            content=content,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+
+    def test_reports_the_corpus_key_the_label_and_the_size(self) -> None:
+        view = _document_view(self._row(), self.toolset)
+
+        assert view["id"] == 11
+        assert view["path"] == "guides/refunds.md"
+        assert view["title"] == "Refunds"
+        assert view["toolset"] == {"id": 9, "name": "Support Handbook"}
+        assert isinstance(view["created_at"], int)
+
+    def test_never_carries_the_markdown_itself(self) -> None:
+        assert "content" not in _document_view(self._row(), self.toolset)
+
+    def test_size_is_the_unit_read_document_windows_in(self) -> None:
+        # Characters, not bytes: `read_document` offsets are characters, so a
+        # model can read the size and plan its calls in one currency.
+        content = "# Rückgabe\n"
+        assert _document_view(self._row(content), self.toolset)["chars"] == len(content)
+
+    def test_a_written_row_and_a_listed_one_answer_with_the_same_shape(self) -> None:
+        # `create_document` returns the inserted row, `list_documents` returns
+        # metadata; an agent must not have to tell the two apart.
+        written = _document_view(self._row(), self.toolset)
+        listed = _document_view(_meta(11, "guides/refunds.md"), self.toolset)
+
+        assert set(written) == set(listed)
+
+
+class TestCorpusToolArguments:
+    """The wire shape of the three corpus tools: what a caller may name a row by,
+    and which of them write.
+    """
+
+    async def test_a_corpus_is_named_by_name_or_id_everywhere_it_is_named(self) -> None:
+        tools = await _tools()
+        for name in ("create_document", "update_document"):
+            schema = tools[name].input_schema["properties"]["toolset"]
+            assert {entry.get("type") for entry in schema["anyOf"]} == {"string", "integer"}, name
+
+    async def test_a_document_is_named_by_its_path_or_its_id(self) -> None:
+        # `path` is the identifier an agent already has: the very string it
+        # pushed the file under, and the one `read_document` is called with.
+        schema = (await _tools())["update_document"].input_schema["properties"]["document"]
+        assert {entry.get("type") for entry in schema["anyOf"]} == {"string", "integer"}
+
+    async def test_the_read_tool_takes_an_optional_corpus_and_defaults_to_all_of_them(self) -> None:
+        # Omitting it is how a caller discovers which corpora exist at all,
+        # since toolsets themselves are not listable here.
+        schema = (await _tools())["list_documents"].input_schema["properties"]["toolset"]
+        assert {entry.get("type") for entry in schema["anyOf"]} == {"string", "integer", "null"}
+        assert schema["default"] is None
+
+    async def test_only_the_fields_a_patch_names_are_required(self) -> None:
+        properties = (await _tools())["update_document"].input_schema["properties"]
+        for field in ("content", "title", "path"):
+            assert properties[field]["default"] is None, field
+
+    def test_the_two_corpus_writes_are_declared_as_writes(self) -> None:
+        # `_WRITES` is the single declaration behind both the `readOnlyHint` and
+        # the gate a viewer's token is refused by, so this is also what keeps a
+        # read-only account out of a customer's documentation.
+        assert _WRITES["create_document"] is True
+        assert _WRITES["update_document"] is True
+        assert _WRITES["list_documents"] is False
+        # No delete surface exists over MCP at all, corpora included.
+        assert "delete_document" not in _WRITES
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +815,14 @@ class TestRoleGate:
         with pytest.raises(McpToolError, match="read-only"):
             async with _call(_ctx(_actor_with("viewer")), "create_prompt"):
                 pass  # pragma: no cover - the gate raises first
+
+    async def test_a_viewers_token_cannot_edit_a_customers_documentation(self) -> None:
+        # A corpus is content, so it is writable here at all; the role gate is
+        # what still decides who may write it.
+        for name in ("create_document", "update_document"):
+            with pytest.raises(McpToolError, match="read-only"):
+                async with _call(_ctx(_actor_with("viewer")), name):
+                    pass  # pragma: no cover - the gate raises first
 
     async def test_an_unauthenticated_call_never_reaches_a_tool(self) -> None:
         with pytest.raises(McpToolError, match="no credentials"):
