@@ -827,6 +827,21 @@ prompt parts out is the reading-side payoff of prompt kinds: a cell can say *the
 prompt changed* instead of merging prompt drift and data drift into one indistinguishable
 "user message differs".
 
+**The meh/bad quick filter is client-side and re-derives the tallies it invalidates.** A
+"Show: All / meh + bad" `SelectButton` in the matrix heading (there rather than in a
+`.filter-row` above it, so it survives fullscreen) keeps the rows where *any* cell was
+rated meh or bad — the whole line, because the point is reading a weak answer against the
+columns that did better on it. It filters `rows` in `ResultsView.vue` rather than
+re-requesting: the pickers change the *selection* and are reconciled against the server,
+this only narrows what is rendered, and a refetch would collapse every peek a reviewer has
+open mid-rating-pass. Model mode's `column_tallies` are "the cells on screen" and its
+header reads "n/<rows> answered", so filtering re-derives them client-side (`tallyColumn`,
+the twin of `_tallies` in `backend/app/api/results.py`, `null` and not 0 for "nothing
+measured"); run mode needs none of that, its header numbers being the run's own totals.
+The control renders only while something is rated meh or bad, and rating the last one away
+resets the filter — a table narrowed by a control no longer on screen would be stranded
+empty.
+
 ### Ratings
 
 Three manual verdicts plus unrated: `good` / `meh` / `bad`. `meh` means "not wrong, but

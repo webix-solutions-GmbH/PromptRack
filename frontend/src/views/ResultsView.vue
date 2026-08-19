@@ -21,15 +21,17 @@ import Message from 'primevue/message'
 import SelectButton from 'primevue/selectbutton'
 import {
   resultsApi,
+  type ColumnTally,
   type CompareCellView,
   type CompareMode,
+  type CompareRowView,
   type CompareRunView,
   type MatrixResponse,
   type ModelColumnView,
 } from '../api/results'
 import { ApiError } from '../api/client'
 import { formatDateTime, formatDuration, formatRate } from '../lib/format'
-import type { Rating } from '../lib/rating'
+import { countRatings, type Rating } from '../lib/rating'
 import { applyColumnTallyDelta, applyTallyDelta } from '../lib/ratingTally'
 import MatrixTable from '../components/results/MatrixTable.vue'
 import { useAuthStore } from '../stores/auth'
@@ -193,6 +195,76 @@ const groupOptions = computed(() =>
     value: group.id,
   })),
 )
+
+// --- the meh/bad filter ----------------------------------------------------
+
+// Reviewing a matrix is mostly a hunt for what is not good enough, and both
+// pivots routinely put dozens of rows on screen. `attention` keeps the rows
+// where *any* cell was rated meh or bad — the whole line, never the single
+// cell, because the comparison is the point: a row is worth reading precisely
+// against the columns that did better on it.
+//
+// Client-side, over the matrix already loaded, unlike every picker above:
+// those change the *selection* and so must be reconciled against the server,
+// whereas this only narrows what is rendered — and re-requesting would
+// re-render the table under a reviewer halfway through a rating pass,
+// collapsing every open peek.
+type RowFilter = 'all' | 'attention'
+
+const rowFilter = ref<RowFilter>('all')
+const rowFilterOptions: { label: string; value: RowFilter }[] = [
+  { label: 'All', value: 'all' },
+  { label: 'meh + bad', value: 'attention' },
+]
+
+function needsAttention(row: CompareRowView): boolean {
+  return row.cells.some((cell) => cell?.rating === 'meh' || cell?.rating === 'bad')
+}
+
+const attentionRowCount = computed(() => rows.value.filter(needsAttention).length)
+const filtering = computed(() => rowFilter.value === 'attention')
+const visibleRows = computed(() =>
+  filtering.value ? rows.value.filter(needsAttention) : rows.value,
+)
+
+/** One model column's totals over a given set of rows — the client-side twin
+ * of `_tallies` in `backend/app/api/results.py`, down to reporting `null`
+ * rather than 0 for "nothing measured". */
+function tallyColumn(rows: CompareRowView[], column: number): ColumnTally {
+  const cells = rows
+    .map((row) => row.cells[column])
+    .filter((cell): cell is CompareCellView => cell != null)
+  const rates = cells
+    .map((cell) => cell.tokens_per_sec)
+    .filter((rate): rate is number => rate !== null)
+  const durations = cells
+    .map((cell) => cell.duration_ms)
+    .filter((duration): duration is number => duration !== null)
+  return {
+    answered: cells.length,
+    ...countRatings(cells.map((cell) => cell.rating)),
+    avg_rate: rates.length > 0 ? rates.reduce((sum, rate) => sum + rate, 0) / rates.length : null,
+    total_duration_ms:
+      durations.length > 0 ? durations.reduce((sum, duration) => sum + duration, 0) : null,
+  }
+}
+
+// A model-mode column tally counts the cells **on screen** and its header
+// reads "n/<rows> answered", so hiding rows here has to re-derive it — left
+// alone it would report a column the table no longer shows. Run mode needs
+// none of this: its header numbers are the run's own totals, which never
+// claimed to describe what is on screen.
+const visibleTallies = computed(() => {
+  const tallies = matrix.value?.column_tallies ?? []
+  if (!filtering.value) return tallies
+  return tallies.map((_, index) => tallyColumn(visibleRows.value, index))
+})
+
+// Rating the last meh/bad cell away takes the control off screen; a table
+// still filtered by it would then be stranded empty with nothing to undo it.
+watch(attentionRowCount, (count) => {
+  if (count === 0) rowFilter.value = 'all'
+})
 
 // --- fullscreen ------------------------------------------------------------
 
@@ -562,10 +634,32 @@ function handleRatingChange(payload: {
       <section v-else class="matrix-section" :class="{ 'matrix-section-expanded': expanded }">
         <div class="matrix-heading">
           <h2>
-            {{ rows.length }} test case{{ rows.length === 1 ? '' : 's' }} × {{ columnCount }}
+            <template v-if="filtering">{{ visibleRows.length }} of {{ rows.length }}</template>
+            <template v-else>{{ rows.length }}</template>
+            <!-- Plural follows the total, which is the number the noun sits
+                 next to once the filter narrows it: "1 of 5 test cases". -->
+            test case{{ rows.length === 1 ? '' : 's' }} × {{ columnCount }}
             {{ isModels ? 'model' : 'run' }}{{ columnCount === 1 ? '' : 's' }}
           </h2>
           <div class="matrix-heading-actions">
+            <!-- In the matrix's own heading rather than a `.filter-row` above
+                 the section, for the same reason the fullscreen button is:
+                 expanded, this strip *is* the toolbar, and a control left on
+                 the page underneath would be unreachable exactly where a long
+                 matrix most needs narrowing. Only once something is rated
+                 meh or bad — a filter for a state the matrix is not in is a
+                 control that can do nothing. -->
+            <div v-if="attentionRowCount > 0" class="matrix-filter">
+              <span class="filter-label">Show</span>
+              <SelectButton
+                v-model="rowFilter"
+                :options="rowFilterOptions"
+                option-label="label"
+                option-value="value"
+                :allow-empty="false"
+                size="small"
+              />
+            </div>
             <span v-if="isModels && matrix.uncovered_test_cases > 0" class="uncovered-note">
               {{ matrix.uncovered_test_cases }} test case{{ matrix.uncovered_test_cases === 1 ? '' : 's' }} in scope
               not answered by any selected model
@@ -586,10 +680,10 @@ function handleRatingChange(payload: {
 
         <MatrixTable
           :mode="mode"
-          :rows="rows"
+          :rows="visibleRows"
           :run-columns="matrix.run_columns"
           :model-columns="matrix.model_columns"
-          :column-tallies="matrix.column_tallies"
+          :column-tallies="visibleTallies"
           :can-write="auth.canWrite"
           :fill="expanded"
           @rating-change="handleRatingChange"
@@ -696,6 +790,14 @@ function handleRatingChange(payload: {
 .uncovered-note {
   font-size: 0.75rem;
   color: var(--p-text-muted-color);
+}
+
+/* The `.filter-row` pairing every other page uses, inline in the heading
+ * strip — same label, same gap, no row of its own. */
+.matrix-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 /* Quiet until wanted: it sits above every screenful of the matrix, so it
