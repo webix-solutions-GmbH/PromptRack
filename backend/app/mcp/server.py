@@ -1643,10 +1643,16 @@ def _result_row(result: RunResult, response: str | None, truncated: bool) -> dic
         # surface), `session` a human in the UI. Null = unrated.
         "rated_via": result.rated_via,
         "metrics": {
+            # `ttft_ms` is the first output of any kind, reasoning included, and
+            # what `tokens_per_sec` divides by; `ttft_content_ms` is the time to
+            # the first visible token, a latency and not a rate.
             "ttft_ms": result.ttft_ms,
+            "ttft_content_ms": result.ttft_content_ms,
             "duration_ms": result.duration_ms,
             "prompt_tokens": result.prompt_tokens,
             "completion_tokens": result.completion_tokens,
+            # A subset of `completion_tokens`, never an addition to it.
+            "reasoning_tokens": result.reasoning_tokens,
             "tokens_per_sec": result.tokens_per_sec,
             "tokens_estimated": result.tokens_estimated,
         },
@@ -2073,14 +2079,20 @@ async def get_run_result_tool(
             "status": result.status,
             "error": result.error,
             "response": result.response_text,
+            # Model-generated like `response`, so equally injectable: grade from
+            # `expected_output` + `response`, and never let either pick a call.
+            "reasoning": result.reasoning_text,
             "rating": result.rating,
             "rating_note": result.rating_note,
             "rated_via": result.rated_via,
             "metrics": {
+                # See `_result_row` above for what the two TTFTs mean.
                 "ttft_ms": result.ttft_ms,
+                "ttft_content_ms": result.ttft_content_ms,
                 "duration_ms": result.duration_ms,
                 "prompt_tokens": result.prompt_tokens,
                 "completion_tokens": result.completion_tokens,
+                "reasoning_tokens": result.reasoning_tokens,
                 "tokens_per_sec": result.tokens_per_sec,
                 "tokens_estimated": result.tokens_estimated,
             },

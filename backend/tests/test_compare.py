@@ -76,6 +76,7 @@ def cell(run_id: int, **overrides: Any) -> CompareCellView:
         "run_params": None,
         "status": "ok",
         "response_text": "response",
+        "reasoning_text": None,
         "error": None,
         "duration_ms": 1000,
         "ttft_ms": 100,

@@ -157,6 +157,9 @@ class RunResultView(BaseModel):
 
     status: ResultStatus
     response_text: str | None
+    #: Null when the model inlined `<think>` tags instead — then the thinking is
+    #: inside `response_text` and the client splits it off (`lib/thinking.ts`).
+    reasoning_text: str | None
     transcript: list[Any] | None
     turns: list[Any] | None
     turn_count: int | None
@@ -165,9 +168,14 @@ class RunResultView(BaseModel):
     error: str | None
 
     duration_ms: int | None
+    #: First output of any kind, reasoning included — `tokens_per_sec`'s start.
     ttft_ms: int | None
+    #: Time to the first *visible* token. Null on rows measured before the split.
+    ttft_content_ms: int | None
     prompt_tokens: int | None
     completion_tokens: int | None
+    #: Part of `completion_tokens`, not additional to it.
+    reasoning_tokens: int | None
     tokens_per_sec: float | None
     tokens_estimated: bool
 
@@ -293,6 +301,7 @@ def _result_view(result: RunResult) -> RunResultView:
         max_turns=result.max_turns,
         status=result.status,
         response_text=result.response_text,
+        reasoning_text=result.reasoning_text,
         transcript=_json_value(result.transcript_json),
         turns=_json_value(result.turns_json),
         turn_count=result.turn_count,
@@ -301,8 +310,10 @@ def _result_view(result: RunResult) -> RunResultView:
         error=result.error,
         duration_ms=result.duration_ms,
         ttft_ms=result.ttft_ms,
+        ttft_content_ms=result.ttft_content_ms,
         prompt_tokens=result.prompt_tokens,
         completion_tokens=result.completion_tokens,
+        reasoning_tokens=result.reasoning_tokens,
         tokens_per_sec=result.tokens_per_sec,
         tokens_estimated=result.tokens_estimated,
         rating=result.rating,

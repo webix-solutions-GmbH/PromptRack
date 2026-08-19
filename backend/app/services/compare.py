@@ -249,6 +249,9 @@ class CompareCellView:
     run_params: str | None
     status: ResultStatus
     response_text: str | None
+    #: The thinking, when the endpoint gave it its own channel. Carried so a cell
+    #: renders it the same way the run detail page does.
+    reasoning_text: str | None
     error: str | None
     duration_ms: int | None
     ttft_ms: int | None

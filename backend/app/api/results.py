@@ -192,6 +192,7 @@ def _to_cell(scope: Scope, row: CompareCellRow, column_key: str = "") -> Compare
         run_params=row.run_params,
         status=result.status,
         response_text=result.response_text,
+        reasoning_text=result.reasoning_text,
         error=result.error,
         duration_ms=result.duration_ms,
         ttft_ms=result.ttft_ms,
