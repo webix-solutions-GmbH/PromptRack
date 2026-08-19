@@ -49,6 +49,18 @@ def content_chunk(content: str, **extra: Any) -> str:
     )
 
 
+def reasoning_chunk(reasoning: str, field: str = "reasoning_content") -> str:
+    """One chunk of a chain of thought on its own channel."""
+    return sse(
+        {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "model": "test-model",
+            "choices": [{"index": 0, "delta": {field: reasoning}, "finish_reason": None}],
+        }
+    )
+
+
 def tool_call_chunk(entries: Sequence[dict[str, Any]]) -> str:
     """One `delta.tool_calls` chunk, in whatever partial shape a server sends."""
     return sse(
@@ -64,6 +76,10 @@ def tool_call_chunk(entries: Sequence[dict[str, Any]]) -> str:
 
 
 DONE = "data: [DONE]\n\n"
+
+#: What a reasoning parser leaves at the head of `content`: the chat template's
+#: own punctuation after `</think>`, which is not part of any answer.
+NEWLINE_PAIR = "\n\n"
 
 
 def stream_of(
@@ -546,6 +562,212 @@ def test_a_tool_call_goes_back_on_the_wire_in_the_openai_shape():
 
 
 # ---------------------------------------------------------------------------
+# Reasoning models
+#
+# The `delta.reasoning_content` shape, which used to be dropped entirely — at the
+# cost of the thinking itself, two newlines at the head of every answer, and a
+# throughput figure off by 60x. The inline `<think>` shape is split client-side.
+# ---------------------------------------------------------------------------
+
+
+async def test_marks_ttft_at_the_first_reasoning_delta_not_the_first_visible_token():
+    """The bug: thinking is generation, so it cannot count as prefill."""
+    fixture = [
+        sse({"choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]}),
+        reasoning_chunk("Let me think. "),
+        reasoning_chunk("The masks are "),
+        reasoning_chunk("candidates 3 and 7. "),
+        reasoning_chunk("3 is the closer match."),
+        content_chunk(NEWLINE_PAIR),
+        content_chunk('{"candidateMaskIds": [3]}'),
+        sse({"choices": [], "usage": {"prompt_tokens": 300, "completion_tokens": 70}}),
+        DONE,
+    ]
+    chunks, now = stream_of(fixture)
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    # First reasoning delta: fixture entry 2 → 200ms. First visible token:
+    # entry 7 → 700ms. Both are real; only the first is a prefill.
+    assert result.ttft_ms == 200
+    assert result.ttft_content_ms == 700
+    assert result.duration_ms == 900
+
+    # 70 tokens over the 700ms the model was actually generating.
+    assert compute_tokens_per_sec(
+        result.completion_tokens, result.duration_ms, result.ttft_ms
+    ) == pytest.approx(100)
+    # What the old reading produced from the same stream: 3.5x too high here,
+    # and worse the longer the model thinks.
+    assert compute_tokens_per_sec(
+        result.completion_tokens, result.duration_ms, result.ttft_content_ms
+    ) == pytest.approx(350)
+
+
+async def test_keeps_the_chain_of_thought_instead_of_discarding_it():
+    chunks, now = stream_of(
+        [reasoning_chunk("First, "), reasoning_chunk("second."), content_chunk("done"), DONE]
+    )
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    assert result.reasoning_text == "First, second."
+    # And it stays out of the answer, which is the half a rubric grades.
+    assert result.text == "done"
+
+
+async def test_reads_the_thinking_off_the_reasoning_field_too():
+    """A proxy that spells the field `reasoning` measures the same as vLLM."""
+    chunks, now = stream_of(
+        [reasoning_chunk("thinking", field="reasoning"), content_chunk("answer"), DONE]
+    )
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    assert result.reasoning_text == "thinking"
+    assert result.ttft_ms == 100
+    assert result.ttft_content_ms == 200
+
+
+async def test_strips_the_newline_pair_a_reasoning_parser_leaves_ahead_of_the_answer():
+    """Several rubrics demand raw JSON with no preamble; two newlines fail them."""
+    chunks, now = stream_of(
+        [
+            reasoning_chunk("thinking"),
+            content_chunk(NEWLINE_PAIR),
+            content_chunk('{"candidateMaskIds": [3]}'),
+            DONE,
+        ]
+    )
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    assert result.text == '{"candidateMaskIds": [3]}'
+    assert len(result.text) == 25
+    assert result.text.startswith("{")
+
+
+async def test_strips_leading_whitespace_that_shares_a_chunk_with_the_answer():
+    chunks, now = stream_of([content_chunk(NEWLINE_PAIR + "  answer"), DONE])
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    assert result.text == "answer"
+
+
+async def test_leaves_whitespace_inside_and_after_the_answer_alone():
+    """Only whitespace *ahead* of the answer is punctuation; the rest is output."""
+    chunks, now = stream_of(
+        [content_chunk(NEWLINE_PAIR), content_chunk("line one"), content_chunk(NEWLINE_PAIR), DONE]
+    )
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    assert result.text == "line one" + NEWLINE_PAIR
+
+
+async def test_stamps_the_content_ttft_only_once_the_answer_really_starts():
+    """A whitespace-only first delta is output, but it is not the answer."""
+    chunks, now = stream_of([content_chunk(NEWLINE_PAIR), content_chunk("answer"), DONE])
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    # Both content deltas are generation, so TTFT is the first of them...
+    assert result.ttft_ms == 100
+    # ...but nothing was visible until the second.
+    assert result.ttft_content_ms == 200
+
+
+async def test_reports_the_same_two_ttfts_for_a_model_that_does_not_think():
+    chunks, now = stream_of([content_chunk("straight to it"), DONE])
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    assert result.ttft_ms == 100
+    assert result.ttft_content_ms == 100
+    assert result.reasoning_text == ""
+    assert result.reasoning_tokens is None
+
+
+async def test_reports_no_content_ttft_when_the_model_only_ever_thought():
+    """A truncated thinking phase measures a prefill but never a visible token."""
+    chunks, now = stream_of([reasoning_chunk("thinking, and then cut off"), DONE])
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    assert result.ttft_ms == 100
+    assert result.ttft_content_ms is None
+    assert result.text == ""
+
+
+async def test_reads_reasoning_tokens_out_of_the_usage_details():
+    chunks, now = stream_of(
+        [
+            reasoning_chunk("thinking"),
+            content_chunk("answer"),
+            sse(
+                {
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 12,
+                        "completion_tokens": 479,
+                        "completion_tokens_details": {"reasoning_tokens": 470},
+                    },
+                }
+            ),
+            DONE,
+        ]
+    )
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    assert result.reasoning_tokens == 470
+    # A subset of the completion count, not an addition: 479 is what the
+    # generation window gets divided into.
+    assert result.completion_tokens == 479
+
+
+async def test_reasoning_tokens_stay_none_when_the_endpoint_reports_no_details():
+    chunks, now = stream_of(
+        [
+            reasoning_chunk("thinking"),
+            content_chunk("answer"),
+            sse({"choices": [], "usage": {"prompt_tokens": 12, "completion_tokens": 40}}),
+            DONE,
+        ]
+    )
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    assert result.reasoning_tokens is None
+    assert result.reasoning_text == "thinking"
+
+
+async def test_counts_the_thinking_when_estimating_tokens_without_a_usage_block():
+    """Those tokens were generated inside the window the rate divides by."""
+    chunks, now = stream_of([reasoning_chunk("x" * 400), content_chunk("y" * 40), DONE])
+
+    result = await consume_chat_completion_stream(chunks, started_at=0, now=now)
+
+    assert result.tokens_estimated is True
+    assert result.completion_tokens == math.ceil(440 / 4)
+
+
+async def test_forwards_only_the_answer_to_the_delta_callback():
+    """The live preview shows the answer, so the leading pair must not reach it."""
+    seen: list[tuple[str, str]] = []
+    chunks, now = stream_of(
+        [reasoning_chunk("thinking"), content_chunk(NEWLINE_PAIR), content_chunk("hi"), DONE]
+    )
+
+    await consume_chat_completion_stream(
+        chunks, started_at=0, now=now, on_delta=lambda delta, so_far: seen.append((delta, so_far))
+    )
+
+    assert seen == [("hi", "hi")]
+
+
+# ---------------------------------------------------------------------------
 # compute_tokens_per_sec
 # ---------------------------------------------------------------------------
 
@@ -575,6 +797,23 @@ def test_returns_none_when_there_are_no_completion_tokens():
 def test_returns_none_for_a_missing_or_non_finite_duration():
     assert compute_tokens_per_sec(10, None, 0) is None
     assert compute_tokens_per_sec(10, math.nan, 0) is None
+
+
+def test_refuses_a_five_digit_rate_out_of_a_near_zero_generation_window():
+    """The numbers actually stored for one row of run 7, where the whole thinking
+    phase was read as prefill. 3958 tok/s is not a measurement.
+    """
+    assert compute_tokens_per_sec(479, 7417, 7296) is None
+
+
+def test_still_reports_a_fast_short_answer_with_a_small_window():
+    """A tiny window at an ordinary rate is a short answer, not a bad reading."""
+    assert compute_tokens_per_sec(20, 200, 40) == pytest.approx(125)
+
+
+def test_leaves_a_high_rate_alone_when_the_window_is_long():
+    """Both halves of the guard are needed; either alone would misfire."""
+    assert compute_tokens_per_sec(100_000, 10_000, 100) == pytest.approx(10101.01, abs=1e-2)
 
 
 async def test_matches_the_metrics_produced_by_a_consumed_stream():
