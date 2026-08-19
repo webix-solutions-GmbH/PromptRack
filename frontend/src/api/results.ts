@@ -87,6 +87,9 @@ export interface CompareCellView {
   run_params: string | null
   status: ResultStatus
   response_text: string | null
+  /** Null when the model inlined `<think>` tags instead — then the thinking is
+   * inside `response_text`. `lib/thinking.ts` resolves both shapes. */
+  reasoning_text: string | null
   error: string | null
   duration_ms: number | null
   ttft_ms: number | null

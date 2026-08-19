@@ -9,7 +9,7 @@ import { computed } from 'vue'
 import Tag from 'primevue/tag'
 import { formatDuration, formatRate, formatTokenLabel } from '../../lib/format'
 import { RESULT_STATUS_SEVERITY } from '../../lib/runStatus'
-import { splitThinking } from '../../lib/thinking'
+import { resolveThinking } from '../../lib/thinking'
 import type { Rating } from '../../lib/rating'
 import type { RunResultView } from '../../api/runs'
 import RatingButtons from './RatingButtons.vue'
@@ -46,7 +46,16 @@ const tokenLabel = computed(() =>
   formatTokenLabel(props.result.prompt_tokens, props.result.completion_tokens, props.result.tokens_estimated),
 )
 
-const ratingResponse = computed(() => splitThinking(props.result.response_text ?? ''))
+const ratingResponse = computed(() =>
+  resolveThinking(props.result.reasoning_text, props.result.response_text),
+)
+
+/** Shown only when the model thought: for everything else it repeats `ttft_ms`. */
+const contentTtft = computed(() =>
+  props.result.ttft_content_ms !== null && props.result.ttft_content_ms !== props.result.ttft_ms
+    ? props.result.ttft_content_ms
+    : null,
+)
 </script>
 
 <template>
@@ -155,7 +164,10 @@ const ratingResponse = computed(() => splitThinking(props.result.response_text ?
         <pre class="pre">{{ result.expected_output }}</pre>
       </div>
     </div>
-    <div v-else-if="result.response_text || result.status === 'running'" class="prompt-field">
+    <div
+      v-else-if="result.response_text || result.reasoning_text || result.status === 'running'"
+      class="prompt-field"
+    >
       <span class="field-label">Response</span>
       <details v-if="ratingResponse.thinking !== null">
         <summary class="think-summary">
@@ -172,7 +184,13 @@ const ratingResponse = computed(() => splitThinking(props.result.response_text ?
     <div v-if="hasMetrics" class="metrics-row">
       <span class="chip">duration <b>{{ formatDuration(result.duration_ms) }}</b></span>
       <span class="chip">ttft <b>{{ formatDuration(result.ttft_ms) }}</b></span>
+      <span v-if="contentTtft !== null" class="chip"
+        >first answer token <b>{{ formatDuration(contentTtft) }}</b></span
+      >
       <span v-if="tokenLabel" class="chip">tokens <b>{{ tokenLabel }}</b></span>
+      <span v-if="result.reasoning_tokens !== null" class="chip"
+        >thinking <b>{{ result.reasoning_tokens }} tok</b></span
+      >
       <span class="chip">speed <b>{{ formatRate(result.tokens_per_sec) }}</b></span>
       <span v-if="result.turn_count !== null" class="chip">turns <b>{{ result.turn_count }}</b></span>
       <span v-if="result.tool_call_count !== null" class="chip"

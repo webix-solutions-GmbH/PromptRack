@@ -55,10 +55,16 @@ export interface ToolDefinition {
 
 export interface SnapshotTool {
   definition: ToolDefinition
-  source: 'manual' | 'mcp'
+  source: 'manual' | 'mcp' | 'documents'
   toolset_id: number
   toolset_name: string
   mock_response: string | null
+  /** Present only on a `documents` tool: the size and freshness of the corpus at
+   * run creation. The corpus itself is not frozen (a document tool reads live,
+   * scoped by `toolset_id`), so these two are a record of what the run was
+   * offered, not something it can replay. Absent on every other source. */
+  document_count?: number
+  corpus_updated_at?: string
 }
 
 export interface ToolCall {
@@ -79,11 +85,14 @@ export interface TranscriptMessage {
   turn?: number
   tool_duration_ms?: number
   tool_is_error?: boolean
+  /** This turn's thinking, when the endpoint gave it its own channel. */
+  reasoning?: string
 }
 
 /** One model turn's metrics — `turns_json`'s element. */
 export interface TurnMetrics {
   index: number
+  /** First output of any kind, reasoning included. */
   ttft_ms: number | null
   duration_ms: number
   prompt_tokens: number | null
@@ -91,6 +100,10 @@ export interface TurnMetrics {
   tokens_estimated: boolean
   finish_reason: string | null
   tool_call_count: number
+  /** Part of `completion_tokens`. Both are omitted, not null, when the model
+   * did not think — a non-reasoning run's `turns_json` is unchanged. */
+  reasoning_tokens?: number
+  ttft_content_ms?: number
 }
 
 export interface RunResultView {
@@ -124,6 +137,9 @@ export interface RunResultView {
 
   status: ResultStatus
   response_text: string | null
+  /** Null when the model inlined `<think>` tags instead — then the thinking is
+   * inside `response_text`. `lib/thinking.ts` resolves both shapes. */
+  reasoning_text: string | null
   transcript: TranscriptMessage[] | null
   turns: TurnMetrics[] | null
   turn_count: number | null
@@ -132,9 +148,16 @@ export interface RunResultView {
   error: string | null
 
   duration_ms: number | null
+  /** First output of any kind, reasoning included — the prefill and nothing
+   * more, which is what makes `tokens_per_sec` real on a thinking model. */
   ttft_ms: number | null
+  /** Time to the first *visible* token. Null on rows measured before the two
+   * were told apart. */
+  ttft_content_ms: number | null
   prompt_tokens: number | null
   completion_tokens: number | null
+  /** Part of `completion_tokens`, never additional to it. */
+  reasoning_tokens: number | null
   tokens_per_sec: number | null
   tokens_estimated: boolean
 
@@ -207,6 +230,8 @@ export interface ResultMetricsPayload {
   tokens_estimated: boolean
   turn_count: number | null
   tool_call_count: number | null
+  reasoning_tokens: number | null
+  ttft_content_ms: number | null
 }
 
 export type RunEvent =
@@ -228,6 +253,8 @@ export type RunEvent =
       transcript?: TranscriptMessage[]
       turns?: TurnMetrics[]
       stopped_reason?: StoppedReason
+      /** Sent on this event only — the live deltas carry the answer alone. */
+      reasoning_text?: string
     }
   | { type: 'resultError'; result_id: number; error: string }
   /** The client disconnected; `result_id` (when set) was reset to `pending`. */

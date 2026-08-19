@@ -160,6 +160,7 @@ function applyEvent(event: RunEvent) {
       patchResult(event.result_id, {
         status: 'running',
         response_text: '',
+        reasoning_text: null,
         error: null,
         transcript: null,
         turns: [],
@@ -212,11 +213,14 @@ function applyEvent(event: RunEvent) {
       patchResult(event.result_id, {
         status: 'ok',
         response_text: event.text,
+        reasoning_text: event.reasoning_text ?? null,
         error: null,
         duration_ms: event.metrics.duration_ms,
         ttft_ms: event.metrics.ttft_ms,
+        ttft_content_ms: event.metrics.ttft_content_ms,
         prompt_tokens: event.metrics.prompt_tokens,
         completion_tokens: event.metrics.completion_tokens,
+        reasoning_tokens: event.metrics.reasoning_tokens,
         tokens_per_sec: event.metrics.tokens_per_sec,
         tokens_estimated: event.metrics.tokens_estimated,
         turn_count: event.metrics.turn_count,
@@ -237,6 +241,7 @@ function applyEvent(event: RunEvent) {
         patchResult(event.result_id, {
           status: 'pending',
           response_text: null,
+          reasoning_text: null,
           error: null,
           transcript: null,
           turns: [],

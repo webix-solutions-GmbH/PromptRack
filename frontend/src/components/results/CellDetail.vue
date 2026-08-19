@@ -17,7 +17,7 @@ import { computed } from 'vue'
 import Tag from 'primevue/tag'
 import RatingButtons from '../runs/RatingButtons.vue'
 import { usePromptVersionLabels } from '../../lib/promptVersionLabels'
-import { splitThinking } from '../../lib/thinking'
+import { resolveThinking } from '../../lib/thinking'
 import type { Rating } from '../../lib/rating'
 import type { CompareCellView } from '../../api/results'
 
@@ -36,7 +36,9 @@ const emit = defineEmits<{
   ratingChange: [patch: { rating?: Rating | null; ratingNote?: string | null }]
 }>()
 
-const response = computed(() => splitThinking(props.cell.response_text ?? ''))
+const response = computed(() =>
+  resolveThinking(props.cell.reasoning_text, props.cell.response_text),
+)
 const isToolCell = computed(() => props.cell.tool_mode !== 'none')
 const readonly = computed(
   () => !props.canWrite || props.cell.status === 'pending' || props.cell.status === 'running',

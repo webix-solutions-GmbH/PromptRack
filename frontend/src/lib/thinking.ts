@@ -1,7 +1,11 @@
-// Reasoning models (Qwen, DeepSeek R1, ...) prefix their answer with a
-// `<think>...</think>` block streamed as plain content. For display we split
-// it off so the UI can tuck it behind a collapsed toggle. Kept pure so the
-// run detail view can call it on every streamed delta with no round trip.
+// A reasoning model's chain of thought reaches this app one of two ways, and the
+// same model on two endpoints picks different ones: inline in the answer wrapped
+// in `<think>` tags (Ollama, vLLM without `--reasoning-parser`), or on its own
+// channel, which the backend stores in `run_results.reasoning_text`.
+//
+// `resolveThinking` takes both and returns one answer/thinking pair, so no view
+// has to know which shape its endpoint produced. Pure, so the run detail view can
+// call it on every streamed delta with no round trip.
 
 export interface SplitThinkingResult {
   /** Content of the leading think block, null when there is none. */
@@ -45,4 +49,24 @@ export function splitThinking(text: string): SplitThinkingResult {
     answer,
     thinkingClosed: true,
   }
+}
+
+/**
+ * One answer/thinking pair out of whichever shape the endpoint produced.
+ *
+ * Separately-captured reasoning wins and the text is left alone: the provider
+ * already drew the boundary, so re-parsing would only find a `<think>` the model
+ * wrote *about* thinking. `thinkingClosed` is true there because reasoning is
+ * only ever stored on a finished row; a run still streaming arrives with
+ * `reasoning` null and keeps the inline path's honest "still open" mark.
+ */
+export function resolveThinking(
+  reasoning: string | null | undefined,
+  text: string | null | undefined,
+): SplitThinkingResult {
+  const answer = text ?? ''
+  if (reasoning) {
+    return { thinking: reasoning, answer, thinkingClosed: true }
+  }
+  return splitThinking(answer)
 }

@@ -9,7 +9,7 @@
 // `backend/app/services/tool_loop.py`).
 import { computed } from 'vue'
 import { formatDuration, formatRate, computeTokensPerSec, formatTokenLabel } from '../../lib/format'
-import { splitThinking } from '../../lib/thinking'
+import { resolveThinking } from '../../lib/thinking'
 import type { StoppedReason, TranscriptMessage, TurnMetrics } from '../../api/runs'
 
 const props = defineProps<{
@@ -61,7 +61,7 @@ const rows = computed<Row[]>(() => {
 const turnByIndex = computed(() => new Map(props.turns.map((turn) => [turn.index, turn])))
 
 function assistantParts(message: TranscriptMessage) {
-  return splitThinking(message.content)
+  return resolveThinking(message.reasoning, message.content)
 }
 </script>
 
@@ -95,6 +95,9 @@ function assistantParts(message: TranscriptMessage) {
                 ),
               )
             }}</b></span
+          >
+          <span v-if="turnByIndex.get(row.turn)!.reasoning_tokens !== undefined" class="chip"
+            >thinking <b>{{ turnByIndex.get(row.turn)!.reasoning_tokens }} tok</b></span
           >
           <span v-if="turnByIndex.get(row.turn)!.finish_reason" class="chip"
             >finish <b>{{ turnByIndex.get(row.turn)!.finish_reason }}</b></span

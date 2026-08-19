@@ -25,6 +25,12 @@ export function formatRate(tokensPerSec: number | null | undefined): string {
   return `${tokensPerSec.toFixed(1)} tok/s`
 }
 
+/** Tokens per second no single-stream decode reaches, and the shortest window
+ * that can be told apart from a TTFT which swallowed the generation it was meant
+ * to exclude. Both halves of `compute_tokens_per_sec`'s plausibility guard. */
+const IMPLAUSIBLE_RATE = 2000
+const MIN_PLAUSIBLE_GENERATION_MS = 250
+
 /**
  * Generation throughput for a single turn: completion tokens over the
  * *generation* window (duration minus the prefill/TTFT). Port of
@@ -32,6 +38,11 @@ export function formatRate(tokensPerSec: number | null | undefined): string {
  * page needs this client-side because `TurnMetrics` carries the raw
  * timings but not a precomputed rate (only the aggregate `tokens_per_sec`
  * on the finished result is precomputed server-side).
+ *
+ * Keep the guard in step with the backend: this is the same math twice, and a
+ * per-turn chip disagreeing with the row's own rate is worse than either alone.
+ * It fires on turns whose `ttft_ms` predates reasoning counting as output —
+ * those report the whole thinking phase as prefill, which read as 3958 tok/s.
  */
 export function computeTokensPerSec(
   completionTokens: number | null,
@@ -48,7 +59,9 @@ export function computeTokensPerSec(
   if (!Number.isFinite(generationMs) || generationMs <= 0) return null
 
   const rate = completionTokens / (generationMs / 1000)
-  return Number.isFinite(rate) ? rate : null
+  if (!Number.isFinite(rate)) return null
+  if (generationMs < MIN_PLAUSIBLE_GENERATION_MS && rate > IMPLAUSIBLE_RATE) return null
+  return rate
 }
 
 /**
