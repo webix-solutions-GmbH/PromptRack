@@ -55,6 +55,8 @@ def turn(**overrides: Any) -> TurnMetrics:
         "tokens_estimated": False,
         "finish_reason": "stop",
         "tool_call_count": 0,
+        "reasoning_tokens": None,
+        "ttft_content_ms": None,
     }
     return TurnMetrics(**{**defaults, **overrides})
 
@@ -238,6 +240,32 @@ class TestAggregate:
             tokens_estimated=True,
             tokens_per_sec=None,
         )
+
+    def test_sums_reasoning_tokens_keeping_null_only_when_no_turn_reported_any(self):
+        """Same rule as `prompt_tokens`: silence and a reported zero differ."""
+        both = aggregate([turn(reasoning_tokens=200), turn(reasoning_tokens=90)])
+        one = aggregate([turn(reasoning_tokens=None), turn(reasoning_tokens=90)])
+
+        assert both.reasoning_tokens == 290
+        assert one.reasoning_tokens == 90
+        assert aggregate([turn(), turn()]).reasoning_tokens is None
+        assert aggregate([turn(reasoning_tokens=0)]).reasoning_tokens == 0
+
+    def test_takes_the_content_ttft_from_the_first_turn_the_way_ttft_does(self):
+        result = aggregate(
+            [turn(index=0, ttft_content_ms=800), turn(index=1, ttft_content_ms=120)]
+        )
+
+        assert result.ttft_content_ms == 800
+
+    def test_a_thinking_turn_contributes_its_whole_generation_window(self):
+        """Thinks for 7.2s, answers in 0.12s: the window is the 7.3s the model
+        was busy, not the 121ms it was visible.
+        """
+        result = aggregate([turn(ttft_ms=130, duration_ms=7417, completion_tokens=479)])
+
+        assert result.tokens_per_sec == pytest.approx(479 / 7.287, abs=0.1)
+        assert result.tokens_per_sec < 100
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +507,52 @@ class TestExecuteMode:
 
         assert result.stopped_reason == "max_turns"
         assert result.text == "Partial answer."
+
+    async def test_keeps_every_turns_thinking_in_the_transcript_and_the_last_in_the_column(self):
+        """Per-turn thinking is where an agent's decision-making lives, so it
+        stays on each message; the column holds the final turn's, like `text`.
+        """
+        streamer = ScriptedStreamer(
+            llm_result(tool_calls=[call()], reasoning_text="I should look this up."),
+            llm_result(text="PAID.", reasoning_text="The lookup settles it."),
+        )
+
+        result = await run(streamer, snapshot=[tool()], tool_mode="execute")
+
+        assert result.reasoning_text == "The lookup settles it."
+        assert [
+            message.reasoning for message in result.transcript if message.role == "assistant"
+        ] == ["I should look this up.", "The lookup settles it."]
+
+    async def test_never_echoes_the_thinking_back_to_the_endpoint(self):
+        """A provider that splits reasoning off does not accept it back."""
+        streamer = ScriptedStreamer(
+            llm_result(tool_calls=[call()], reasoning_text="thinking"),
+            llm_result(text="done"),
+        )
+
+        await run(streamer, snapshot=[tool()], tool_mode="execute")
+
+        second_request = streamer.calls[1]["messages"]
+        assert all("reasoning" not in message for message in second_request)
+        assert all("reasoning_content" not in message for message in second_request)
+
+    async def test_a_later_silent_turn_does_not_blank_an_earlier_turns_thinking(self):
+        """Turn 0 answers *and* calls a tool; turn 1 says nothing at all."""
+        streamer = ScriptedStreamer(
+            llm_result(
+                text="The answer is 42.",
+                reasoning_text="Some thinking.",
+                tool_calls=[call()],
+            ),
+            llm_result(),
+        )
+
+        result = await run(streamer, snapshot=[tool()], tool_mode="execute")
+
+        assert streamer.turns_taken == 2
+        assert result.text == "The answer is 42."
+        assert result.reasoning_text == "Some thinking."
 
     async def test_sums_metrics_over_model_turns_only(self):
         streamer = ScriptedStreamer(
@@ -774,6 +848,30 @@ class TestSerialization:
         turns = [turn(index=0), turn(index=1, ttft_ms=None, finish_reason=None)]
 
         assert parse_turns(serialize_turns(turns)) == turns
+
+    def test_round_trips_the_reasoning_metrics_of_a_thinking_turn(self):
+        turns = [turn(index=0, reasoning_tokens=470, ttft_content_ms=7296)]
+
+        assert parse_turns(serialize_turns(turns)) == turns
+
+    def test_leaves_a_non_thinking_turns_stored_json_exactly_as_it_was(self):
+        """The two new keys are omitted, not null, so existing rows keep shape."""
+        stored = json.loads(serialize_turns([turn(index=0)]))
+
+        assert "reasoning_tokens" not in stored[0]
+        assert "ttft_content_ms" not in stored[0]
+
+    def test_round_trips_a_turns_chain_of_thought_in_the_transcript(self):
+        messages = [
+            TranscriptMessage(
+                role="assistant",
+                content="PAID it is.",
+                turn=0,
+                reasoning="The lookup said PAID, so no follow-up call is needed.",
+            )
+        ]
+
+        assert parse_transcript(serialize_transcript(messages)) == messages
 
     def test_skips_turn_entries_without_an_index(self):
         assert parse_turns('[{"duration_ms":10}]') == []

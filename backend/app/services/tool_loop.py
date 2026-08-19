@@ -18,7 +18,9 @@ Three things this module is responsible for, and the reasoning behind each:
   — waiting on a slow tool must not read as a slow endpoint — and the
   throughput denominator is the sum of each turn's own generation window, so
   later prefills are never counted as generation. For a single turn it reduces
-  exactly to `compute_tokens_per_sec(tokens, duration, ttft)`.
+  exactly to `compute_tokens_per_sec(tokens, duration, ttft)`. Each turn's
+  window starts at its first output of any kind, reasoning included — see the
+  measurement contract in :mod:`app.services.llm`.
 
 The frozen half of a run's tool configuration lives here too
 (:class:`SnapshotTool` and its (de)serializers): the definition sent to the
@@ -261,6 +263,7 @@ class TurnMetrics:
 
     #: 0-based turn number.
     index: int
+    #: First output of any kind — where the generation window starts.
     ttft_ms: int | None
     duration_ms: int
     prompt_tokens: int | None
@@ -268,9 +271,12 @@ class TurnMetrics:
     tokens_estimated: bool
     finish_reason: str | None
     tool_call_count: int
+    #: Part of `completion_tokens`, when the endpoint broke it out.
+    reasoning_tokens: int | None = None
+    ttft_content_ms: int | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "index": self.index,
             "ttft_ms": self.ttft_ms,
             "duration_ms": self.duration_ms,
@@ -280,6 +286,12 @@ class TurnMetrics:
             "finish_reason": self.finish_reason,
             "tool_call_count": self.tool_call_count,
         }
+        # Omitted, not null: a non-reasoning run's `turns_json` stays as it was.
+        if self.reasoning_tokens is not None:
+            payload["reasoning_tokens"] = self.reasoning_tokens
+        if self.ttft_content_ms is not None:
+            payload["ttft_content_ms"] = self.ttft_content_ms
+        return payload
 
 
 @dataclass(frozen=True)
@@ -301,6 +313,9 @@ class TranscriptMessage:
     tool_duration_ms: int | None = None
     #: The tool failed and its error text was fed back to the model.
     tool_is_error: bool | None = None
+    #: This turn's thinking, when the endpoint gave it its own channel. Never
+    #: echoed back: a provider that splits reasoning off does not accept it.
+    reasoning: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"role": self.role, "content": self.content}
@@ -319,6 +334,8 @@ class TranscriptMessage:
             payload["tool_duration_ms"] = self.tool_duration_ms
         if self.tool_is_error is not None:
             payload["tool_is_error"] = self.tool_is_error
+        if self.reasoning is not None:
+            payload["reasoning"] = self.reasoning
         return payload
 
 
@@ -359,6 +376,7 @@ def parse_transcript(raw: str | None) -> list[TranscriptMessage] | None:
                 tool_is_error=(
                     entry["tool_is_error"] if isinstance(entry.get("tool_is_error"), bool) else None
                 ),
+                reasoning=_optional_str(entry.get("reasoning")),
             )
         )
     return messages or None
@@ -380,6 +398,8 @@ def parse_turns(raw: str | None) -> list[TurnMetrics]:
                 tokens_estimated=bool(entry.get("tokens_estimated")),
                 finish_reason=_optional_str(entry.get("finish_reason")),
                 tool_call_count=_optional_int(entry.get("tool_call_count")) or 0,
+                reasoning_tokens=_optional_int(entry.get("reasoning_tokens")),
+                ttft_content_ms=_optional_int(entry.get("ttft_content_ms")),
             )
         )
     return turns
@@ -521,6 +541,10 @@ class Aggregates:
     completion_tokens: int
     tokens_estimated: bool
     tokens_per_sec: float | None
+    #: Summed across turns; None when no turn reported any.
+    reasoning_tokens: int | None = None
+    #: The first turn's, the same turn `ttft_ms` comes from.
+    ttft_content_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -542,6 +566,11 @@ class ToolRunResult:
     tool_call_count: int
     #: Turns the model actually took, i.e. `len(turns)`.
     turn_count: int = 0
+    #: The final turn's thinking — "last one wins", like `text`. Every turn's is
+    #: kept per-message in the transcript.
+    reasoning_text: str = ""
+    reasoning_tokens: int | None = None
+    ttft_content_ms: int | None = None
 
     @property
     def transcript_json(self) -> str:
@@ -600,6 +629,7 @@ async def run_tool_loop(
     turns: list[TurnMetrics] = []
     stopped_reason: StoppedReason = "stop"
     final_text = ""
+    final_reasoning = ""
     tool_call_count = 0
 
     for turn in range(turn_budget):
@@ -631,9 +661,13 @@ async def run_tool_loop(
                 tokens_estimated=metrics.tokens_estimated,
                 finish_reason=metrics.finish_reason,
                 tool_call_count=len(metrics.tool_calls),
+                reasoning_tokens=metrics.reasoning_tokens,
+                ttft_content_ms=metrics.ttft_content_ms,
             )
         )
 
+        # No reasoning echoed back: a provider that splits it off refuses it on
+        # the assistant message, and one that inlines it has it in `content`.
         assistant: ChatMessage = {"role": "assistant", "content": metrics.text}
         if metrics.tool_calls:
             assistant["tool_calls"] = [call.to_wire() for call in metrics.tool_calls]
@@ -644,6 +678,7 @@ async def run_tool_loop(
                 content=metrics.text,
                 turn=turn,
                 tool_calls=list(metrics.tool_calls) or None,
+                reasoning=metrics.reasoning_text or None,
             )
         )
 
@@ -651,6 +686,8 @@ async def run_tool_loop(
         # must not blank out an answer the model gave alongside its calls.
         if metrics.text:
             final_text = metrics.text
+        if metrics.reasoning_text:
+            final_reasoning = metrics.reasoning_text
 
         if not metrics.tool_calls:
             stopped_reason = "stop"
@@ -711,6 +748,9 @@ async def run_tool_loop(
         tokens_per_sec=totals.tokens_per_sec,
         tool_call_count=tool_call_count,
         turn_count=len(turns),
+        reasoning_text=final_reasoning,
+        reasoning_tokens=totals.reasoning_tokens,
+        ttft_content_ms=totals.ttft_content_ms,
     )
 
 
@@ -743,6 +783,12 @@ def aggregate(turns: Sequence[TurnMetrics]) -> Aggregates:
     prompt_turns = [turn for turn in turns if turn.prompt_tokens is not None]
     prompt_tokens = sum(turn.prompt_tokens or 0 for turn in prompt_turns) if prompt_turns else None
 
+    # None is "nobody reported any", which a provider's reported 0 is not.
+    reasoning_turns = [turn for turn in turns if turn.reasoning_tokens is not None]
+    reasoning_tokens = (
+        sum(turn.reasoning_tokens or 0 for turn in reasoning_turns) if reasoning_turns else None
+    )
+
     return Aggregates(
         ttft_ms=turns[0].ttft_ms,
         duration_ms=duration_ms,
@@ -750,10 +796,13 @@ def aggregate(turns: Sequence[TurnMetrics]) -> Aggregates:
         completion_tokens=completion_tokens,
         tokens_estimated=any(turn.tokens_estimated for turn in turns),
         tokens_per_sec=compute_tokens_per_sec(completion_tokens, generation_ms, 0),
+        reasoning_tokens=reasoning_tokens,
+        ttft_content_ms=turns[0].ttft_content_ms,
     )
 
 
 __all__ = [
+    "TOOL_SOURCES",
     "Aggregates",
     "ChatStreamer",
     "ParsedArguments",
