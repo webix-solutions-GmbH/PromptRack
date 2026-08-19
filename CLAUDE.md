@@ -563,9 +563,29 @@ the editor has already fetched both prompts' text, so the preview is a client-si
   chunk vs. on the last content chunk; chunks split across reads, including mid-JSON tool
   call fragments keyed by `index`/`id`/nothing). No usage received → estimate
   `ceil(chars/4)` over text **plus** serialized tool calls, `tokens_estimated=True` (UI
-  shows `~`). TTFT = first content delta **or** first tool-call fragment, whichever comes
-  first — a tool-call-only response streams no content. Only connection-level failures
-  raise `LlmError`.
+  shows `~`), reasoning text included in the character count. TTFT = the first output of
+  **any** kind — a reasoning delta, a content delta, or a tool-call fragment — because a
+  tool-call-only response streams no content and a thinking model streams no *visible*
+  content for seconds. Only connection-level failures raise `LlmError`.
+- **Reasoning models are measured on both clocks** (`0008_reasoning_metrics`). A chain of
+  thought arrives one of two ways and the same model on two endpoints picks differently:
+  inline in `content` wrapped in `<think>` tags (Ollama, vLLM without a reasoning parser),
+  or split onto `delta.reasoning_content` (vLLM with `--reasoning-parser`, DeepSeek). The
+  split shape used to be dropped on the floor, which cost three things at once — the
+  thinking itself, the head of every answer, and the throughput number:
+  - `run_results.reasoning_text` stores it (the final turn's; every turn's is in
+    `transcript_json`), and `reasoning_tokens` breaks out
+    `usage.completion_tokens_details.reasoning_tokens` — **part of `completion_tokens`,
+    never additional to it**, which is what makes a 27-character answer costing 479 tokens
+    visible instead of merely confusing. `lib/thinking.ts`'s `resolveThinking` folds both
+    provider shapes into one answer/thinking pair so no view has to know which it got.
+  - **The answer is stored with leading whitespace stripped.** A reasoning parser's
+    `content` begins after `</think>`, which the chat template follows with a newline pair;
+    several rubrics demand raw JSON with no fences, and `JSON.parse` tolerates the pair
+    while `startswith("{")` and an exact-match diff do not.
+  - `ttft_ms` counts reasoning; `ttft_content_ms` is the older reading — time to the first
+    *visible* token, a real latency for a thinking model and a useless throughput
+    denominator. Both are kept precisely because they answer different questions.
 - **Executor invariants** (`app/services/executor.py`, `app/services/run_lock.py`): one
   execution per run via a Postgres **advisory lock** (`pg_try_advisory_lock`, namespaced
   under `LOCK_CLASS`, taken on its own connection in `AUTOCOMMIT` and held for the whole
@@ -589,7 +609,21 @@ the editor has already fetched both prompts' text, so the preview is a client-si
   generation window, not total duration. For a multi-turn tool run the denominator is the
   **sum of each turn's own** generation window (`aggregate` in `tool_loop.py`), so later
   prefills aren't counted as generation; for a single turn it reduces to exactly the
-  formula above.
+  formula above. **Which is why `ttft_ms` has to count thinking**: with it measured at the
+  first visible token instead, a reasoning model's whole chain of thought fell inside the
+  excluded prefill while the numerator still counted every reasoning token, and one row of
+  run 7 stored 3958 tok/s against a real ~65. A **plausibility guard** backstops the next
+  provider whose thinking channel nobody here has seen yet — a five-digit rate out of a
+  sub-quarter-second window is a mismeasured prefill, so the rate is `None` ("not
+  measured") rather than fiction. Both halves of the condition are needed: a fast short
+  answer has a tiny window at an ordinary rate, a batched server a high rate over a long
+  window. `frontend/src/lib/format.ts` carries the same math for per-turn chips and has to
+  stay in step — a chip disagreeing with its own row's rate is worse than either alone.
+- **Nothing was backfilled.** Rows measured before `0008_reasoning_metrics` hold a `ttft_ms`
+  from the old reading, so their generation window is unrecoverable and `tokens_per_sec`
+  could only be guessed at — and overwriting a stored measurement with a number nobody
+  measured is exactly what the snapshot model exists to prevent. Runs against a thinking
+  model that predate the fix have to be **re-run**, not repaired.
 
 ### Tool / API calling
 
@@ -982,7 +1016,8 @@ Two suites, split by whether they need a database.
 `cd backend && uv run pytest` (`backend/tests/*.py`, excludes `tests/integration` via
 `pyproject.toml`'s `addopts`) is the pure one and must stay database-free and fast:
 `test_message_assembly.py` (both message parts present, each alone, whitespace-only on
-either side, both blank), `test_llm.py` (SSE fixtures per provider style), `test_compare.py`,
+either side, both blank), `test_llm.py` (SSE fixtures per provider style, including a
+reasoning model's own channel and the throughput guard), `test_compare.py`,
 `test_tool_config.py`, `test_tool_loop.py` (metric aggregation, and every value of
 `ToolSource` surviving a `tools_snapshot` round trip), `test_documents.py` (which heading a
 search hit sits under, `read_document`'s windowing, and the key/markdown/title rules both
@@ -1025,6 +1060,9 @@ gated by `mocks_enabled()` — dev, or `ENABLE_MOCKS=true` in production; the re
 
 - **Mock LLM** — register an endpoint with base_url `http://localhost:8077/api/mock-llm`.
   `TRIGGER_ERROR` in the user message → 500, `TRIGGER_SLOW` → 2s TTFT delay,
+  `TRIGGER_REASONING` → answers like a reasoning model behind vLLM's `--reasoning-parser`
+  (thinking on `delta.reasoning_content`, then the answer on `delta.content` with the
+  template's newline pair at its head, and `reasoning_tokens` in usage),
   `TRIGGER_TOOL_LOOP` → never stops calling tools (exercises `max_turns`). When the
   request carries `tools` and no tool result yet, it streams a tool call for the first
   tool with arguments synthesized from its schema, split across chunks; once a tool
