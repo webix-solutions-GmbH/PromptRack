@@ -143,6 +143,7 @@ RESET_TO_PENDING: dict[str, Any] = {
     "started_at": None,
     "finished_at": None,
     "response_text": None,
+    "reasoning_text": None,
     "error": None,
     "transcript_json": None,
     "turns_json": None,
@@ -748,11 +749,16 @@ async def _execute(
             {
                 "status": "ok",
                 "response_text": outcome.text,
+                # Null, not "": the column says "no separate channel", not
+                # "thought about nothing".
+                "reasoning_text": outcome.reasoning_text or None,
                 "error": None,
                 "duration_ms": outcome.duration_ms,
                 "ttft_ms": outcome.ttft_ms,
+                "ttft_content_ms": outcome.ttft_content_ms,
                 "prompt_tokens": outcome.prompt_tokens,
                 "completion_tokens": outcome.completion_tokens,
+                "reasoning_tokens": outcome.reasoning_tokens,
                 "tokens_per_sec": outcome.tokens_per_sec,
                 "tokens_estimated": outcome.tokens_estimated,
                 # Only tool runs carry transcript detail; a plain prompt keeps
@@ -781,10 +787,13 @@ async def _execute(
                     tokens_estimated=outcome.tokens_estimated,
                     turn_count=outcome.turn_count if tool_run else None,
                     tool_call_count=outcome.tool_call_count if tool_run else None,
+                    reasoning_tokens=outcome.reasoning_tokens,
+                    ttft_content_ms=outcome.ttft_content_ms,
                 ),
                 transcript=outcome.transcript if tool_run else None,
                 turns=outcome.turns if tool_run else None,
                 stopped_reason=outcome.stopped_reason if tool_run else None,
+                reasoning_text=outcome.reasoning_text or None,
             )
         )
 

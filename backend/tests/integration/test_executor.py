@@ -25,11 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.repos.documents import create_document
 from app.repos.endpoints import create_endpoint
 from app.repos.prompts import create_prompt
-from app.repos.runs import get_run, list_run_results
+from app.repos.runs import get_run, list_run_results, update_run_result
 from app.repos.test_cases import create_test_case, create_test_group
 from app.repos.toolsets import create_tool, create_toolset
 from app.scope import Scope
-from app.services.executor import RunAlreadyExecutingError, execute_run
+from app.services.executor import RESET_TO_PENDING, RunAlreadyExecutingError, execute_run
 from app.services.llm import LlmError, LlmResult, ToolCall
 from app.services.run_create import create_run_record
 from app.services.run_events import RunEvent
@@ -55,7 +55,11 @@ def _result(text: str = "Hello.", **overrides: Any) -> LlmResult:
         "tokens_estimated": False,
         "finish_reason": "stop",
     }
-    return LlmResult(**{**defaults, **overrides})
+    merged = {**defaults, **overrides}
+    # A model that does not think sees its first visible token the moment it
+    # produces anything at all, so the two TTFTs coincide unless a test says so.
+    merged.setdefault("ttft_content_ms", merged["ttft_ms"])
+    return LlmResult(**merged)
 
 
 def scripted(*answers: LlmResult | Exception) -> tuple[Any, list[Sequence[Any]]]:
@@ -185,6 +189,68 @@ class TestHappyPath:
             "status": "completed",
             "nothing_pending": True,
         }
+
+
+class TestReasoningModels:
+    """A thinking model's own channel, stored rather than dropped."""
+
+    async def test_the_thinking_and_its_metrics_land_in_their_own_columns(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        run_id = await make_run(scope, session)
+        stream, _ = scripted(
+            _result(
+                "42",
+                reasoning_text="The question is about arithmetic.",
+                reasoning_tokens=470,
+                ttft_ms=130,
+                ttft_content_ms=7296,
+                duration_ms=7417,
+                completion_tokens=479,
+            )
+        )
+
+        await execute_run(run_id, lambda _event: None, stream=stream)
+
+        [result] = await reload_results(scope, session, run_id)
+        assert result.reasoning_text == "The question is about arithmetic."
+        assert result.reasoning_tokens == 470
+        assert result.response_text == "42"
+        # `ttft_ms` is the prefill; the visible-token reading is its own column.
+        assert result.ttft_ms == 130
+        assert result.ttft_content_ms == 7296
+        # 479 tokens over the 7.287s of generation, not the 121ms it was visible.
+        assert result.tokens_per_sec == pytest.approx(479 / 7.287, abs=0.1)
+
+    async def test_a_model_that_does_not_think_leaves_the_columns_null(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        run_id = await make_run(scope, session)
+        stream, _ = scripted(_result("Straight to it."))
+
+        await execute_run(run_id, lambda _event: None, stream=stream)
+
+        [result] = await reload_results(scope, session, run_id)
+        assert result.reasoning_text is None
+        assert result.reasoning_tokens is None
+        assert result.ttft_content_ms == result.ttft_ms
+
+    async def test_an_aborted_row_gives_up_its_thinking_along_with_its_answer(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        """`RESET_TO_PENDING` has to clear every output column, not most of them."""
+        run_id = await make_run(scope, session)
+        stream, _ = scripted(_result("42", reasoning_text="Thinking."))
+        await execute_run(run_id, lambda _event: None, stream=stream)
+
+        [result] = await reload_results(scope, session, run_id)
+        await update_run_result(scope, session, run_id, result.id, RESET_TO_PENDING)
+        await session.commit()
+
+        [reset] = await reload_results(scope, session, run_id)
+        assert reset.status == "pending"
+        assert reset.response_text is None
+        assert reset.reasoning_text is None
 
 
 class TestMessageAssembly:

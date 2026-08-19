@@ -49,6 +49,9 @@ class ResultMetrics:
     tokens_estimated: bool
     turn_count: int | None = None
     tool_call_count: int | None = None
+    #: Part of `completion_tokens`, not additional to it.
+    reasoning_tokens: int | None = None
+    ttft_content_ms: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -60,6 +63,8 @@ class ResultMetrics:
             "tokens_estimated": self.tokens_estimated,
             "turn_count": self.turn_count,
             "tool_call_count": self.tool_call_count,
+            "reasoning_tokens": self.reasoning_tokens,
+            "ttft_content_ms": self.ttft_content_ms,
         }
 
 
@@ -192,6 +197,9 @@ class ResultDone(_Event):
     transcript: Sequence[TranscriptMessage] | None = None
     turns: Sequence[TurnMetrics] | None = None
     stopped_reason: StoppedReason | None = None
+    #: The thinking, when the endpoint kept it out of `text`: the live deltas
+    #: carry the answer alone, so this is where a card first sees it.
+    reasoning_text: str | None = None
 
     def payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -199,6 +207,8 @@ class ResultDone(_Event):
             "text": self.text,
             "metrics": self.metrics.to_json(),
         }
+        if self.reasoning_text is not None:
+            payload["reasoning_text"] = self.reasoning_text
         if self.transcript is not None:
             payload["transcript"] = [message.to_json() for message in self.transcript]
         if self.turns is not None:

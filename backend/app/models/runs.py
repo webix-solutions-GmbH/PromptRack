@@ -131,7 +131,14 @@ class RunResult(Base):
     # --- outcome -----------------------------------------------------------
     status: Mapped[ResultStatus] = mapped_column(Text, server_default="pending")
     #: Final assistant text — same meaning whether tools were used or not.
+    #: Leading whitespace stripped (a reasoning parser leaves the template's
+    #: post-`</think>` newline pair at the head of `content`).
     response_text: Mapped[str | None]
+    #: The final turn's thinking, when the endpoint gave it its own channel. Null
+    #: when the model inlined `<think>` tags instead — then it is inside
+    #: `response_text` and the UI splits it off. Every turn's is in
+    #: `transcript_json`.
+    reasoning_text: Mapped[str | None]
     #: Full message array of a tool run (assistant, tool_calls, tool results).
     transcript_json: Mapped[str | None]
     #: Per-turn metrics array; the columns below are its aggregates.
@@ -145,10 +152,20 @@ class RunResult(Base):
     #: Sums over model turns only; tool wait time lives per call in the
     #: transcript and is excluded here.
     duration_ms: Mapped[int | None]
-    #: First turn's time to first token (content delta or tool-call fragment).
+    #: First turn's time to its first output of **any** kind: a reasoning delta,
+    #: a content delta, or a tool-call fragment. Reasoning counts because it is
+    #: generation, and this is `tokens_per_sec`'s denominator — measured at the
+    #: first *visible* token instead, a thinking model's chain of thought lands
+    #: in the prefill and the rate becomes fiction.
     ttft_ms: Mapped[int | None]
+    #: Time to the first *visible* token: a real latency, and not a throughput
+    #: denominator. Null on rows measured before the two were told apart.
+    ttft_content_ms: Mapped[int | None]
     prompt_tokens: Mapped[int | None]
     completion_tokens: Mapped[int | None]
+    #: Part of `completion_tokens`, never additional to it — what makes a
+    #: 27-character answer costing 479 tokens visible.
+    reasoning_tokens: Mapped[int | None]
     #: Rate over the generation window, not total duration. `Double` on
     #: purpose: float4 would silently round.
     tokens_per_sec: Mapped[float | None]
