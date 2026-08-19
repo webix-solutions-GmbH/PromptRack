@@ -169,6 +169,16 @@ class CompareRunView:
     archived: bool
     created_at: datetime
     group_names: list[str]
+    #: The run's request parameters as the raw JSON string `runs.params` holds
+    #: (null = server defaults). Passed through rather than parsed: the client
+    #: already renders the same shape for a run's own page
+    #: (`frontend/src/lib/format.ts`'s `formatParams`), and parsing it here
+    #: would only mean two renderings of one fact that could disagree.
+    params: str | None
+    #: The note whoever started the run left on it — "quantization swap",
+    #: "temperature A/B". Free text, and the one thing in a column header that
+    #: says *why* this run exists.
+    comment: str | None
     good: int
     meh: int
     bad: int

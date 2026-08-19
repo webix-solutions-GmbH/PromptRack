@@ -8,6 +8,7 @@ that neither pivot can reach another workspace's runs.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest_asyncio
@@ -87,6 +88,8 @@ async def make_run(
     model_id: str = "test-model",
     outcomes: tuple[str, ...] = ("ok", "ok"),
     durations: tuple[int | None, ...] | None = None,
+    params: dict[str, object] | None = None,
+    comment: str | None = None,
 ) -> int:
     """A run whose rows are finished — what a comparable run looks like."""
     created = await create_run_record(
@@ -95,6 +98,8 @@ async def make_run(
         endpoint_id=endpoint_id,
         model_id=model_id,
         group_ids=[group_id],
+        params=params,
+        comment=comment,
         probe=_no_probe,
     )
     await session.commit()
@@ -224,6 +229,38 @@ class TestRunMode:
         by_id = {run["id"]: run for run in body["run_columns"]}
         assert by_id[first]["total_duration_ms"] == 2000
         assert by_id[first]["avg_rate"] == 20.0
+
+    async def test_the_picker_and_the_columns_carry_params_and_the_comment(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        # Two runs of the same model differ only by what they were asked for
+        # and what the person noted, so the header has to be able to say both.
+        # Asserted on the stored JSON string rather than a rendering of it:
+        # `formatParams` on the client is what renders it.
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await make_suite(scope, session)
+        first = await make_run(
+            scope,
+            session,
+            endpoint_id,
+            group_id,
+            params={"temperature": 0.2},
+            comment="cold run",
+        )
+        second = await make_run(scope, session, endpoint_id, group_id)
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, mode="runs", runs=f"{first},{second}")
+
+        columns = {run["id"]: run for run in body["run_columns"]}
+        assert json.loads(columns[first]["params"]) == {"temperature": 0.2}
+        assert columns[first]["comment"] == "cold run"
+        # No params and no comment stay null rather than becoming "{}"/"" —
+        # "server defaults" is the client's word for it, not the wire's.
+        assert columns[second]["params"] is None
+        assert columns[second]["comment"] is None
+        picker = {run["id"]: run for run in body["available_runs"]}
+        assert picker[first]["comment"] == "cold run"
 
     async def test_a_run_whose_results_never_measured_duration_reports_none(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace

@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 import PrimeVue from 'primevue/config'
 import ToastService from 'primevue/toastservice'
 import ConfirmationService from 'primevue/confirmationservice'
+import Tooltip from 'primevue/tooltip'
 import Aura from '@primevue/themes/aura'
 import { definePreset } from '@primevue/themes'
 import 'primeicons/primeicons.css'
@@ -51,5 +52,11 @@ app.use(PrimeVue, {
 // itself.
 app.use(ToastService)
 app.use(ConfirmationService)
+// `v-tooltip` for hover text a native `title` cannot carry: a run comment is
+// free text that can run to a paragraph and hold newlines, and the browser's
+// own tooltip renders it at whatever width and delay it likes, unstyled and
+// untouchable in dark mode. Registered globally like the two services above;
+// a plain one-word hint stays a `title` attribute.
+app.directive('tooltip', Tooltip)
 
 app.mount('#app')

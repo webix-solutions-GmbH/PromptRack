@@ -217,6 +217,10 @@ def _run_view(row: ComparableRunRow, group_names: list[str]) -> CompareRunView:
         archived=run.archived_at is not None,
         created_at=run.created_at,
         group_names=group_names,
+        # Verbatim, not parsed: `formatParams` on the client already renders
+        # this shape for a run's own page.
+        params=run.params,
+        comment=run.comment,
         good=row.good,
         meh=row.meh,
         bad=row.bad,

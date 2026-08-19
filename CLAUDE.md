@@ -768,7 +768,15 @@ still needs two, since a single run is already its own detail page.
   stays two columns. Archived runs are excluded outright.
 - **By run** (`runs=1,5`) is the only pivot that can put two runs of the *same* model
   side by side (quantization swap, temperature A/B, a Verify comparison against a
-  baseline) — in model mode they collapse into one column and the newest wins.
+  baseline) — in model mode they collapse into one column and the newest wins. Which is
+  why a run-mode column header also carries the run's **params** and its **comment**
+  (`CompareRunView.params` / `.comment`, the raw `runs.params` JSON and the note, rendered
+  client-side by `formatParams`): two columns of one model differ only in what they were
+  asked for and why, so without those the A/B reads as the same model twice. The params
+  are one clipped line, the note a peek (hover to read, click to pin) like the row's
+  prompts and rubric, and the run picker above the matrix carries the same note as a
+  speech-bubble tooltip. A **model**-mode header has no run to name, so it reports only
+  what its cells *on screen* agree on — the shared params, or "params vary across runs".
 
 Falling back past a **newer failed attempt** must not blank a good older answer, so a
 model-mode cell keeps the newest `ok` row and reports the skipped one

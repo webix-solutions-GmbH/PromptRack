@@ -35,7 +35,13 @@ import { RouterLink } from 'vue-router'
 import Dialog from 'primevue/dialog'
 import Popover from 'primevue/popover'
 import Tag from 'primevue/tag'
-import { formatDateTime, formatDuration, formatRate, formatTokenLabel } from '../../lib/format'
+import {
+  formatDateTime,
+  formatDuration,
+  formatParams,
+  formatRate,
+  formatTokenLabel,
+} from '../../lib/format'
 import { usePromptVersionLabels } from '../../lib/promptVersionLabels'
 import type { Rating } from '../../lib/rating'
 import CellDetail from './CellDetail.vue'
@@ -87,6 +93,68 @@ interface ColumnHeader {
    * suite if the model over-reasons. */
   totalDurationMs: number | null
   runId: number | null
+  /** The request parameters this column was produced with, rendered the way a
+   * run's own page renders them. In run mode that is the run's `params`; in
+   * model mode the column spans several runs, so it is what all of its cells
+   * on screen agree on — or `PARAMS_VARY` when they don't, which is the only
+   * honest thing a single line can say about a column of two temperatures.
+   * Null only when there is nothing to report at all (a model column with no
+   * cells). */
+  params: string | null
+  /** The note whoever started the run left on it. Run mode only: a model
+   * column is not a run and has no one note to show, and the cell footer
+   * already links each contributing run. */
+  comment: string | null
+}
+
+/** What a model column reports when its cells were not all run with the same
+ * parameters. Not a sentence about which ones differ — that is per row, and
+ * `drift` already names "params" there. */
+const PARAMS_VARY = 'params vary across runs'
+
+/** `runs.params` as a header line: the same rendering a run's own page uses
+ * (`formatParams`), from the raw JSON the matrix carries. A string that is not
+ * a JSON object is shown verbatim rather than swallowed — it is still what the
+ * run recorded. */
+function paramsLabel(raw: string | null): string {
+  if (raw === null) return formatParams(null)
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return raw
+    return formatParams(parsed as Record<string, unknown>)
+  } catch {
+    return raw
+  }
+}
+
+/** Key-order-insensitive identity for "did these cells run with the same
+ * params", mirroring `_stable_json` in `backend/app/services/compare.py`: two
+ * runs configured identically must not read as differing because their JSON
+ * happened to serialize in another order. */
+function paramsKey(raw: string | null): string {
+  if (raw === null) return ''
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return raw
+    const entries = Object.entries(parsed as Record<string, unknown>).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    )
+    return JSON.stringify(entries)
+  } catch {
+    return raw
+  }
+}
+
+/** The params every cell of one model column froze, or `PARAMS_VARY`. Null
+ * when the column has no cells on screen at all. */
+function sharedParams(rows: CompareRowView[], column: number): string | null {
+  const cells = rows
+    .map((row) => row.cells[column])
+    .filter((cell): cell is CompareCellView => cell != null)
+  if (cells.length === 0) return null
+  const first = cells[0].run_params
+  const key = paramsKey(first)
+  return cells.every((cell) => paramsKey(cell.run_params) === key) ? paramsLabel(first) : PARAMS_VARY
 }
 
 const columnHeaders = computed<ColumnHeader[]>(() => {
@@ -102,6 +170,8 @@ const columnHeaders = computed<ColumnHeader[]>(() => {
       avgRate: run.avg_rate,
       totalDurationMs: run.total_duration_ms,
       runId: run.id,
+      params: paramsLabel(run.params),
+      comment: run.comment,
     }))
   }
   return props.modelColumns.map((column, index) => {
@@ -117,6 +187,8 @@ const columnHeaders = computed<ColumnHeader[]>(() => {
       avgRate: tally?.avg_rate ?? null,
       totalDurationMs: tally?.total_duration_ms ?? null,
       runId: null,
+      params: sharedParams(props.rows, index),
+      comment: null,
     }
   })
 })
@@ -305,6 +377,18 @@ function caseTextPeek(row: CompareRowView): PeekContent {
     // `content` is nullable — a task prompt can be the whole user message —
     // and the button hides on a null, so this never renders a placeholder.
     blocks: [{ key: 'case', label: null, badge: null, part: 'case', text: row.test_case_text ?? '' }],
+  }
+}
+
+/** The run's own note, opened by the bubble in its column header — the same
+ * hover-to-glance/click-to-pin idiom the row peeks use, because a comment is
+ * free text of any length and the header has one line of room. Guarded by the
+ * `v-if` on the button, so `comment` is never null by the time it is called. */
+function commentPeek(column: ColumnHeader): PeekContent {
+  return {
+    source: 'Run comment',
+    caseTitle: column.runId === null ? column.modelId : `run #${column.runId}`,
+    blocks: [{ key: 'comment', label: null, badge: null, text: column.comment ?? '' }],
   }
 }
 
@@ -539,6 +623,29 @@ function tokenLabel(cell: CompareCellView): string | null {
                 <span class="rate">{{ formatRate(column.avgRate) }}</span>
                 <span class="rate">{{ formatDuration(column.totalDurationMs) }}</span>
               </span>
+              <!-- What this column was *asked* for, beside what it produced:
+                   two columns of the same model differ only by their params
+                   and their note, and without them a temperature A/B reads as
+                   the same model twice. The params are one line with the full
+                   text on hover (they are short and comparing them at a glance
+                   is the point); the note is a peek, because it is free text
+                   that can run to a paragraph. -->
+              <span v-if="column.params" class="col-sub col-params" :title="column.params">
+                <i class="pi pi-sliders-h" aria-hidden="true" />
+                {{ column.params }}
+              </span>
+              <div v-if="column.comment" class="col-comment">
+                <button
+                  type="button"
+                  class="peek-button"
+                  @mouseenter="peekEnter($event, commentPeek(column))"
+                  @mouseleave="peekLeave"
+                  @click="pin(commentPeek(column))"
+                >
+                  <i class="pi pi-comment" aria-hidden="true" />
+                  Note
+                </button>
+              </div>
             </div>
           </th>
         </tr>
@@ -906,6 +1013,29 @@ thead .row-header-cell {
 
 .rate {
   margin-left: 0.25rem;
+}
+
+/* One line, clipped rather than wrapped: a long param list must not push the
+   answers down by a row of header height, and the full text is on the
+   element's `title` (short enough that a native tooltip is the right weight
+   for it — the note beside it is what earns a peek). */
+.col-params {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.col-params .pi {
+  font-size: 0.625rem;
+  margin-right: 0.1875rem;
+}
+
+/* The button is inline-flex; the wrapper keeps it from stretching to the
+   header's full width the way a bare flex child would. */
+.col-comment {
+  display: flex;
+  margin-top: 0.125rem;
 }
 
 .row-header {

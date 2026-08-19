@@ -23,6 +23,11 @@ export interface CompareRunView {
   archived: boolean
   created_at: string
   group_names: string[]
+  /** Raw `runs.params` JSON string, or null for server defaults — the same
+   * shape `formatParams` renders on a run's own page. */
+  params: string | null
+  /** The note whoever started the run left on it, or null. */
+  comment: string | null
   good: number
   meh: number
   bad: number

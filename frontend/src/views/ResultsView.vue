@@ -407,6 +407,28 @@ function handleRatingChange(payload: {
               {{ formatDateTime(data.created_at) }}
             </template>
           </Column>
+          <!-- The note, as a bubble rather than a column of text: a comment is
+               free text that would otherwise be excerpted to a few words in a
+               picker this dense, and an excerpt of "temperature 0.2 vs 0.7,
+               same quant" is worse than an icon that shows the whole thing on
+               hover. The icon renders only when there *is* a note, so the
+               column reads as "which of these runs was annotated". -->
+          <Column class="comment-column">
+            <template #header>
+              <span title="The note left when the run was started">Note</span>
+            </template>
+            <template #body="{ data }: { data: CompareRunView }">
+              <span
+                v-if="data.comment"
+                v-tooltip.top="{ value: data.comment, class: 'comment-tooltip', showDelay: 120 }"
+                class="comment-bubble"
+                :aria-label="data.comment"
+              >
+                <i class="pi pi-comment" aria-hidden="true" />
+              </span>
+              <span v-else class="comment-none" aria-hidden="true">—</span>
+            </template>
+          </Column>
           <Column>
             <template #header><span title="good / meh / bad">Rating</span></template>
             <template #body="{ data }: { data: CompareRunView }">
@@ -606,6 +628,27 @@ function handleRatingChange(payload: {
   pointer-events: none;
 }
 
+/* Same shrink-to-fit as the checkbox column: the bubble takes its own width
+ * and the tallies keep the rest. */
+.picker :deep(.comment-column) {
+  width: 1%;
+  text-align: center;
+}
+
+.comment-bubble {
+  color: var(--p-text-muted-color);
+  cursor: help;
+}
+
+.comment-bubble:hover {
+  color: var(--p-text-color);
+}
+
+.comment-none {
+  color: var(--p-text-muted-color);
+  opacity: 0.5;
+}
+
 .picker :deep(.p-datatable-tbody > tr.selected) {
   background: var(--p-highlight-background);
 }
@@ -724,5 +767,19 @@ function handleRatingChange(payload: {
  * Unscoped because the element is <body>, which no scoped selector reaches. */
 body.results-fullscreen {
   overflow: hidden;
+}
+
+/* The tooltip is appended to <body>, which no scoped selector reaches — hence
+ * the `class` option on the directive and this rule. `pre-line` because a run
+ * comment is a textarea's worth of free text: the newlines whoever wrote it
+ * put in are part of what it says, and PrimeVue's default collapses them. */
+.p-tooltip.comment-tooltip {
+  max-width: 32rem;
+}
+
+.p-tooltip.comment-tooltip .p-tooltip-text {
+  white-space: pre-line;
+  font-size: 0.8125rem;
+  max-width: 32rem;
 }
 </style>
