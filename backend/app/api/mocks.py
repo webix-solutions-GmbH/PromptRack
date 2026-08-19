@@ -59,6 +59,19 @@ TRIGGER_ERROR = "TRIGGER_ERROR"
 TRIGGER_SLOW = "TRIGGER_SLOW"
 #: Never stop calling tools — used to verify the loop's turn budget.
 TRIGGER_TOOL_LOOP = "TRIGGER_TOOL_LOOP"
+#: Answer like a reasoning model behind vLLM's `--reasoning-parser`: thinking on
+#: `delta.reasoning_content`, then the answer on `delta.content` with the chat
+#: template's newline pair at its head, and `reasoning_tokens` in usage. The only
+#: way to exercise that shape without a thinking model on the other end.
+TRIGGER_REASONING = "TRIGGER_REASONING"
+
+#: What the mock "thinks" before answering, one chunk per element.
+_REASONING_CHUNKS = (
+    "Let me work through this. ",
+    "The request is a mock one, ",
+    "so the answer only has to echo it back. ",
+    "That is settled, then.",
+)
 
 _QUERY_LIKE_RE = re.compile(r"query|q|search|text|prompt|question", re.IGNORECASE)
 
@@ -247,6 +260,7 @@ async def mock_llm_chat_completions(request: Request) -> Response:
         )
 
     slow = TRIGGER_SLOW in user_message
+    reasoning = TRIGGER_REASONING in user_message
     tool_result = _last_tool_result(payload)
     offered_tools = _read_tools(payload)
 
@@ -287,6 +301,12 @@ async def mock_llm_chat_completions(request: Request) -> Response:
         if slow:
             await asyncio.sleep(_SLOW_PREFILL_MS / 1000)
 
+        # Thinking streams first, on its own channel.
+        if reasoning:
+            for fragment in _REASONING_CHUNKS:
+                await pause()
+                yield chunk_frame(delta={"reasoning_content": fragment}, finish_reason=None)
+
         if tool_call_name is not None:
             # The opening fragment carries the id and name; the arguments
             # follow in pieces, which is how vLLM streams them and what the
@@ -313,6 +333,11 @@ async def mock_llm_chat_completions(request: Request) -> Response:
                     finish_reason=None,
                 )
 
+        # The template's post-`</think>` newline pair, at the head of `content`.
+        if reasoning and chunks:
+            await pause()
+            yield chunk_frame(delta={"content": "\n\n"}, finish_reason=None)
+
         for chunk in chunks:
             await pause()
             yield chunk_frame(delta={"content": chunk}, finish_reason=None)
@@ -324,6 +349,13 @@ async def mock_llm_chat_completions(request: Request) -> Response:
         completion_tokens = sum(max(1, round(len(chunk) / 4)) for chunk in chunks)
         if tool_call_name is not None:
             completion_tokens += max(1, round((len(tool_call_name) + len(tool_call_args)) / 4))
+        # Inside `completion_tokens`, the way vLLM reports them.
+        reasoning_tokens = (
+            sum(max(1, round(len(fragment) / 4)) for fragment in _REASONING_CHUNKS)
+            if reasoning
+            else None
+        )
+        completion_tokens += reasoning_tokens or 0
         prompt_tokens = max(1, round(len(user_message) / 4))
         yield _sse(
             {
@@ -336,6 +368,11 @@ async def mock_llm_chat_completions(request: Request) -> Response:
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "total_tokens": prompt_tokens + completion_tokens,
+                    **(
+                        {"completion_tokens_details": {"reasoning_tokens": reasoning_tokens}}
+                        if reasoning_tokens is not None
+                        else {}
+                    ),
                 },
             }
         )
