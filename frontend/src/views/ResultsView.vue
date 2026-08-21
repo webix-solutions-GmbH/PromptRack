@@ -442,6 +442,13 @@ function handleRatingChange(payload: {
         <p v-if="matrix.available_runs.length === 0" class="empty-state">
           No comparable runs yet — finish a run first.
         </p>
+        <!-- Paginated, and deliberately at a small page size: this picker sits
+             *above* the matrix, so every row it renders is height the reader
+             scrolls past on the way to the results they came for. The list
+             grows without bound as runs accumulate, while the reason to look
+             at it — pick the two or three runs to compare — never needs more
+             than a screenful. `always-show-paginator` off so a workspace with
+             four runs doesn't grow a pager bar under them. -->
         <DataTable
           v-else
           :value="matrix.available_runs"
@@ -449,6 +456,9 @@ function handleRatingChange(payload: {
           data-key="id"
           class="table list-table row-nav"
           removable-sort
+          paginator
+          :rows="5"
+          :always-show-paginator="false"
           :row-class="runRowClass"
           @row-click="onRunRowClick"
         >
@@ -532,12 +542,19 @@ function handleRatingChange(payload: {
           No results yet — finish a run first, then come back.
         </p>
         <template v-else>
+          <!-- Same reasoning as the run picker's paginator above, at a
+               larger page size: a model row is one line where a run row
+               carries a note and a params line, and the model list is the
+               shorter of the two to begin with. -->
           <DataTable
             :value="matrix.available_models"
             :loading="loading"
             data-key="key"
             class="table list-table row-nav"
             removable-sort
+            paginator
+            :rows="10"
+            :always-show-paginator="false"
             :row-class="modelRowClass"
             @row-click="onModelRowClick"
           >
