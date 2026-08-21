@@ -46,14 +46,16 @@ from app.models import Rating, ResultStatus, ToolChoice, ToolMode
 
 #: Hard cap on how many runs can be compared side by side.
 MAX_COMPARE_RUNS = 4
-#: Minimum selection before a run-mode matrix can be rendered.
-MIN_COMPARE_RUNS = 2
+#: One run is a valid selection: a single run-mode column is still the only
+#: view that shows that run's rows against the *live* rubric, with its own
+#: params/comment in the header — none of which the run detail page does.
+MIN_COMPARE_RUNS = 1
 
 MAX_COMPARE_MODELS = 6
-#: One model is a valid selection: the same test case × model matrix with a
-#: single column is exactly "show me everything this model answered", the
-#: cheapest review of a model across all of its runs. Run mode still needs two —
-#: a single run is already its own detail page.
+#: One model is likewise a valid selection: the same test case × model matrix
+#: with a single column is exactly "show me everything this model answered",
+#: the cheapest review of a model across all of its runs. Both pivots settle on
+#: the same rule — a lone column is a real view, not a degenerate one.
 MIN_COMPARE_MODELS = 1
 
 #: Enough to select every group; the cap only bounds a hostile URL.

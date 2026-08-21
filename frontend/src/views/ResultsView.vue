@@ -615,7 +615,7 @@ function handleRatingChange(payload: {
         {{
           isModels
             ? 'Select a model above to see its results — or several to compare them.'
-            : `Select at least ${matrix.min_columns} runs above to build the comparison matrix.`
+            : 'Select a run above to see its results — or several to compare them.'
         }}
       </div>
       <div v-else-if="rows.length === 0" class="empty-state">

@@ -790,8 +790,10 @@ separately.
 `mode`: `models` (default) and `runs`. `?mode=` wins; without it a URL carrying `?runs=`
 stays in run mode, so an existing link keeps its view. **One model is a valid selection**
 (`MIN_COMPARE_MODELS = 1`) — the same matrix with a single column is "show me everything
-this model answered", the cheapest review of a model across all of its runs. Run mode
-still needs two, since a single run is already its own detail page.
+this model answered", the cheapest review of a model across all of its runs. **One run is
+likewise a valid selection** (`MIN_COMPARE_RUNS = 1`) — it is still the only view that shows
+that run's rows against the live rubric, with its own params/comment in the header, none of
+which the run detail page does.
 
 - **By model** (`models=<endpointId>|<modelId>`, **repeated** rather than comma-joined,
   because a model id is free-form text that must never need escaping; plus `?group=`,

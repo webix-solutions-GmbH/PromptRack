@@ -167,16 +167,34 @@ class TestRunMode:
         # …while the default pivot, with nothing selected, is by model.
         assert (await matrix(client))["mode"] == "models"
 
-    async def test_below_the_minimum_selection_there_is_no_matrix(
+    async def test_a_single_selected_run_still_builds_a_one_column_matrix(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
+        # One run is a valid selection: it is still the only view that shows
+        # that run's rows against the live rubric, with its own params/comment
+        # in the header.
         customer_id, scope = await create_workspace("Acme")
         endpoint_id, group_id = await make_suite(scope, session)
         only = await make_run(scope, session, endpoint_id, group_id)
         await sign_in(client, session, "member@example.com", customer_id)
 
         body = await matrix(client, mode="runs", runs=str(only))
-        assert body["min_columns"] == 2
+        assert body["min_columns"] == 1
+        assert body["selected_run_ids"] == [only]
+        assert [row["test_case_title"] for row in body["rows"]] == ["First", "Second"]
+        assert all(cell is not None for row in body["rows"] for cell in row["cells"])
+
+    async def test_no_selection_at_all_there_is_no_matrix(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await make_suite(scope, session)
+        await make_run(scope, session, endpoint_id, group_id)
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, mode="runs")
+        assert body["min_columns"] == 1
+        assert body["selected_run_ids"] == []
         assert body["rows"] == []
 
     async def test_an_archived_run_is_hidden_unless_already_selected(
@@ -212,7 +230,9 @@ class TestRunMode:
 
         body = await matrix(client, mode="runs", runs=f"{mine},{foreign}")
         assert body["selected_run_ids"] == [mine]
-        assert body["rows"] == []
+        # The foreign run is dropped, not silently kept — but the one that's
+        # left is still a valid, single-column selection.
+        assert [row["test_case_title"] for row in body["rows"]] == ["First", "Second"]
         assert [run["id"] for run in body["available_runs"]] == [mine]
 
     async def test_the_column_header_sums_duration_over_the_runs_own_results(
