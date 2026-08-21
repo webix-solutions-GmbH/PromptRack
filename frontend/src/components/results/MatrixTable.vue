@@ -608,8 +608,14 @@ function tokenLabel(cell: CompareCellView): string | null {
           <th class="row-header-cell">Test case</th>
           <th v-for="column in columnHeaders" :key="column.key" class="col-header-cell">
             <div class="col-header">
-              <span class="mono model-id">{{ column.modelId }}</span>
-              <span class="endpoint-name">@ {{ column.endpointName }}</span>
+              <!-- The id and endpoint spans stay on one source line on
+                   purpose: Vue's whitespace condensing strips inter-element
+                   whitespace that contains a newline, so wrapping this for
+                   readability silently deletes the separating space and
+                   glues the id to the `@`. -->
+              <span class="col-header-line">
+                <span class="mono model-id">{{ column.modelId }}</span> <span class="endpoint-name">@ {{ column.endpointName }}</span>
+              </span>
               <span class="col-sub">
                 <RouterLink v-if="column.runId !== null" :to="`/runs/${column.runId}`"
                   >run #{{ column.runId }}</RouterLink
@@ -763,16 +769,16 @@ function tokenLabel(cell: CompareCellView): string | null {
               <!-- No rating chip here: `RatingButtons` inside `CellDetail`
                    already shows the verdict on the control that sets it, and
                    a second read-only thumb beside it was the same fact twice.
-                   Skipped entirely when it would be empty, since an empty flex
-                   line still leaves a gap that reads as missing content. -->
-              <span
-                v-if="cell.status !== 'ok' || cell.turn_count !== null"
-                class="cell-top"
-              >
-                <span v-if="cell.status !== 'ok'" class="cell-status">{{ cell.status }}</span>
-                <span v-if="cell.turn_count !== null" class="cell-status"
-                  >{{ cell.turn_count }}t / {{ cell.tool_call_count ?? 0 }} calls</span
-                >
+                   The turn/tool-call count used to sit up here too, restating
+                   what `CellDetail`'s `.tool-block` already says a few lines
+                   below in the more legible form ("N turns · M tool calls"
+                   plus the call names) — same duplication, so it's gone; only
+                   the status stays, since that's the one fact nothing else in
+                   the cell repeats. Skipped entirely when it would be empty,
+                   since the box still reserves the cell's top padding and an
+                   empty one reads as missing content. -->
+              <span v-if="cell.status !== 'ok'" class="cell-top">
+                <span class="cell-status">{{ cell.status }}</span>
               </span>
               <div class="cell-detail">
                 <CellDetail
@@ -874,16 +880,14 @@ function tokenLabel(cell: CompareCellView): string | null {
    The height is the viewport less the pinned topbar (3.5rem in `AppLayout`)
    and the content column's bottom padding (1.5rem): with nothing below the
    matrix on the page, scrolling all the way down then lands the table's top
-   edge exactly under the topbar rather than behind it. */
+   edge exactly under the topbar rather than behind it. Reaching either edge
+   of this box hands the wheel straight on to the page behind it — the
+   default browser behaviour, left alone on purpose. */
 .matrix-wrap {
   overflow: auto;
   max-height: calc(100vh - 5rem);
   border: 1px solid var(--p-content-border-color);
   border-radius: var(--p-content-border-radius);
-  /* A bounded scrollport that reaches its end hands the wheel to the page
-     behind it; here that page is the app content column, which jumps while
-     the reader is still in the table. */
-  overscroll-behavior: contain;
 }
 
 /* Fullscreen (`fill`): the caller is a flex column that already owns the
@@ -978,9 +982,31 @@ thead .row-header-cell {
   gap: 0.125rem;
 }
 
+/* `.col-header`'s own children are flex items, and a flex item lays out as a
+   block regardless of what's inside it — which is exactly what the rest of
+   this stack wants (each fact its own line) but is wrong for the model id
+   and endpoint: as two separate flex items they'd always land on two lines,
+   even when the id is short enough to leave room for `@ ki01` right beside
+   it. Grouping them under one flex item restores ordinary inline flow *for
+   its own children*, so the pair reads as continuous text that only wraps
+   the endpoint onto its own line once the id has actually used up the
+   width. */
+.col-header-line {
+  display: block;
+}
+
 .model-id {
   font-size: 0.75rem;
   font-weight: 600;
+  /* Tested at `.col-header-cell`'s 20rem `min-width`: a real id like
+     `RedHatAI/gemma-4-31B-it-FP8-block` already wraps cleanly with no help,
+     because a browser's line-breaking rules already treat `/` and `-` as
+     break opportunities — which is also why a long id doesn't widen the
+     column, only stack onto more lines within it. `anywhere` is a backstop
+     for the one shape that isn't safe by default: an id with neither
+     character in it would be one unbreakable run, wide enough to overflow
+     the cell and blow past `.col-header-cell`'s `max-width`. */
+  overflow-wrap: anywhere;
 }
 
 .endpoint-name {
@@ -1184,11 +1210,13 @@ thead .row-header-cell {
   color: var(--p-text-muted-color);
 }
 
+/* Used to lay out the status chip beside a second one (the turn/tool-call
+   count, since removed as a duplicate of `CellDetail`'s `.tool-block`) —
+   `gap`/`flex-wrap`/cross-axis centering existed for that pair and are inert
+   with the single child left, so this is now just a block that reserves the
+   cell's top padding above the status text. */
 .cell-top {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  flex-wrap: wrap;
+  display: block;
   padding: 0.75rem 1rem 0;
 }
 
