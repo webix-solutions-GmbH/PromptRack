@@ -8,27 +8,47 @@
 <h1 align="center">PromptRack</h1>
 
 <p align="center">
-  Git for your customers' prompts, plus the evidence that they still work.<br/>
+  Git for your customers' prompts, and the test bench that proves which model runs them well enough.<br/>
 </p>
 
 ---
 
-Keep the system prompts behind the AI solutions you sold in one versioned library, then
-prove which model runs them well enough — invoice intake, document extraction, an agent
-over a company's RAG — and on what hardware. Any OpenAI-compatible endpoint, local or
+Two jobs, one dataset.
+
+**Version** the system prompts behind the AI solutions you sold: each one is a committed
+asset with a history and a deployed marker, not a text field scattered across test
+scripts. **Evaluate** models on the customer's real work — invoice intake, document
+extraction, an agent over their RAG — against any OpenAI-compatible endpoint, local or
 hosted, in one matrix.
+
+Each half is what makes the other trustworthy: a measurement is only evidence because it
+names the exact prompt version that produced it, and a version is only worth deploying
+because a run proved it. Neither is a feature of the other.
 
 ## Features
 
+### The prompt library
+
 | | |
 | --- | --- |
-| **Prompt library** | Every customer's system prompts in one place, one library per engagement. A prompt is a mutable draft plus an immutable commit history — commit with a message, diff any two versions, restore an old one. |
+| **Versioned prompts** | Every customer's system prompts in one place, one library per engagement. A prompt is a mutable draft plus an immutable commit history — commit with a message, diff any two versions, restore an old one. |
 | **Deployed marker** | One version per prompt is flagged as live at the customer. When it is no longer the newest, the app says so — "deployed v3, head is v5" is the one-glance answer to whether production is what you last verified. |
-| **Regression checks** | A version can name a `baseline` run: the measurement that justified deploying it. Verify replays those test cases against a new model and puts the two runs side by side. That is the model-upgrade decision, made on evidence. |
+
+### The test bench
+
+| | |
+| --- | --- |
 | **Model fitness** | Test cases are the customer's real work, not a leaderboard. Rate each answer good / meh / bad against the expected output; the verdict is per job, not in general. |
 | **Hardware sizing** | Every result names the machine that produced it, with TTFT, duration, tokens and tok/s. If a small model does the job, a Mac Mini may be enough — but it has to be measured. |
 | **Agents, not just chat** | A test case can offer tools and really execute them, looping until the model answers, so an invoice agent is evaluated as the agent it will be. |
-| **MCP server** | `POST /mcp` — an agent pushes prompts, test cases and runs in from outside and reads the measurements back. The interesting test cases already exist in the repo that defines the job. |
+
+### Where the halves meet
+
+| | |
+| --- | --- |
+| **Regression checks** | A version can name a `baseline` run: the measurement that justified deploying it. Verify replays those test cases against a new model and puts the two runs side by side. That is the model-upgrade decision, made on evidence. |
+| **Attribution** | Every result records which committed version each prompt slot was at when it ran — automatically, whenever the draft matches a commit. The matrix can say *the task prompt changed*, not just *something differs*. |
+| **MCP server** | `POST /mcp` — an agent pushes prompts, test cases and runs in from outside, commits versions, and reads the measurements back. The interesting test cases already exist in the repo that defines the job. |
 
 ## What it can test
 
