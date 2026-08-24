@@ -29,7 +29,7 @@ from mcp.client.streamable_http import streamable_http_client
 #: slow.
 DEFAULT_TIMEOUT_S = 60.0
 
-_CLIENT_INFO = Implementation(name="promptrack", version="0.2.0")
+_CLIENT_INFO = Implementation(name="promptrack", version="0.3.0")
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
