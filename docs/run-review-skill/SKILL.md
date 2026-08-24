@@ -76,9 +76,12 @@ write is refused for role reasons, stop and tell the user; do not retry.
 
 ### 2. Preflight
 
-Call `get_run` for the run with `include_responses: false` — every `get_run` in this
-protocol passes that, because a whole run's response text in one tool result can
-exceed the MCP client's output limit, and rows are read individually anyway. Check:
+Call `get_run` for the run with `include_responses: false` and
+`include_rubrics: false` — every `get_run` in this protocol passes both, because a
+whole run's responses or rubrics in one tool result can exceed the MCP client's
+output limit, and each row's own `get_run_result` carries both in full anyway.
+(An older PromptRack silently ignores `include_rubrics` — if `expected_output` still
+appears in the rows, just proceed; the work list is merely heavier.) Check:
 
 - **Status** — grade `completed` runs. A `running` run is not done; report progress
   and stop unless the user asked you to grade the finished rows so far. A `failed`
@@ -88,13 +91,13 @@ exceed the MCP client's output limit, and rows are read individually anyway. Che
 
 ### 3. Fetch the work list
 
-Call `get_run` again with `rating: "unrated"` and `include_responses: false`. That is
-your work list — already-rated rows are excluded by the server and stay untouched
-(hard rule 5).
+Call `get_run` again with `rating: "unrated"`, `include_responses: false` and
+`include_rubrics: false`. That is your work list — already-rated rows are excluded by
+the server and stay untouched (hard rule 5).
 
-Each row carries `expected_output` (the rubric) and, for tool tests, `tools_called` —
-the tool names actually called, in order, repetitions kept. The response text is
-deliberately not here; it is read per row in the next step.
+Each row carries its ids, title, status and, for tool tests, `tools_called` — the
+tool names actually called, in order, repetitions kept. Response and rubric are
+deliberately not here; both are read per row in the next step.
 
 ### 4. Grade each row
 
@@ -114,6 +117,11 @@ For each unrated `ok` row, in order:
 - **Exact requirements are exact.** "Raw JSON, no fences" fails a fenced code block
   even when the JSON inside parses. "Must not call X" fails if `tools_called`
   contains X once, anywhere. Do not round a near-miss up to good.
+- **A caveat is a verdict.** If your note needs a "but", "though", or a parenthetical
+  conceding an unmet rubric element, the rating is not good — writing the gap into
+  the note does not license rounding the verdict up. Re-grade to meh, or leave the
+  row unrated and flag it if the rubric is genuinely ambiguous about whether that
+  element is required.
 - **Tool tests, additional checks:** did it call the right tools with sane arguments;
   did its final answer use what the tools returned or ignore it; a run that stopped
   on `max_turns` failed to converge — grade that as the failure it is (usually `bad`)
@@ -135,10 +143,18 @@ Then write the verdict: `set_rating` with `result_id`, `rating`, and always a `n
   *test case or prompt* needs work rather than the model — so a meh note must say
   what exactly fell short, not "mediocre".
 
-The note is the audit trail. One or two sentences, citing the deciding evidence:
-which rubric requirement, which response passage or tool call, which check.
-Good: `bad — rubric requires raw JSON starting with "{"; response wraps it in a
-markdown fence.` Bad: `didn't follow instructions.`
+The note is the audit trail, and it must be **dense**: it renders beside the rating
+in the UI, read while scanning many rows, so every word has to earn its place. State
+only the deciding evidence — which check, which rubric requirement, which passage or
+tool call — in telegram style: no subject fillers ("The model's response..."), no
+restating the rubric, no hedging, no verdict-word repetition (the rating already says
+it). Never reproduce the expected output or the correct answer — the rubric and the
+response sit right next to the note in the UI, so repeating either is pure noise;
+point at the mismatch, don't quote both sides of it. Aim for one clause, two at most.
+Good: `canary "X-99" present, no tool called` or `wraps JSON in markdown fence;
+rubric demands raw`. Bad: `didn't follow instructions.` (no evidence) and `The
+response unfortunately fails to meet the requirement of the rubric, which asks
+for raw JSON...` (padding).
 
 ### 6. Report
 
@@ -164,9 +180,10 @@ question symmetrically. Either way:
    comparison changes nothing about how you rate — grade each run against the rubric
    as usual, then diff the verdicts. Never lower or raise a rating because the other
    run did better or worse.
-2. `get_run` both runs (no rating filter, `include_responses: false` — the diff is
-   over verdicts and metrics, not text) and match rows by test case — same title and
-   group; rows only one run has are reported as added/removed, not compared.
+2. `get_run` both runs (no rating filter, `include_responses: false` and
+   `include_rubrics: false` — the diff is over verdicts and metrics, not text) and
+   match rows by test case — same title and group; rows only one run has are
+   reported as added/removed, not compared.
 3. Diff the verdicts per matched case. For a baseline check, frame as
    **regressions** (baseline good, new run meh/bad), **improvements** (the reverse),
    and **unchanged**. Head to head, frame as A-only passes, B-only passes, both,

@@ -188,7 +188,7 @@ logger = logging.getLogger(__name__)
 MCP_PATH = "/mcp"
 
 SERVER_NAME = "promptrack"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0"
 
 DEFAULT_RUN_LIMIT = 20
 DEFAULT_RESPONSE_CHARS = 4000
@@ -1668,7 +1668,9 @@ def _run_header(run: Run) -> dict[str, Any]:
     }
 
 
-def _result_row(result: RunResult, response: str | None, truncated: bool) -> dict[str, Any]:
+def _result_row(
+    result: RunResult, response: str | None, truncated: bool, *, include_rubric: bool = True
+) -> dict[str, Any]:
     row: dict[str, Any] = {
         "result_id": result.id,
         "test_case_id": result.test_case_id,
@@ -1681,7 +1683,6 @@ def _result_row(result: RunResult, response: str | None, truncated: bool) -> dic
         "title": result.test_case_title,
         "status": result.status,
         "error": result.error,
-        "expected_output": result.expected_output,
         "response": response,
         "response_truncated": truncated,
         "rating": result.rating,
@@ -1705,6 +1706,10 @@ def _result_row(result: RunResult, response: str | None, truncated: bool) -> dic
         },
         "tool_mode": result.tool_mode,
     }
+    if include_rubric:
+        # Absent rather than null when excluded: a null here already means
+        # "this case has no rubric", and an exclusion must not impersonate it.
+        row["expected_output"] = result.expected_output
     if result.tool_mode != "none":
         snapshot = _json_value(result.tools_snapshot) or []
         row["tools_offered"] = _snapshot_tool_names(snapshot)
@@ -2029,10 +2034,12 @@ async def list_runs_tool(
     "Fetch one run with every result: status, measurements (TTFT, duration, tokens, tokens/s), "
     "manual rating, the response text and which prompt version it tested. Use this to poll a "
     "running execution and to read the outcome. To grade a finished run, call it with "
-    'rating: "unrated" and judge each row from its expected_output (the rubric), its response '
-    "and, for a tool test, tools_called — the tool names it really called, in order and with "
-    "repetitions kept, so 'did it call X', 'did it call X twice' and 'did it call anything' are "
-    "all answerable here without fetching a transcript per row.",
+    'rating: "unrated" — and on a large suite include_responses: false and '
+    "include_rubrics: false, since get_run_result returns each row's response and rubric in "
+    "full — then judge each row from its expected_output (the rubric), its response and, for a "
+    "tool test, tools_called — the tool names it really called, in order and with repetitions "
+    "kept, so 'did it call X', 'did it call X twice' and 'did it call anything' are all "
+    "answerable here without fetching a transcript per row.",
     write=False,
 )
 async def get_run_tool(
@@ -2048,6 +2055,14 @@ async def get_run_tool(
             "(get_run_result also returns one in full)."
         ),
     ] = DEFAULT_RESPONSE_CHARS,
+    include_rubrics: Annotated[
+        bool,
+        Field(
+            description="Include each row's expected_output. Default true. Pass false for a "
+            "grading work list — rubrics are often the bulk of the payload, and get_run_result "
+            "returns each row's in full."
+        ),
+    ] = True,
     rating: Annotated[
         Literal["good", "meh", "bad", "unrated"] | None,
         Field(description="Only results with this manual verdict."),
@@ -2075,7 +2090,11 @@ async def get_run_tool(
                 if include_responses
                 else truncate(None, 0)
             )
-            rows.append(_result_row(result, shortened.text, shortened.truncated))
+            rows.append(
+                _result_row(
+                    result, shortened.text, shortened.truncated, include_rubric=include_rubrics
+                )
+            )
 
         info = parse_llm_info(run.llm_info)
         return {

@@ -506,6 +506,18 @@ async def test_mcp_endpoint(
             assert not failed
             assert payload["run"]["status"] == "pending"
             assert payload["run"]["results"]["pending"] == 2
+            assert all("expected_output" in row for row in payload["results"])
+
+            # A grading work list drops the rubrics — absent, not null, since
+            # null already means "this case has no rubric".
+            failed, lean = await call(
+                client, token, "get_run", {"run_id": run_id, "include_rubrics": False}
+            )
+            assert not failed
+            assert all("expected_output" not in row for row in lean["results"])
+            assert [row["title"] for row in lean["results"]] == [
+                row["title"] for row in payload["results"]
+            ]
             reconcile, no_input = payload["results"]
             result_id = reconcile["result_id"]
             # A run of a committed draft records which version it tested, per
