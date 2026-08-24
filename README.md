@@ -97,6 +97,13 @@ Per-user token, carrying its owner's role. Prompts, versions, test cases, runs a
 are writable. Machines, toolsets, workspaces and the deployed marker stay UI-only — they
 are credentials, or a human's claim about a customer's production system.
 
+Grading runs is agent work too: [docs/run-review-skill](docs/run-review-skill/) is a
+Claude Code skill that reviews a finished run over this API — every unrated result graded
+against its expected output with an evidence note, nothing guessed where no rubric exists,
+human ratings never overwritten — and compares two graded runs, as a baseline regression
+check or two models head to head. Copy the folder into `.claude/skills/promptrack-run-review/`
+wherever the reviewing agent runs.
+
 ## Roles
 
 | | |
