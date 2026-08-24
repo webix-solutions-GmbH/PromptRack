@@ -1141,8 +1141,8 @@ nothing from the environment.
 `docker compose -f docker/compose.yml --env-file .env pull` then `... up -d`, or
 `make docker-up`, which wraps both. `docker/compose.build.yml` is the override that adds
 `build:` back for a local build instead: `-f docker/compose.yml -f
-docker/compose.build.yml --env-file .env up -d --build`, or `make docker-build`. While
-the repo is private the GHCR package is private too, so a deployment host needs
+docker/compose.build.yml --env-file .env up -d --build`, or `make docker-build`. GHCR package visibility is
+independent of the repo's — while the package is private, a deployment host needs
 `docker login ghcr.io` with a `read:packages` PAT before either target's `pull`/`up` will
 succeed.
 

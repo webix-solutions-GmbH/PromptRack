@@ -48,7 +48,7 @@ next-env.d.ts
 /data/
 
 # A local SQLite database export, never committed: it holds a live API key
-# for the ki01.webix.de endpoint.
+# for a real endpoint.
 docs/app.db
 docs/app.db-shm
 docs/app.db-wal
