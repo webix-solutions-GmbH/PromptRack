@@ -13,6 +13,16 @@ Nothing is guessed. With none of the three present the call is refused with the
 list of workspaces, because a write with no defined destination is worse than
 an error the calling model can act on.
 
+Calls that name a row by globally-unique id (a run or a result) are the one
+exception: the id names exactly one row, so the workspace does not
+disambiguate anything — `resolve_row_scope` takes it from the row itself, and
+a workspace the caller *did* name can only agree or contradict. A
+contradiction is refused naming the row's actual workspace, never silently
+overridden: workspaces are labels rather than tenants (any signed-in user can
+switch into any of them), so naming the right one reveals nothing, while a
+silent override would hide that the caller is confused about where a run
+lives.
+
 The scope it produces comes from `scope_from_row`: an MCP call names a customer
 *row* and derives its workspace from that, exactly as background work does —
 `scope_for_customer` means "the signed-in user's active workspace", which is
@@ -47,6 +57,13 @@ CUSTOMER_ARG_KEY = "customer"
 CUSTOMER_ARG_DESCRIPTION = (
     "Name or id of the customer workspace this call applies to. Required unless the "
     "connection sends an X-Customer header. list_customers shows what exists."
+)
+
+#: The same argument on tools that name a row by globally-unique id.
+ROW_CUSTOMER_ARG_DESCRIPTION = (
+    "Optional here: the id names exactly one row, so the workspace is resolved from the "
+    "row itself. If passed (or sent as an X-Customer header) it must name that same "
+    "workspace — a contradiction is refused naming the row's actual one."
 )
 
 
@@ -109,3 +126,55 @@ async def resolve_mcp_scope(
     """The workspace scope for one tool call."""
     rows = await list_customer_options(session)
     return scope_from_row(resolve_customer_ref(pick_customer_ref(argument, source), rows))
+
+
+def resolve_row_customer_id(
+    argument: Any,
+    source: McpScopeSource,
+    *,
+    owner_id: int,
+    rows: Sequence[Named],
+    row: str,
+) -> int:
+    """The workspace for a call that names a row by globally-unique id.
+
+    Pure, like `resolve_customer_ref` above and split out for the same reason:
+    the whole decision is testable without a database — only `rows` comes from
+    one. See the module docstring for why a contradiction is refused rather
+    than overridden in either direction.
+    """
+    ref = pick_customer_ref(argument, source)
+    if ref is None:
+        return owner_id
+    named = resolve_row_ref(ref, rows, "customer workspace").id
+    if named != owner_id:
+        owner = next((r.name for r in rows if r.id == owner_id), None)
+        label = f'"{owner}" ({owner_id})' if owner else f"workspace id {owner_id}"
+        raise McpToolError(
+            f"{row} belongs to the workspace {label}, not the one this call named. "
+            f'Pass that as "{CUSTOMER_ARG_KEY}", or omit it — a call that names a row '
+            "by id resolves the workspace from the row itself."
+        )
+    return owner_id
+
+
+async def resolve_row_scope(
+    session: AsyncSession,
+    argument: Any,
+    source: McpScopeSource,
+    *,
+    owner_id: int,
+    row: str,
+) -> Scope:
+    """`resolve_mcp_scope`'s twin for id-addressed calls.
+
+    The workspace list is only read when the caller actually named one — the
+    common case (no argument, no header) is the row's own workspace with no
+    extra query.
+    """
+    if pick_customer_ref(argument, source) is None:
+        return scope_from_row(owner_id)
+    rows = await list_customer_options(session)
+    return scope_from_row(
+        resolve_row_customer_id(argument, source, owner_id=owner_id, rows=rows, row=row)
+    )

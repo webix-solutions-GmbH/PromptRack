@@ -375,8 +375,11 @@ endpoints — i.e. base URLs with API keys — from mixing with another's.
   switched to a different customer) surfaces whatever the scoped 404 says. Nothing in
   `frontend/src/views` renders it as a "switch workspace to see this" notice.
 - **MCP scope precedence**: `customer` argument → `X-Customer` header → the token's
-  default → refusal naming both and listing the workspaces. See "This app as an MCP
-  server" below.
+  default → refusal naming both and listing the workspaces. Id-addressed calls (a run or
+  result id — `get_run`, `get_run_result`, `set_rating`, `execute_run`) are the exception:
+  the id is globally unique, so the row resolves its own workspace, and a named workspace
+  that contradicts it is refused naming the actual one. See "This app as an MCP server"
+  below.
 
 ### The Base workspace and global endpoints/toolsets
 
@@ -913,7 +916,16 @@ measurements back — the interesting test cases already exist in other repos.
   anyway so adding one changes one line and no call site) → refusal listing the known
   workspaces. Nothing is guessed. `list_customers` is the one tool that needs no scope, and
   it's `readOnly` so a viewer's token can orient itself before being refused a write
-  elsewhere.
+  elsewhere. **Id-addressed calls resolve the workspace from the row instead**
+  (`resolve_row_scope`, backed by the unscoped `customer_id_for_run` /
+  `customer_id_for_result` lookups beside `scope_for_run`): a run or result id is globally
+  unique, so `get_run`, `get_run_result`, `set_rating` and `execute_run` need no `customer`
+  at all — and one that *is* named (argument or header) can only agree or contradict, a
+  contradiction being refused naming the row's actual workspace rather than silently
+  overridden or answered with a lying "not found". Workspaces are labels, not tenants, so
+  naming the right one reveals nothing a `list_customers` + per-workspace probe wouldn't.
+  This is the id-addressed tools' answer to the deep-link limitation noted under "Customer
+  workspaces".
 - **The 23 tools** (registered in `backend/app/mcp/server.py`):
   `list_customers`, `list_endpoints`, `list_prompts`, `create_prompt`, `update_prompt`,
   `commit_prompt`, `list_prompt_versions`, `get_prompt_version`, `set_baseline`,

@@ -78,7 +78,9 @@ from app.auth.policy import can_write
 from app.db import async_session
 from app.mcp.customer import (
     CUSTOMER_ARG_DESCRIPTION,
+    ROW_CUSTOMER_ARG_DESCRIPTION,
     resolve_mcp_scope,
+    resolve_row_scope,
     scope_source_from_headers,
 )
 from app.mcp.refs import (
@@ -136,6 +138,8 @@ from app.repos.prompts import (
 )
 from app.repos.results import list_comparable_runs
 from app.repos.runs import (
+    customer_id_for_result,
+    customer_id_for_run,
     get_run,
     get_run_result,
     list_result_ratings,
@@ -184,7 +188,7 @@ logger = logging.getLogger(__name__)
 MCP_PATH = "/mcp"
 
 SERVER_NAME = "promptrack"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 
 DEFAULT_RUN_LIMIT = 20
 DEFAULT_RESPONSE_CHARS = 4000
@@ -199,7 +203,10 @@ INSTRUCTIONS = (
     "the measurements they produce. "
     "Every call is scoped to one customer engagement's workspace: pass `customer` (name or id) "
     "on each call, or send an `X-Customer` header on the connection. `list_customers` lists "
-    "them. Endpoints, toolsets and workspaces are deliberately read-only here — they hold "
+    "them. Calls that name a run or result by id (get_run, get_run_result, set_rating, "
+    "execute_run) need no workspace — the id is globally unique, so the row resolves it — and "
+    "refuse a named workspace that contradicts the row, naming the actual one. "
+    "Endpoints, toolsets and workspaces are deliberately read-only here — they hold "
     "credentials, or are a human decision — and marking a version deployed stays a human claim "
     "made in the UI. "
     "The markdown corpus inside a documents toolset is the one thing writable at a level "
@@ -259,6 +266,10 @@ def _tool(
 #: The `customer` argument every scoped tool carries.
 CustomerArg = Annotated[str | int | None, Field(description=CUSTOMER_ARG_DESCRIPTION)]
 
+#: The same argument on id-addressed tools, where the row already names its
+#: workspace (see `app.mcp.customer.resolve_row_scope`).
+RowCustomerArg = Annotated[str | int | None, Field(description=ROW_CUSTOMER_ARG_DESCRIPTION)]
+
 
 def _request(ctx: Context) -> Request | None:
     request = ctx.request_context.request
@@ -316,6 +327,42 @@ async def _scoped_call(
             session, customer, scope_source_from_headers(ctx.headers)
         )
         yield session, scope, actor
+
+
+async def _run_scope(ctx: Context, session: AsyncSession, customer: Any, run_id: int) -> Scope:
+    """The workspace of an id-addressed run call, taken from the run row.
+
+    A run id is globally unique (one sequence across all workspaces), so a
+    `customer` argument cannot disambiguate anything here — it can only agree
+    or contradict, and a contradiction is refused naming the run's actual
+    workspace (see `app.mcp.customer.resolve_row_scope`).
+    """
+    owner_id = await customer_id_for_run(session, run_id)
+    if owner_id is None:
+        raise McpToolError(f"No run with id {run_id}.")
+    return await resolve_row_scope(
+        session,
+        customer,
+        scope_source_from_headers(ctx.headers),
+        owner_id=owner_id,
+        row=f"Run {run_id}",
+    )
+
+
+async def _result_scope(
+    ctx: Context, session: AsyncSession, customer: Any, result_id: int
+) -> Scope:
+    """`_run_scope` through the result's parent FK."""
+    owner_id = await customer_id_for_result(session, result_id)
+    if owner_id is None:
+        raise McpToolError(f"No run result with id {result_id}.")
+    return await resolve_row_scope(
+        session,
+        customer,
+        scope_source_from_headers(ctx.headers),
+        owner_id=owner_id,
+        row=f"Run result {result_id}",
+    )
 
 
 def _millis(value: datetime | None) -> int | None:
@@ -1878,9 +1925,10 @@ async def create_run_tool(
 async def execute_run_tool(
     ctx: Context,
     run_id: Annotated[int, Field(description="Run id.")],
-    customer: CustomerArg = None,
+    customer: RowCustomerArg = None,
 ) -> dict[str, Any]:
-    async with _scoped_call(ctx, customer, "execute_run") as (session, scope, _):
+    async with _call(ctx, "execute_run") as (session, _):
+        scope = await _run_scope(ctx, session, customer, run_id)
         run = await get_run(scope, session, run_id)
         if run is None:
             raise McpToolError(f"No run with id {run_id}.")
@@ -2004,9 +2052,10 @@ async def get_run_tool(
         Literal["good", "meh", "bad", "unrated"] | None,
         Field(description="Only results with this manual verdict."),
     ] = None,
-    customer: CustomerArg = None,
+    customer: RowCustomerArg = None,
 ) -> dict[str, Any]:
-    async with _scoped_call(ctx, customer, "get_run") as (session, scope, _):
+    async with _call(ctx, "get_run") as (session, _):
+        scope = await _run_scope(ctx, session, customer, run_id)
         run = await get_run(scope, session, run_id)
         if run is None:
             raise McpToolError(f"No run with id {run_id}.")
@@ -2057,9 +2106,10 @@ async def get_run_result_tool(
     include_transcript: Annotated[
         bool, Field(description="Include the tool-call transcript. Default true.")
     ] = True,
-    customer: CustomerArg = None,
+    customer: RowCustomerArg = None,
 ) -> dict[str, Any]:
-    async with _scoped_call(ctx, customer, "get_run_result") as (session, scope, _):
+    async with _call(ctx, "get_run_result") as (session, _):
+        scope = await _result_scope(ctx, session, customer, result_id)
         result = await get_run_result(scope, session, result_id)
         if result is None:
             raise McpToolError(f"No run result with id {result_id}.")
@@ -2148,9 +2198,10 @@ async def set_rating_tool(
             "records that an agent judged, not how."
         ),
     ] = None,
-    customer: CustomerArg = None,
+    customer: RowCustomerArg = None,
 ) -> dict[str, Any]:
-    async with _scoped_call(ctx, customer, "set_rating") as (session, scope, actor):
+    async with _call(ctx, "set_rating") as (session, actor):
+        scope = await _result_scope(ctx, session, customer, result_id)
         args = raw_arguments(ctx)
         result = await get_run_result(scope, session, result_id)
         if result is None:

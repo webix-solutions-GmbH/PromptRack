@@ -64,14 +64,21 @@ write is refused for role reasons, stop and tell the user; do not retry.
 
 ### 1. Orient
 
-- If the user did not name a workspace, call `list_customers` and ask, or infer it
-  from an explicit run reference. Never guess between workspaces.
-- Resolve the run: an id if given, otherwise `list_runs` (newest first, has progress
-  and rating tallies) and confirm with the user which one they mean.
+- Given a run id, start there directly: `get_run`, `get_run_result` and `set_rating`
+  resolve the workspace from the id itself, so no `customer` is needed. If a
+  workspace you passed (or a pinned `X-Customer` header) contradicts the run's
+  actual one, the refusal names the right workspace — retry with that as `customer`.
+  Against an older PromptRack the id-only call is refused asking for a workspace;
+  then find the run via `list_customers` and `list_runs` per workspace.
+- Given no id, resolve the workspace first (`list_customers` and ask if ambiguous —
+  never guess between workspaces), then `list_runs` (newest first, with progress and
+  rating tallies) and confirm with the user which run they mean.
 
 ### 2. Preflight
 
-Call `get_run` for the run. Check:
+Call `get_run` for the run with `include_responses: false` — every `get_run` in this
+protocol passes that, because a whole run's response text in one tool result can
+exceed the MCP client's output limit, and rows are read individually anyway. Check:
 
 - **Status** — grade `completed` runs. A `running` run is not done; report progress
   and stop unless the user asked you to grade the finished rows so far. A `failed`
@@ -81,17 +88,24 @@ Call `get_run` for the run. Check:
 
 ### 3. Fetch the work list
 
-Call `get_run` again with `rating: "unrated"`. That is your work list — already-rated
-rows are excluded by the server and stay untouched (hard rule 5).
+Call `get_run` again with `rating: "unrated"` and `include_responses: false`. That is
+your work list — already-rated rows are excluded by the server and stay untouched
+(hard rule 5).
 
-Each row carries the response (truncated at `max_response_chars`, default 4000),
-`expected_output`, and for tool tests `tools_called` — the tool names actually
-called, in order, repetitions kept.
+Each row carries `expected_output` (the rubric) and, for tool tests, `tools_called` —
+the tool names actually called, in order, repetitions kept. The response text is
+deliberately not here; it is read per row in the next step.
 
 ### 4. Grade each row
 
 For each unrated `ok` row, in order:
 
+- **Read the row with `get_run_result`.** One call per row, and the row's full
+  response is the thing you grade. Pass `include_transcript: false` unless the
+  rubric requires inspecting tool *arguments* or tool *results* — the names alone
+  are already in `tools_called` from the work list, and a long agent transcript can
+  itself exceed the client's output limit, so fetch it only when the verdict hinges
+  on it.
 - **Prefer mechanical checks.** Most rubrics decide themselves: a canary string
   present or absent in the response, a required tool name present or absent in
   `tools_called`, "must be raw JSON" checkable by whether the response starts with
@@ -100,10 +114,6 @@ For each unrated `ok` row, in order:
 - **Exact requirements are exact.** "Raw JSON, no fences" fails a fenced code block
   even when the JSON inside parses. "Must not call X" fails if `tools_called`
   contains X once, anywhere. Do not round a near-miss up to good.
-- **Fetch the full row when you need it.** If the response was truncated, or the
-  rubric requires inspecting tool *arguments* or tool *results* (not just names),
-  call `get_run_result` for the untruncated response and the full transcript. Do not
-  rate a truncated response when the verdict could hinge on the cut part.
 - **Tool tests, additional checks:** did it call the right tools with sane arguments;
   did its final answer use what the tools returned or ignore it; a run that stopped
   on `max_turns` failed to converge — grade that as the failure it is (usually `bad`)
@@ -154,8 +164,9 @@ question symmetrically. Either way:
    comparison changes nothing about how you rate — grade each run against the rubric
    as usual, then diff the verdicts. Never lower or raise a rating because the other
    run did better or worse.
-2. `get_run` both runs in full (no rating filter) and match rows by test case — same
-   title and group; rows only one run has are reported as added/removed, not compared.
+2. `get_run` both runs (no rating filter, `include_responses: false` — the diff is
+   over verdicts and metrics, not text) and match rows by test case — same title and
+   group; rows only one run has are reported as added/removed, not compared.
 3. Diff the verdicts per matched case. For a baseline check, frame as
    **regressions** (baseline good, new run meh/bad), **improvements** (the reverse),
    and **unchanged**. Head to head, frame as A-only passes, B-only passes, both,

@@ -27,6 +27,7 @@ from app.mcp.customer import (
     McpScopeSource,
     pick_customer_ref,
     resolve_customer_ref,
+    resolve_row_customer_id,
     scope_source_from_headers,
 )
 from app.mcp.refs import (
@@ -235,6 +236,52 @@ class TestResolveCustomerRef:
     def test_refusing_with_no_workspaces_at_all(self) -> None:
         with pytest.raises(McpToolError, match="Every call is scoped"):
             resolve_customer_ref(None, [])
+
+
+class TestResolveRowCustomerId:
+    """Id-addressed calls: the row names its own workspace.
+
+    A run or result id is globally unique, so a workspace argument cannot
+    disambiguate — it can only agree or contradict, and a contradiction is a
+    named refusal rather than a silent override in either direction.
+    """
+
+    rows = [Row(1, "Acme"), Row(2, "Globex")]
+
+    def _resolve(self, argument: Any, source: McpScopeSource, owner_id: int = 1) -> int:
+        return resolve_row_customer_id(
+            argument, source, owner_id=owner_id, rows=self.rows, row="Run 42"
+        )
+
+    def test_nothing_named_means_the_rows_own_workspace(self) -> None:
+        assert self._resolve(None, McpScopeSource(header=None)) == 1
+
+    def test_an_agreeing_argument_passes(self) -> None:
+        assert self._resolve("acme", McpScopeSource(header=None)) == 1
+
+    def test_a_contradicting_argument_is_refused_naming_the_owner(self) -> None:
+        with pytest.raises(McpToolError) as excinfo:
+            self._resolve("Globex", McpScopeSource(header=None))
+        message = str(excinfo.value)
+        assert 'Run 42 belongs to the workspace "Acme" (1)' in message
+        assert "omit it" in message
+
+    def test_a_contradicting_header_is_refused_too(self) -> None:
+        # The header is pinned once in mcp.json, so reviewing a run in another
+        # workspace hits this — the refusal names the workspace to pass
+        # explicitly, and the argument then wins over the header.
+        with pytest.raises(McpToolError, match='belongs to the workspace "Acme"'):
+            self._resolve(None, McpScopeSource(header=RowRef.by_name("Globex")))
+
+    def test_an_agreeing_argument_beats_a_contradicting_header(self) -> None:
+        source = McpScopeSource(header=RowRef.by_name("Globex"))
+        assert self._resolve("Acme", source) == 1
+
+    def test_an_unknown_workspace_is_still_an_unknown_workspace(self) -> None:
+        # A bad name is a resolution error, not a mismatch: the caller should
+        # hear "no such workspace", not a claim about the row.
+        with pytest.raises(McpToolError, match="customer workspace"):
+            self._resolve("Initech", McpScopeSource(header=None))
 
 
 # ---------------------------------------------------------------------------

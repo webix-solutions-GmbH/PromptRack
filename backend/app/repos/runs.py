@@ -168,15 +168,32 @@ async def scope_for_run(
 
     The executor runs outside any request (MCP ``execute_run`` is
     fire-and-forget), so it cannot derive a scope from a session. It reads the
-    run row instead and takes the scope *from* it. This is the only function in
-    the repositories that is not itself scoped; authorization for it lives at
-    the boundaries that can reach it, not here, since by then there is no
-    request to authenticate.
+    run row instead and takes the scope *from* it. Together with the two
+    ``customer_id_for_*`` lookups below these are the only unscoped reads in
+    the repositories; authorization for them lives at the boundaries that can
+    reach them, not here, since by then there is no request to authenticate.
     """
     run = await session.get(Run, run_id)
     if run is None:
         return None
     return scope_from_row(run.customer_id), run
+
+
+async def customer_id_for_run(session: AsyncSession, run_id: int) -> int | None:
+    """Unscoped like ``scope_for_run`` above, for the same reason turned
+    around: an MCP call that names a run by id derives its workspace *from*
+    the row (``resolve_row_scope``), so this lookup cannot itself be scoped.
+    """
+    return await session.scalar(select(Run.customer_id).where(Run.id == run_id))
+
+
+async def customer_id_for_result(session: AsyncSession, result_id: int) -> int | None:
+    """``customer_id_for_run`` through the result's parent FK."""
+    return await session.scalar(
+        select(Run.customer_id)
+        .join(RunResult, RunResult.run_id == Run.id)
+        .where(RunResult.id == result_id)
+    )
 
 
 # ---------------------------------------------------------------------------

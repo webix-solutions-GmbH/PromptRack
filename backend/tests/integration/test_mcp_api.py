@@ -500,9 +500,9 @@ async def test_mcp_endpoint(
             assert payload["run"]["test_case_count"] == 2
             assert payload["executing"] is False
 
-            failed, payload = await call(
-                client, token, "get_run", {"customer": "Acme", "run_id": run_id}
-            )
+            # Id-addressed calls need no workspace at all: a run id is globally
+            # unique, so the row resolves its own.
+            failed, payload = await call(client, token, "get_run", {"run_id": run_id})
             assert not failed
             assert payload["run"]["status"] == "pending"
             assert payload["run"]["results"]["pending"] == 2
@@ -522,7 +522,7 @@ async def test_mcp_endpoint(
                 client,
                 token,
                 "get_run_result",
-                {"customer": "Acme", "result_id": no_input["result_id"]},
+                {"result_id": no_input["result_id"]},
             )
             assert not failed
             assert payload["result"]["system_prompt_text"] is None
@@ -541,7 +541,7 @@ async def test_mcp_endpoint(
                 client,
                 token,
                 "set_rating",
-                {"customer": "Acme", "result_id": result_id, "rating": "good"},
+                {"result_id": result_id, "rating": "good"},
             )
             assert failed
             assert "still pending" in message
@@ -588,11 +588,35 @@ async def test_mcp_endpoint(
             # nothing.
             assert "tools_called" not in graded
 
-            # The run belongs to Acme, so Globex cannot see it at all.
+            # A workspace that contradicts the run's own is refused naming the
+            # actual one — a named refusal rather than a lying "not found",
+            # since workspaces are labels, not tenants.
             failed, message = await call(
                 client, token, "get_run", {"customer": "Globex", "run_id": run_id}
             )
             assert failed
+            assert f'Run {run_id} belongs to the workspace "Acme"' in message
+
+            # The same contradiction via the pinned connection header, and the
+            # explicit argument is the documented way past it.
+            failed, message = await call(
+                client, token, "get_run", {"run_id": run_id}, {"x-customer": "Globex"}
+            )
+            assert failed
+            assert "belongs to the workspace" in message
+            failed, _ = await call(
+                client,
+                token,
+                "get_run",
+                {"customer": "Acme", "run_id": run_id},
+                {"x-customer": "Globex"},
+            )
+            assert not failed
+
+            # A missing row still reads as missing, not as a workspace problem.
+            failed, message = await call(client, token, "get_run", {"run_id": 999999})
+            assert failed
+            assert "No run with id 999999" in message
 
             # --- the read-only gate ------------------------------------------
             failed, message = await call(
