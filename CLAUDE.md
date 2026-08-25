@@ -1022,6 +1022,28 @@ model** (the user message is built from the task prompt and `content` alone —
 `message_assembly.user_message`, never touching `expected_output`), which is what lets the
 rating aids state a payload or a canary outright.
 
+### The run-review skill
+
+`docs/run-review-skill/SKILL.md` is a Claude Code skill that grades a finished run over
+this app's own MCP server — every unrated result judged against its `expected_output`
+rubric with a dense evidence note, nothing guessed where no rubric exists, an existing
+rating never overwritten — plus the two-run comparison, framed either as a baseline
+regression check after a model swap or as two models head to head. It is the reading half
+of the loop `docs/example-suite/` authors: the suite is pushed in over MCP, the skill
+grades what comes back. `README.md` points at it, and it is installed by copying or
+junctioning the folder into `.claude/skills/promptrack-run-review/` wherever the reviewing
+agent runs.
+
+**A second copy lives in the AI Companion**, in its `skills` category as
+`promptrack-run-review-run-review-skill` — the SKILL.md embedded verbatim inside a wrapper
+that explains this app to an agent which has never seen it. That copy is how the skill
+reaches the other projects, and **nothing syncs it**: an edit to
+`docs/run-review-skill/SKILL.md` has to be pushed there in the same change, through the
+`ai-companion` MCP server's `update_entry` (`category: "skills"`, `id:
+"promptrack-run-review-run-review-skill"`) — the content, and the entry description too if
+the frontmatter description changed. A stale companion entry is worse than no entry: it is
+a grading procedure other repositories will follow believing it is current.
+
 ## Testing
 
 **The API contract between `backend/app/api/*.py` and `frontend/src/api/*.ts` is the
