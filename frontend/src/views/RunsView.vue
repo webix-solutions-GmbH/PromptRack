@@ -1,10 +1,12 @@
 <script setup lang="ts">
 // Runs list — each run executed the test cases of one or more groups against
 // one endpoint and model. Trimmed to what `GET /api/runs` actually returns:
-// the backend's `RunView` (`backend/app/api/runs.py`) carries no per-run
-// result/rating aggregates, so the "ok/err/pending" and rating-tally columns
-// are dropped rather than approximated with N+1 requests — see this task's
-// report for a note on adding an aggregate endpoint later.
+// the backend's `RunListView` (`backend/app/api/runs.py`) carries one
+// aggregate, the duration total, so the "ok/err/pending" and rating-tally
+// columns are still dropped rather than approximated with N+1 requests. The
+// one that is here is the same measurement `/results` labels "Total time" —
+// two views naming a column the same thing have to be measuring the same
+// number — and it arrives as one grouped query over the listed runs.
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import Button from 'primevue/button'
@@ -16,10 +18,10 @@ import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
-import { runsApi, type ArchivedFilter, type RunView } from '../api/runs'
+import { runsApi, type ArchivedFilter, type RunListView } from '../api/runs'
 import { ApiError } from '../api/client'
 import SearchField from '../components/SearchField.vue'
-import { endpointLabel, excerpt, formatDateTime } from '../lib/format'
+import { endpointLabel, excerpt, formatDateTime, formatDuration } from '../lib/format'
 import { RUN_STATUS_SEVERITY } from '../lib/runStatus'
 import { useAuthStore } from '../stores/auth'
 
@@ -36,7 +38,7 @@ function onRowClick(event: DataTableRowClickEvent) {
   void router.push(`/runs/${(event.data as { id: number }).id}`)
 }
 
-const runs = ref<RunView[]>([])
+const runs = ref<RunListView[]>([])
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 const archivedFilter = ref<ArchivedFilter>('exclude')
@@ -63,7 +65,7 @@ const archivedOptions: { label: string; value: ArchivedFilter }[] = [
   { label: 'All', value: 'all' },
 ]
 
-function endpointName(row: RunView): string {
+function endpointName(row: RunListView): string {
   return endpointLabel(row.endpoint_snapshot?.name)
 }
 
@@ -90,7 +92,7 @@ const emptyMessage = computed(() => {
 
 const busyRunId = ref<number | null>(null)
 
-async function toggleArchive(row: RunView) {
+async function toggleArchive(row: RunListView) {
   busyRunId.value = row.id
   try {
     if (row.archived_at !== null) {
@@ -111,7 +113,7 @@ async function toggleArchive(row: RunView) {
   }
 }
 
-function confirmDelete(row: RunView) {
+function confirmDelete(row: RunListView) {
   confirm.require({
     header: 'Delete run',
     message: `Delete run #${row.id} and all its results? This cannot be undone.`,
@@ -121,7 +123,7 @@ function confirmDelete(row: RunView) {
   })
 }
 
-async function removeRun(row: RunView) {
+async function removeRun(row: RunListView) {
   busyRunId.value = row.id
   try {
     await runsApi.remove(row.id)
@@ -182,37 +184,47 @@ async function removeRun(row: RunView) {
     >
       <template #empty>{{ emptyMessage }}</template>
       <Column field="id" header="Run" sortable>
-        <template #body="{ data }: { data: RunView }">
+        <template #body="{ data }: { data: RunListView }">
           <RouterLink :to="`/runs/${data.id}`" class="name-link">#{{ data.id }}</RouterLink>
         </template>
       </Column>
       <Column field="created_at" header="Created" sortable>
-        <template #body="{ data }: { data: RunView }">{{ formatDateTime(data.created_at) }}</template>
+        <template #body="{ data }: { data: RunListView }">{{ formatDateTime(data.created_at) }}</template>
       </Column>
       <Column header="Endpoint">
-        <template #body="{ data }: { data: RunView }">{{ endpointName(data) }}</template>
+        <template #body="{ data }: { data: RunListView }">{{ endpointName(data) }}</template>
       </Column>
       <Column field="model_id" header="Model" sortable>
-        <template #body="{ data }: { data: RunView }">
+        <template #body="{ data }: { data: RunListView }">
           <span class="mono">{{ data.model_id }}</span>
         </template>
       </Column>
       <Column header="Groups">
-        <template #body="{ data }: { data: RunView }">{{ data.group_names.join(', ') || '—' }}</template>
+        <template #body="{ data }: { data: RunListView }">{{ data.group_names.join(', ') || '—' }}</template>
       </Column>
       <Column field="status" header="Status" sortable>
-        <template #body="{ data }: { data: RunView }">
+        <template #body="{ data }: { data: RunListView }">
           <div class="status-cell">
             <Tag :severity="RUN_STATUS_SEVERITY[data.status]" :value="data.status" />
             <Tag v-if="data.archived_at !== null" severity="warn" value="archived" />
           </div>
         </template>
       </Column>
+      <Column field="total_duration_ms" sortable>
+        <template #header>
+          <span title="Sum of every result's generation time; tool waiting excluded">
+            Total time
+          </span>
+        </template>
+        <template #body="{ data }: { data: RunListView }">
+          {{ formatDuration(data.total_duration_ms) }}
+        </template>
+      </Column>
       <Column header="Comment">
-        <template #body="{ data }: { data: RunView }">{{ excerpt(data.comment) }}</template>
+        <template #body="{ data }: { data: RunListView }">{{ excerpt(data.comment) }}</template>
       </Column>
       <Column header="" class="actions-column">
-        <template #body="{ data }: { data: RunView }">
+        <template #body="{ data }: { data: RunListView }">
           <div v-if="auth.canWrite" class="row-actions">
             <Button
               :label="data.archived_at !== null ? 'Unarchive' : 'Archive'"

@@ -58,6 +58,7 @@ from app.repos.runs import (
     list_runs,
     rate_result,
     set_run_archived_at,
+    total_durations_for_runs,
 )
 from app.repos.scoped import utc_now
 from app.scope import CrossCustomerError, Scope
@@ -191,6 +192,24 @@ class RunResultView(BaseModel):
 
 class RunDetailView(RunView):
     results: list[RunResultView]
+
+
+class RunListView(RunView):
+    """A list row, which is a run plus the one thing only the list needs.
+
+    `total_duration_ms` lives here and not on `RunView` on purpose: the detail
+    endpoint already ships every result and sums them client-side, and
+    create/archive/unarchive have nothing measured to report. A field those four
+    would answer `null` to would be exactly the kind of "the interface is a lie
+    about the wire format" drift CLAUDE.md's testing note warns about, so the
+    shape that carries it is the shape that fills it.
+    """
+
+    #: Sum of each result's `duration_ms` — the same measurement `/results`
+    #: labels "Total time" (`app/repos/results.py`'s `_TALLIES`): model
+    #: generation time, tool waiting excluded, and immune to a run being paused
+    #: and resumed days later. `None` means nothing was measured yet, never 0ms.
+    total_duration_ms: int | None
 
 
 class RunCreateRequest(BaseModel):
@@ -344,15 +363,25 @@ async def list_runs_endpoint(
     archived: Literal["exclude", "only", "all"] = "exclude",
     run_status: Annotated[str | None, Query(alias="status")] = None,
     limit: int | None = None,
-) -> list[RunView]:
+) -> list[RunListView]:
     """Newest first. Archived runs are hidden unless asked for — archiving is
     not a status value, so it filters separately (see `runs.archived_at`).
+
+    The duration totals are one grouped query over the runs just listed, not one
+    per row: the N+1 the original version of this view refused is still refused.
     """
     del actor
     runs = await list_runs(
         scope, session, status=run_status, archived=archived, limit=limit
     )
-    return [_run_view(run) for run in runs]
+    totals = await total_durations_for_runs(scope, session, [run.id for run in runs])
+    return [
+        RunListView(
+            **_run_view(run).model_dump(),
+            total_duration_ms=totals.get(run.id),
+        )
+        for run in runs
+    ]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

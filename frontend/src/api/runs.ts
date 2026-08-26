@@ -175,6 +175,21 @@ export interface RunDetail extends RunView {
   results: RunResultView[]
 }
 
+/**
+ * A row of `GET /api/runs` — a run plus the one thing only the list needs.
+ * Mirrors `RunListView` in `backend/app/api/runs.py`; the detail, create and
+ * archive responses stay plain `RunView`, because they have nothing measured
+ * to report and a field they all answered `null` to would be a lie about the
+ * wire format rather than a column.
+ */
+export interface RunListView extends RunView {
+  /** Sum of each result's `duration_ms` — the same measurement `/results`
+   * labels "Total time": model generation time, tool waiting excluded, and
+   * unaffected by a run being paused and resumed days later. `null` means
+   * nothing was measured yet, never 0ms. */
+  total_duration_ms: number | null
+}
+
 export interface RunCreateInput {
   endpoint_id: number
   model_id: string
@@ -203,7 +218,7 @@ export const runsApi = {
     if (opts.status) params.set('status', opts.status)
     if (opts.limit !== undefined) params.set('limit', String(opts.limit))
     const query = params.toString()
-    return api.get<RunView[]>(query.length > 0 ? `/runs?${query}` : '/runs')
+    return api.get<RunListView[]>(query.length > 0 ? `/runs?${query}` : '/runs')
   },
   get: (id: number) => api.get<RunDetail>(`/runs/${id}`),
   create: (input: RunCreateInput) => api.post<RunView>('/runs', input),

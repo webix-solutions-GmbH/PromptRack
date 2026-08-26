@@ -62,6 +62,43 @@ async def list_runs(
     return list((await session.scalars(statement)).all())
 
 
+async def total_durations_for_runs(
+    scope: Scope, session: AsyncSession, run_ids: Sequence[int]
+) -> dict[int, int | None]:
+    """``sum(duration_ms)`` per run — the "Total time" the runs list shows.
+
+    Deliberately the same number ``/results`` puts in its run picker (see
+    ``_TALLIES`` in :mod:`app.repos.results`): generation time summed over the
+    run's own frozen per-result durations, *not* ``finished_at - started_at``.
+    Wall clock is free to read off the run row and wrong the moment a run is
+    resumed, because the executor keeps the original ``started_at``, so a suite
+    picked up the next morning would report the whole night. Two columns named
+    the same thing in two views have to be the same measurement.
+
+    Kept out of :func:`list_runs` rather than joined into it: that function's
+    ``list[Run]`` is what MCP and the executor's own reads already expect, and
+    one grouped query over the ids just listed costs the same as widening it.
+
+    ``sum()`` over an all-NULL column is NULL in SQL, so a run whose results
+    were never measured stays distinguishable from one that took 0ms — the same
+    reason ``avg_rate`` beside it is not coerced either. A run with no rows at
+    all is simply absent from the mapping.
+    """
+    if not run_ids:
+        return {}
+
+    statement = (
+        apply_where(
+            select(RunResult.run_id, func.sum(RunResult.duration_ms))
+            .join(Run, Run.id == RunResult.run_id),
+            where_scoped(scope, Run, RunResult.run_id.in_(list(run_ids))),
+        )
+        .group_by(RunResult.run_id)
+    )
+    rows = await session.execute(statement)
+    return {run_id: total for run_id, total in rows.all()}
+
+
 def _archived_condition(archived: str):
     if archived == "exclude":
         return Run.archived_at.is_(None)

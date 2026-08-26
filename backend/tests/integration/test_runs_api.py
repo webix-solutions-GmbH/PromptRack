@@ -24,7 +24,7 @@ from app.main import app
 from app.repos.endpoints import create_endpoint, update_endpoint
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt, delete_prompt
-from app.repos.runs import list_run_results, rate_result
+from app.repos.runs import list_run_results, rate_result, update_run_result
 from app.repos.test_cases import create_test_case, create_test_group
 from app.scope import Scope
 from app.services.run_create import create_run_record
@@ -354,6 +354,64 @@ class TestRunCrud:
         unarchived = await client.post(f"/api/runs/{run_id}/unarchive")
         assert unarchived.json()["archived_at"] is None
         assert len((await client.get("/api/runs")).json()) == 1
+
+    async def test_the_list_row_reports_the_summed_generation_time(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """`RunListView.total_duration_ms`, the "Total time" column.
+
+        The same measurement `/results` shows in its run picker — a sum of the
+        frozen per-result `duration_ms`, not `finished_at - started_at`, so a
+        run resumed the next morning does not report the night. Asserted on the
+        wire rather than on a derived flag, since this field is one end of the
+        `runs.ts` contract seam.
+
+        A workspace's own runs only: another workspace running the same endpoint
+        must not add its durations to this one's row.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await make_fixture(scope, session, titles=("First", "Second"))
+        created = await create_run_record(
+            scope, session, endpoint_id=endpoint_id, model_id="m", group_ids=[group_id],
+            probe=_no_probe,
+        )
+        await session.commit()
+
+        _, other_scope = await create_workspace("Other")
+        other_run = await make_run(other_scope, session)
+        for other in await list_run_results(other_scope, session, other_run):
+            await update_run_result(
+                other_scope, session, other_run, other.id, {"duration_ms": 99_000}
+            )
+        await session.commit()
+
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        # Nothing measured yet is `None`, never 0ms: `sum()` over an all-NULL
+        # column is NULL, and the column has to keep the two apart.
+        [row] = (await client.get("/api/runs")).json()
+        assert row["id"] == created.run_id
+        assert row["total_duration_ms"] is None
+
+        rows = await list_run_results(scope, session, created.run_id)
+        for result, duration in zip(rows, (1_200, 800), strict=True):
+            await update_run_result(
+                scope, session, created.run_id, result.id, {"duration_ms": duration}
+            )
+        await session.commit()
+
+        [row] = (await client.get("/api/runs")).json()
+        assert row["total_duration_ms"] == 2_000
+
+        # One measured row and one still pending sums the measured one alone,
+        # so the column reads as progress rather than blanking mid-run.
+        await update_run_result(
+            scope, session, created.run_id, rows[1].id, {"duration_ms": None}
+        )
+        await session.commit()
+        [row] = (await client.get("/api/runs")).json()
+        assert row["total_duration_ms"] == 1_200
 
     async def test_deleting_a_run_takes_its_results_with_it(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
