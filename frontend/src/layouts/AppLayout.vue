@@ -84,6 +84,23 @@ theme.init()
 // Fetched once on mount; a failure renders nothing rather than an error,
 // since a missing build identity is not worth interrupting the shell over.
 const version = ref<Version | null>(null)
+
+const REPO_URL = 'https://github.com/webix-solutions-GmbH/PromptRack'
+
+/**
+ * Where the footer's build string goes when clicked. A tagged build has a
+ * GitHub release carrying that version's CHANGELOG.md section, which is the
+ * answer to "what is in the thing I am running"; an untagged `main` build has
+ * no release, so it points at the commit it was built from instead. Nothing to
+ * link to in dev, where `commit` is null and the version is whatever
+ * `pyproject.toml` says — hence the `null` the template `v-if`s on.
+ */
+const versionHref = computed(() => {
+  const current = version.value
+  if (!current) return null
+  if (current.commit) return `${REPO_URL}/commit/${current.commit}`
+  return `${REPO_URL}/releases/tag/v${current.version}`
+})
 onMounted(async () => {
   try {
     version.value = await versionApi.get()
@@ -288,7 +305,20 @@ const currentThemeLabel = computed(
                   <i class="pi pi-github" />
                 </a>
               </div>
-              <span v-if="version" class="footer-version"
+              <!-- The build string, linked: a tag goes to its release (whose
+                   notes are that version's CHANGELOG.md section), an untagged
+                   build to the commit it was built from. Unlinked in dev,
+                   where neither target exists. -->
+              <a
+                v-if="version && versionHref"
+                :href="versionHref"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="footer-version"
+                :title="version.commit ? 'Commit this build was made from' : `Release notes for v${version.version}`"
+                >v{{ version.version }}<template v-if="version.commit"> · {{ version.commit }}</template></a
+              >
+              <span v-else-if="version" class="footer-version"
                 >v{{ version.version }}<template v-if="version.commit"> · {{ version.commit }}</template></span
               >
             </div>
@@ -625,5 +655,14 @@ const currentThemeLabel = computed(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Same quiet-until-hovered treatment as the GitHub icon beside it: the build
+     string is a link now, but it is the least important thing in the footer and
+     must not read as a call to action. */
+  text-decoration: none;
+}
+
+a.footer-version:hover {
+  color: var(--p-text-color);
+  text-decoration: underline;
 }
 </style>

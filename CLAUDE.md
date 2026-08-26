@@ -1176,9 +1176,48 @@ The image name is hardcoded lowercase (`ghcr.io/webix-solutions-gmbh/promptrack`
 than interpolated from `github.repository`, because that variable is mixed-case
 (`webix-solutions-GmbH/PromptRack`) and GHCR rejects uppercase in image names outright. It passes
 `PROMPTRACK_COMMIT=${{ github.sha }}` into the `ARG` the Dockerfile already declares, so
-`GET /api/version` reports the exact commit a running container was built from. It
-deliberately runs no tests before pushing — a known gap, not an oversight, so don't
-assume a `main` push through this workflow was verified.
+`GET /api/version` reports the exact commit a running container was built from.
+
+**The image is gated on a `check` job** — `make check`, i.e. lint + the pure suite +
+typecheck — which `build-push` declares as `needs`. The integration suite is deliberately
+left out: it provisions its own Postgres through docker, which is a slower and different
+kind of job than a push gate, so a `main` push is verified to the level `make check`
+verifies and no further.
+
+### Releasing
+
+`CHANGELOG.md` at the repo root is the release notes, newest first, **one line per
+change** — a terse `- Added "Total time" to the runs overview`, not a paragraph. An
+`## Unreleased` section collects lines as changes land; releasing renames it to the
+version.
+
+One tag push is the whole release, and the three artifacts cannot drift because they all
+read the same ref:
+
+```bash
+# 1. rename ## Unreleased to "## 0.4.0 — YYYY-MM-DD", bump backend/pyproject.toml
+cd backend && uv lock            # uv.lock carries the version too
+git commit -am "Version 0.4.0" && git tag v0.4.0 && git push && git push --tags
+```
+
+That yields image tags `0.4.0` / `0.4` / `latest`, and a GitHub release on `v0.4.0` whose
+body is that version's `CHANGELOG.md` section — extracted by the workflow's `release`
+job, never retyped, and the job **fails** if the changelog has no section for the tag, so
+a tag can't ship without notes. The release job runs only on a `v*` tag and only after
+`build-push`, so a release never names an image that failed to publish.
+
+**Mind the missing `v`.** The git tag is `v0.4.0`; `type=semver,pattern={{version}}`
+publishes the image as `0.4.0`. So a deployment pins `PROMPTRACK_TAG=0.4.0`, never
+`v0.4.0` — which would silently fail to pull. Pinning is also the point of releasing at
+all: `PROMPTRACK_TAG` defaults to `main`, so an unpinned host upgrades on every push,
+and a pinned one upgrades when someone edits `.env`.
+
+The sidenav footer's build string (`v0.3.0 · sha-abc1234`) links to that commit, or to
+the release when no commit was baked in — so "what am I running and what changed" is one
+click from inside the running app rather than a lookup. `CHANGELOG.md` is deliberately
+**not** copied into the image: serving it would need a route, a response model, a
+`src/api/*.ts` module and a UI surface — a new instance of the API-contract seam the
+Testing section calls the one that breaks — to replace that link.
 
 This project is developed against a self-hosted deployment, so a change that touches
 Docker, compose or migrations should say what it was actually tested on.

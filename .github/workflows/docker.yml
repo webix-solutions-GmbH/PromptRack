@@ -7,11 +7,42 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # `write` so the release job can create the GitHub release on a v* tag. The
+  # build job needs only `packages: write`; both are declared once here.
+  contents: write
   packages: write
 
 jobs:
+  # Everything a commit should pass, and now the gate the image is behind: an
+  # image tagged `latest` off a red suite is worse than no image, and a GitHub
+  # release makes an unverified build look blessed.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pinned to an exact version, not a floating major: setup-uv publishes
+      # a moving `vN` tag only up to v7, so `@v10` does not resolve at all.
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: cd backend && uv sync --frozen
+      - run: cd frontend && npm ci
+
+      # lint + the pure suite + typecheck. The integration suite is left out
+      # deliberately: it provisions its own Postgres via docker, which is a
+      # different (and much slower) kind of job than a push gate.
+      - run: make check
+
   build-push:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -52,3 +83,38 @@ jobs:
           # commit it was built from.
           build-args: |
             PROMPTRACK_COMMIT=${{ github.sha }}
+
+  # One tag push produces the image tags and the release together, so the two
+  # can never drift: `type=semver` above and this job read the same `v*` ref.
+  # The body is that version's CHANGELOG.md section, extracted rather than
+  # retyped — a release note that disagrees with the committed changelog is the
+  # one failure mode worth engineering out.
+  release:
+    needs: build-push
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # From this version's heading to the line before the next `## `.
+          awk -v v="$version" '
+            $0 ~ "^## " v "( |$)" { taking = 1; next }
+            taking && /^## / { exit }
+            taking { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+          echo "Release notes for $version:" && cat notes.md
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          body_path: notes.md
+          # The tag already exists (this job only runs on a tag push), so the
+          # release is created against it rather than creating a tag of its own.
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
