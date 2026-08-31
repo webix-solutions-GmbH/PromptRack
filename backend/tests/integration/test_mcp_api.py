@@ -31,6 +31,7 @@ from app.auth.policy import Role
 from app.auth.tokens import create_token
 from app.main import app
 from app.repos.endpoints import create_endpoint
+from app.repos.param_groups import create_param_group
 from app.repos.runs import list_run_results
 from app.repos.test_cases import create_test_group
 from app.scope import Scope
@@ -167,7 +168,8 @@ async def test_mcp_endpoint(
             # the wire adds is that every registered tool really reaches a client,
             # with the `readOnlyHint` the `_WRITES` declaration derives.
             advertised = {tool["name"]: tool for tool in listed["result"]["tools"]}
-            assert len(advertised) == 23
+            assert len(advertised) == 24
+            assert advertised["list_param_groups"]["annotations"]["readOnlyHint"] is True
             assert advertised["list_documents"]["annotations"]["readOnlyHint"] is True
             assert advertised["create_document"]["annotations"]["readOnlyHint"] is False
             assert advertised["update_document"]["annotations"]["readOnlyHint"] is False
@@ -734,3 +736,78 @@ async def test_mcp_endpoint(
             )
             assert failed
             assert '"messages"' in message
+
+            # --- parameter groups: the third merge level, by name -------------
+            # The group itself is seeded through the repo — like endpoints and
+            # toolsets it is not creatable over MCP in v1, only listed and used.
+            await create_param_group(
+                acme,
+                session,
+                name="no thinking",
+                params=json.dumps(
+                    {"top_k": None, "chat_template_kwargs": {"enable_thinking": False}}
+                ),
+            )
+            await session.commit()
+
+            failed, payload = await call(
+                client, viewer, "list_param_groups", {"customer": "Acme"}
+            )
+            assert not failed
+            assert payload["param_groups"] == [
+                {
+                    "id": payload["param_groups"][0]["id"],
+                    "name": "no thinking",
+                    "description": None,
+                    "params": {
+                        "top_k": None,
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    },
+                }
+            ]
+
+            failed, payload = await call(
+                client,
+                token,
+                "create_run",
+                {
+                    "customer": "Acme",
+                    "endpoint": "Spark",
+                    "model": "qwen3:8b",
+                    "groups": ["Invoices"],
+                    "param_groups": ["no thinking"],
+                    "params": {"seed": 3},
+                },
+            )
+            assert not failed
+            grouped_run_id = payload["run"]["id"]
+
+            failed, payload = await call(
+                client, token, "get_run", {"customer": "Acme", "run_id": grouped_run_id}
+            )
+            assert not failed
+            # The group unset the endpoint's top_k with a null, added its own
+            # nested key, and the run's own params still merged on top.
+            assert payload["run"]["params"] == {
+                "temperature": 0.1,
+                "chat_template_kwargs": {"enable_thinking": False},
+                "seed": 3,
+            }
+            assert payload["run"]["param_groups"] == ["no thinking"]
+
+            # An unknown group name is refused with the discovery list, same
+            # as every other ref miss.
+            failed, message = await call(
+                client,
+                token,
+                "create_run",
+                {
+                    "customer": "Acme",
+                    "endpoint": "Spark",
+                    "model": "qwen3:8b",
+                    "groups": ["Invoices"],
+                    "param_groups": ["nope"],
+                },
+            )
+            assert failed
+            assert "no thinking" in message

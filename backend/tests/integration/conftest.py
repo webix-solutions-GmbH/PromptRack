@@ -167,6 +167,7 @@ ALL_TABLES = [
     "test_groups",
     "test_cases",
     "test_case_toolsets",
+    "param_groups",
     "runs",
     "run_results",
     "users",

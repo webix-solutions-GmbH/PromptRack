@@ -26,6 +26,9 @@ export interface CompareRunView {
   /** Raw `runs.params` JSON string, or null for server defaults — the same
    * shape `formatParams` renders on a run's own page. */
   params: string | null
+  /** Names of the parameter groups selected at creation — the readable label
+   * over `params`; empty when none were selected. */
+  param_group_names: string[]
   /** The note whoever started the run left on it, or null. */
   comment: string | null
   good: number

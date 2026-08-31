@@ -295,6 +295,9 @@ class TestResolveRowCustomerId:
 EXPECTED_TOOLS = {
     "list_customers": False,
     "list_endpoints": False,
+    # Parameter groups are listed and referenced from create_run, never written
+    # here in v1 — the presets are authored in the UI (or saved off a run).
+    "list_param_groups": False,
     "list_test_groups": False,
     "create_test_group": True,
     "list_prompts": False,

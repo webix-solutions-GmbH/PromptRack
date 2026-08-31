@@ -13,15 +13,19 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
+import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
+import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 import { endpointsApi, type Endpoint, type EndpointModel } from '../api/endpoints'
+import { paramGroupsApi, type ParamGroup } from '../api/paramGroups'
 import { runsApi } from '../api/runs'
 import { testGroupsApi, type TestGroup } from '../api/testCases'
 import { ApiError } from '../api/client'
 import ParamsEditor from '../components/ParamsEditor.vue'
+import { combineGroupParams, mergeParams } from '../lib/params'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
@@ -39,6 +43,8 @@ const endpointId = ref<number | null>(null)
 const modelChoice = ref('')
 const customModel = ref('')
 const selectedGroupIds = ref<number[]>([])
+const paramGroups = ref<ParamGroup[]>([])
+const selectedParamGroupIds = ref<number[]>([])
 const paramOverrides = ref<Record<string, unknown> | null>(null)
 const comment = ref('')
 
@@ -49,9 +55,14 @@ async function load() {
   loading.value = true
   loadError.value = null
   try {
-    const [endpointRows, groupRows] = await Promise.all([endpointsApi.list(), testGroupsApi.list()])
+    const [endpointRows, groupRows, paramGroupRows] = await Promise.all([
+      endpointsApi.list(),
+      testGroupsApi.list(),
+      paramGroupsApi.list(),
+    ])
     endpoints.value = endpointRows
     groups.value = groupRows
+    paramGroups.value = paramGroupRows
     if (endpointRows.length > 0) endpointId.value = endpointRows[0]!.id
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : 'Failed to load endpoints or groups.'
@@ -185,6 +196,18 @@ async function preloadBaseline() {
       .map((name) => byName.get(name))
       .filter((id): id is number => id !== undefined)
     selectedGroupIds.value = [...new Set(matched)]
+    // Same by-name matching for the baseline's parameter groups, so a Verify
+    // run reproduces the conditions, not only the suite. A renamed or deleted
+    // group simply is not preselected — the frozen merged params on the
+    // baseline stay the reference either way.
+    const paramGroupsByName = new Map(paramGroups.value.map((group) => [group.name, group.id]))
+    selectedParamGroupIds.value = [
+      ...new Set(
+        baselineRun.param_group_names
+          .map((name) => paramGroupsByName.get(name))
+          .filter((id): id is number => id !== undefined),
+      ),
+    ]
     baselineNote.value =
       matched.length > 0
         ? `Preloaded ${matched.length} group(s) from run #${baselineId}. Pick the model/endpoint to verify.`
@@ -200,10 +223,93 @@ const selectedEndpoint = computed(
   () => endpoints.value.find((endpoint) => endpoint.id === endpointId.value) ?? null,
 )
 
+// --- parameter groups -------------------------------------------------------
+
+const selectedParamGroups = computed(() =>
+  selectedParamGroupIds.value
+    .map((id) => paramGroups.value.find((group) => group.id === id))
+    .filter((group): group is ParamGroup => group !== undefined),
+)
+
+// The selected groups folded into one layer, plus any same-key/different-value
+// collisions — the backend refuses those at run creation, so they are warned
+// about (and block submit) here instead of round-tripping.
+const groupCombination = computed(() =>
+  combineGroupParams(
+    selectedParamGroups.value.map((group) => ({ name: group.name, params: group.params })),
+  ),
+)
+
+// What `ParamsEditor` treats as this run's baseline: the endpoint's defaults
+// with the selected groups merged over them, exactly the two lower levels of
+// the backend's three-level merge. Changing the selection re-seeds the editor
+// (and drops ad-hoc edits) — an override is only meaningful against the
+// defaults it was written for.
+const paramDefaults = computed(() =>
+  mergeParams(selectedEndpoint.value?.default_params ?? null, groupCombination.value.combined),
+)
+
+const collisionMessages = computed(() =>
+  groupCombination.value.collisions.map(
+    (collision) =>
+      `"${collision.groups[0]}" and "${collision.groups[1]}" both set "${collision.key}" ` +
+      'to different values — deselect one of them.',
+  ),
+)
+
+// --- save overrides as a parameter group -----------------------------------
+
+const canSaveAsGroup = computed(
+  () => paramOverrides.value !== null && Object.keys(paramOverrides.value).length > 0,
+)
+
+const saveGroupOpen = ref(false)
+const saveGroupName = ref('')
+const saveGroupDescription = ref('')
+const saveGroupError = ref<string | null>(null)
+const savingGroup = ref(false)
+
+function openSaveGroup() {
+  saveGroupName.value = ''
+  saveGroupDescription.value = ''
+  saveGroupError.value = null
+  saveGroupOpen.value = true
+}
+
+async function saveAsGroup() {
+  if (!canSaveAsGroup.value || paramOverrides.value === null) return
+  saveGroupError.value = null
+  savingGroup.value = true
+  try {
+    const created = await paramGroupsApi.create({
+      name: saveGroupName.value,
+      description: saveGroupDescription.value.trim() || null,
+      params: paramOverrides.value,
+    })
+    paramGroups.value = [...paramGroups.value, created].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    )
+    // Selecting the new group moves its keys into the editor's baseline; the
+    // overrides they came from are cleared so nothing is sent twice.
+    selectedParamGroupIds.value = [...selectedParamGroupIds.value, created.id]
+    paramOverrides.value = null
+    saveGroupOpen.value = false
+  } catch (err) {
+    saveGroupError.value =
+      err instanceof ApiError ? err.message : 'Failed to save the parameter group.'
+  } finally {
+    savingGroup.value = false
+  }
+}
+
 // --- submit ------------------------------------------------------------
 
 const canSubmit = computed(
-  () => endpointId.value !== null && resolvedModelId.value.length > 0 && selectedGroupIds.value.length > 0,
+  () =>
+    endpointId.value !== null &&
+    resolvedModelId.value.length > 0 &&
+    selectedGroupIds.value.length > 0 &&
+    groupCombination.value.collisions.length === 0,
 )
 
 function toggleGroup(id: number) {
@@ -222,6 +328,7 @@ async function submit() {
       endpoint_id: endpointId.value,
       model_id: resolvedModelId.value,
       group_ids: selectedGroupIds.value,
+      param_group_ids: selectedParamGroupIds.value,
       params: paramOverrides.value,
       comment: comment.value.trim() || null,
     })
@@ -352,11 +459,54 @@ async function submit() {
       </div>
 
       <div class="field">
-        <span class="label">Parameters</span>
+        <label for="run-param-groups">Parameter groups</label>
+        <MultiSelect
+          id="run-param-groups"
+          v-model="selectedParamGroupIds"
+          :options="paramGroups"
+          option-label="name"
+          option-value="id"
+          display="chip"
+          :show-toggle-all="false"
+          placeholder="None — endpoint defaults only"
+        >
+          <template #option="{ option }: { option: ParamGroup }">
+            <div class="param-group-option">
+              <span>{{ option.name }}</span>
+              <span v-if="option.description" class="hint">{{ option.description }}</span>
+            </div>
+          </template>
+        </MultiSelect>
+        <p class="hint">
+          Named parameter presets merged between the endpoint's defaults and this run's own
+          parameters — e.g. a "no thinking" group for a reasoning A/B.
+        </p>
+        <Message
+          v-for="message in collisionMessages"
+          :key="message"
+          severity="warn"
+          :closable="false"
+          >{{ message }}</Message
+        >
+      </div>
+
+      <div class="field">
+        <div class="field-header">
+          <span class="label">Parameters</span>
+          <Button
+            v-if="auth.canWrite"
+            type="button"
+            label="Save as parameter group"
+            text
+            size="small"
+            :disabled="!canSaveAsGroup"
+            @click="openSaveGroup"
+          />
+        </div>
         <ParamsEditor
           v-model="paramOverrides"
           :platform="selectedEndpoint?.platform ?? 'generic'"
-          :defaults="selectedEndpoint?.default_params ?? null"
+          :defaults="paramDefaults"
         />
       </div>
 
@@ -377,6 +527,47 @@ async function submit() {
         <Button type="submit" label="Start run" :disabled="!canSubmit" :loading="submitting" />
       </div>
     </form>
+
+    <Dialog
+      v-model:visible="saveGroupOpen"
+      modal
+      header="Save as parameter group"
+      class="form-dialog"
+    >
+      <form class="dialog-form" @submit.prevent="saveAsGroup">
+        <p class="hint">
+          Saves this run's own parameters as a named, reusable preset selectable on any future
+          run, whatever the endpoint or model.
+        </p>
+        <div class="field">
+          <label for="param-group-name">Name *</label>
+          <InputText
+            id="param-group-name"
+            v-model="saveGroupName"
+            required
+            placeholder="no thinking"
+            autofocus
+          />
+        </div>
+        <div class="field">
+          <label for="param-group-description">Description</label>
+          <Textarea
+            id="param-group-description"
+            v-model="saveGroupDescription"
+            rows="2"
+            auto-resize
+            placeholder="Disables Qwen3 thinking via chat_template_kwargs (vLLM)"
+          />
+        </div>
+        <Message v-if="saveGroupError" severity="error" :closable="false">{{
+          saveGroupError
+        }}</Message>
+        <div class="dialog-actions">
+          <Button type="button" label="Cancel" text @click="saveGroupOpen = false" />
+          <Button type="submit" label="Save group" :loading="savingGroup" />
+        </div>
+      </form>
+    </Dialog>
   </div>
 </template>
 
@@ -447,5 +638,18 @@ async function submit() {
 .group-item.disabled {
   color: var(--p-text-muted-color);
   cursor: default;
+}
+
+.param-group-option {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.param-group-option .hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

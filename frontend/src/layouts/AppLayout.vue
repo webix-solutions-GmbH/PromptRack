@@ -38,6 +38,7 @@ const allSections: NavSection[] = [
     items: [
       { label: 'Endpoints', to: '/endpoints', icon: 'pi-server' },
       { label: 'Toolsets', to: '/toolsets', icon: 'pi-wrench' },
+      { label: 'Parameters', to: '/param-groups', icon: 'pi-sliders-h' },
     ],
   },
   {

@@ -30,6 +30,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repos.endpoints import create_endpoint, list_endpoint_models, update_endpoint
+from app.repos.param_groups import create_param_group, delete_param_group, update_param_group
 from app.repos.prompt_versions import commit_version
 from app.repos.prompts import create_prompt, delete_prompt, update_prompt
 from app.repos.runs import list_run_results, list_runs
@@ -43,6 +44,7 @@ from app.repos.toolsets import create_tool, create_toolset, delete_toolset, upda
 from app.scope import CrossCustomerError, Scope
 from app.services.llm_info import LlmInfo
 from app.services.message_assembly import NoUserMessageError
+from app.services.params import ParamsError
 from app.services.run_create import RunCreateError, create_run_record
 from app.services.tool_config import ToolConfigError
 
@@ -377,6 +379,135 @@ async def test_editing_the_endpoint_defaults_does_not_rewrite_a_past_runs_params
     [after] = await list_runs(scope, session)
     assert after.id == created.run_id
     assert json.loads(after.params) == frozen
+
+
+# ---------------------------------------------------------------------------
+# Parameter groups: the third merge level, and the frozen names
+# ---------------------------------------------------------------------------
+
+
+async def _make_param_group(
+    session: AsyncSession, scope: Scope, name: str, params: dict
+) -> int:
+    group = await create_param_group(scope, session, name=name, params=json.dumps(params))
+    return group.id
+
+
+async def test_freezes_the_three_level_merge_and_the_group_names(
+    session: AsyncSession, scope: Scope
+):
+    """Endpoint defaults under the selected groups under the run's own params —
+    merged once, frozen with the group names beside it.
+    """
+    fixture = await _seed(session, scope)
+    await _set_endpoint_params(
+        session, scope, fixture.endpoint_id, {"temperature": 0.2, "top_p": 0.9}
+    )
+    no_thinking = await _make_param_group(
+        session,
+        scope,
+        "no thinking",
+        {"chat_template_kwargs": {"enable_thinking": False}, "top_p": None},
+    )
+    deterministic = await _make_param_group(session, scope, "deterministic", {"temperature": 0})
+
+    created = await create_run_record(
+        scope,
+        session,
+        endpoint_id=fixture.endpoint_id,
+        model_id="qwen3-32b",
+        group_ids=[fixture.group_id],
+        params={"seed": 7},
+        param_group_ids=[no_thinking, deterministic],
+        probe=_no_probe,
+    )
+
+    [run] = await list_runs(scope, session)
+    assert run.id == created.run_id
+    # `temperature` came from a group over a default, `top_p` was unset by a
+    # group null, `seed` is the run's own.
+    assert json.loads(run.params) == {
+        "temperature": 0,
+        "chat_template_kwargs": {"enable_thinking": False},
+        "seed": 7,
+    }
+    assert json.loads(run.param_group_names) == ["no thinking", "deterministic"]
+
+
+async def test_editing_or_deleting_a_param_group_does_not_rewrite_a_past_run(
+    session: AsyncSession, scope: Scope
+):
+    """The snapshot invariant, applied to the third level: the merge happened
+    once, and the frozen names are a copy, not a reference.
+    """
+    fixture = await _seed(session, scope)
+    group_id = await _make_param_group(session, scope, "temp 0", {"temperature": 0})
+
+    created = await create_run_record(
+        scope,
+        session,
+        endpoint_id=fixture.endpoint_id,
+        model_id="qwen3-32b",
+        group_ids=[fixture.group_id],
+        param_group_ids=[group_id],
+        probe=_no_probe,
+    )
+
+    await update_param_group(
+        scope, session, group_id, {"name": "renamed", "params": json.dumps({"temperature": 1.0})}
+    )
+    await delete_param_group(scope, session, group_id)
+    session.expire_all()
+
+    [run] = await list_runs(scope, session)
+    assert run.id == created.run_id
+    assert json.loads(run.params) == {"temperature": 0}
+    assert json.loads(run.param_group_names) == ["temp 0"]
+
+
+async def test_two_groups_fighting_over_one_key_are_refused(
+    session: AsyncSession, scope: Scope
+):
+    fixture = await _seed(session, scope)
+    a = await _make_param_group(session, scope, "temp 0", {"temperature": 0})
+    b = await _make_param_group(session, scope, "creative", {"temperature": 1.2})
+
+    with pytest.raises(ParamsError) as excinfo:
+        await create_run_record(
+            scope,
+            session,
+            endpoint_id=fixture.endpoint_id,
+            model_id="qwen3-32b",
+            group_ids=[fixture.group_id],
+            param_group_ids=[a, b],
+            probe=_no_probe,
+        )
+    assert '"temperature"' in str(excinfo.value)
+    assert await list_runs(scope, session) == []
+
+
+async def test_a_foreign_or_missing_param_group_id_is_refused_by_id(
+    session: AsyncSession, scope: Scope, create_workspace: CreateWorkspace
+):
+    """A scoped read makes a foreign id and a deleted one look the same, and the
+    refusal names it rather than quietly merging fewer params than selected.
+    """
+    fixture = await _seed(session, scope)
+    _, scope_b = await create_workspace("B")
+    foreign = await _make_param_group(session, scope_b, "other engagement", {"seed": 1})
+
+    with pytest.raises(RunCreateError) as excinfo:
+        await create_run_record(
+            scope,
+            session,
+            endpoint_id=fixture.endpoint_id,
+            model_id="qwen3-32b",
+            group_ids=[fixture.group_id],
+            param_group_ids=[foreign],
+            probe=_no_probe,
+        )
+    assert str(foreign) in str(excinfo.value)
+    assert await list_runs(scope, session) == []
 
 
 async def _run_once(session: AsyncSession, scope: Scope, fixture: Fixture):

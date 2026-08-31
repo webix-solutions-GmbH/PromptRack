@@ -20,7 +20,7 @@ from datetime import datetime
 from sqlalchemy import Select, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Customer, Endpoint, Prompt, Run, TestCase, TestGroup, Toolset
+from app.models import Customer, Endpoint, ParamGroup, Prompt, Run, TestCase, TestGroup, Toolset
 from app.scope import (
     CrossCustomerError,
     CustomerOption,
@@ -117,10 +117,18 @@ class CustomerContentCounts:
     toolsets: int
     test_groups: int
     runs: int
+    param_groups: int
 
     @property
     def total(self) -> int:
-        return self.endpoints + self.prompts + self.toolsets + self.test_groups + self.runs
+        return (
+            self.endpoints
+            + self.prompts
+            + self.toolsets
+            + self.test_groups
+            + self.runs
+            + self.param_groups
+        )
 
 
 async def count_customer_content(
@@ -133,6 +141,7 @@ async def count_customer_content(
         ("toolsets", Toolset),
         ("test_groups", TestGroup),
         ("runs", Run),
+        ("param_groups", ParamGroup),
     ):
         counts[key] = (
             await session.scalar(

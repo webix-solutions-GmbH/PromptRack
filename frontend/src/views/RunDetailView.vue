@@ -55,6 +55,9 @@ const llmInfo = ref<{ server: string | null; version: string | null; details: Re
 )
 const comment = ref<string | null>(null)
 const groupNames = ref<string[]>([])
+/** Frozen names of the parameter groups selected at creation — provenance
+ * for `params`, which is the merged wire truth. */
+const paramGroupNames = ref<string[]>([])
 const archivedAt = ref<string | null>(null)
 const createdAt = ref<string | null>(null)
 
@@ -93,6 +96,7 @@ async function load() {
     platform.value = run.endpoint_snapshot?.platform ?? null
     modelId.value = run.model_id
     params.value = run.params
+    paramGroupNames.value = run.param_group_names
     llmInfo.value = run.llm_info
     comment.value = run.comment
     groupNames.value = run.group_names
@@ -471,6 +475,10 @@ const totalDuration = computed(() =>
           <div class="field">
             <span class="field-label">Params</span>
             <span class="field-value">{{ formatParams(params) }}</span>
+          </div>
+          <div v-if="paramGroupNames.length > 0" class="field">
+            <span class="field-label">Param groups</span>
+            <span class="field-value">{{ paramGroupNames.join(', ') }}</span>
           </div>
           <div class="field">
             <span class="field-label">Created</span>

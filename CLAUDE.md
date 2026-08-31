@@ -280,6 +280,28 @@ work identically for both.
   prompt list and editor show e.g. "deployed v3, head is v5" — the one-glance answer to
   "is what's live at the customer what we last verified."
 
+### Parameter groups
+
+Request-body params attach at **three levels**, merged in `app/services/params.py` and
+frozen once into `runs.params` at creation (the snapshot invariant applied to
+parameters): an endpoint's `default_params`, the **parameter groups** a run selects, and
+the run's own overrides — later level wins per key, a `null` unsets a lower level's key
+and never reaches the wire. A param group (`param_groups`, a sixth root table; repo
+`app/repos/param_groups.py`, routes `/api/param-groups`, page `/param-groups`) is a
+named preset — "no thinking" holding vLLM's `chat_template_kwargs` — that deliberately
+lives **above** endpoints and models, reusable against any box, which is what makes a
+reasoning on/off A/B two quick runs instead of re-typed params or a mangled endpoint.
+Two selected groups setting one key to *different* values are refused
+(`combine_group_params`, same reasoning as duplicate tool names), not resolved by
+selection order. The run freezes the selected **names** into `runs.param_group_names`
+(display-only provenance — run detail and the `/results` run-mode header show them);
+there is **no FK** from runs to param_groups and no `is_global` on the table: groups
+hold no credentials, so like prompts they are engagement material, and editing or
+deleting one never touches a past run. The new-run page pre-merges endpoint defaults +
+selected groups client-side (`frontend/src/lib/params.ts`, which must stay in step with
+the backend merge) as `ParamsEditor`'s baseline, and can save the current overrides as a
+new group.
+
 ### Data access — the Scope pattern
 
 No page, action, route handler or MCP tool touches `app.db`'s session-independent engine
@@ -348,7 +370,8 @@ A workspace (`customers`) is a **label, not a tenant**: customers never log in, 
 signed-in user can switch into any of them. It is what keeps one engagement's
 endpoints — i.e. base URLs with API keys — from mixing with another's.
 
-- The five root tables (`endpoints`, `prompts`, `toolsets`, `test_groups`, `runs`) carry
+- The six root tables (`endpoints`, `prompts`, `toolsets`, `test_groups`, `runs`,
+  `param_groups`) carry
   `customer_id NOT NULL`. The child tables (`endpoint_models`, `tools`, `documents`,
   `test_cases`, `test_case_toolsets`, `run_results`, `prompt_versions`) carry **nothing**:
   they inherit scope through their parent FK. Cross-root references can only be checked in app
@@ -359,7 +382,7 @@ endpoints — i.e. base URLs with API keys — from mixing with another's.
   slot (`system_prompt_id`, `task_prompt_id`), and both go through `assert_prompt_slot`
   (`backend/app/repos/prompts.py`) instead: the workspace check and the kind check are true
   of the same row, so they are one read and one refusal path rather than two that can drift.
-- `ON DELETE RESTRICT` on all five root tables, deliberately: a cascade would silently
+- `ON DELETE RESTRICT` on all six root tables, deliberately: a cascade would silently
   destroy run history. `delete_customer` is admin-only, refuses a workspace that still
   holds anything (listing what it holds), and refuses the last workspace, because every
   scope has to resolve to one. **Archiving** (`customers.archived_at`) is the soft path,
@@ -926,8 +949,11 @@ measurements back — the interesting test cases already exist in other repos.
   naming the right one reveals nothing a `list_customers` + per-workspace probe wouldn't.
   This is the id-addressed tools' answer to the deep-link limitation noted under "Customer
   workspaces".
-- **The 23 tools** (registered in `backend/app/mcp/server.py`):
-  `list_customers`, `list_endpoints`, `list_prompts`, `create_prompt`, `update_prompt`,
+- **The 24 tools** (registered in `backend/app/mcp/server.py`):
+  `list_customers`, `list_endpoints`, `list_param_groups` (the named request-param
+  presets `create_run` takes by name in `param_groups` — listed and used here, never
+  written: the presets are authored in the UI or saved off a run),
+  `list_prompts`, `create_prompt`, `update_prompt`,
   `commit_prompt`, `list_prompt_versions`, `get_prompt_version`, `set_baseline`,
   `list_test_groups`, `create_test_group` (name-idempotent — a second call returns the
   existing group, `created: false`), `list_test_cases`, `create_test_case`,

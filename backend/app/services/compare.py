@@ -177,6 +177,10 @@ class CompareRunView:
     #: (`frontend/src/lib/format.ts`'s `formatParams`), and parsing it here
     #: would only mean two renderings of one fact that could disagree.
     params: str | None
+    #: Names of the parameter groups selected at creation — the readable label
+    #: over `params`: two columns of one model differing only in "no thinking"
+    #: should say so by name, not by a raw JSON clip.
+    param_group_names: list[str]
     #: The note whoever started the run left on it — "quantization swap",
     #: "temperature A/B". Free text, and the one thing in a column header that
     #: says *why* this run exists.

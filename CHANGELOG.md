@@ -5,6 +5,10 @@ also that build's container image tag — `0.3.0` here is
 `ghcr.io/webix-solutions-gmbh/promptrack:0.3.0`, and the GitHub release on the
 same tag carries this section verbatim.
 
+## Unreleased
+
+- Parameter groups: named request-param presets ("no thinking") selectable on any run, merged between the endpoint's defaults and the run's own params
+
 ## 0.3.1 — 2026-08-26
 
 - Added "Total time" to the runs overview — summed generation time, the same measurement `/results` shows

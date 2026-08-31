@@ -101,6 +101,10 @@ interface ColumnHeader {
    * Null only when there is nothing to report at all (a model column with no
    * cells). */
   params: string | null
+  /** Frozen names of the parameter groups the run selected. Run mode only —
+   * the readable label over `params`, which is what turns a reasoning A/B's
+   * two identical-looking model columns into "no thinking" vs nothing. */
+  paramGroupNames: string[]
   /** The note whoever started the run left on it. Run mode only: a model
    * column is not a run and has no one note to show, and the cell footer
    * already links each contributing run. */
@@ -171,6 +175,7 @@ const columnHeaders = computed<ColumnHeader[]>(() => {
       totalDurationMs: run.total_duration_ms,
       runId: run.id,
       params: paramsLabel(run.params),
+      paramGroupNames: run.param_group_names,
       comment: run.comment,
     }))
   }
@@ -188,6 +193,7 @@ const columnHeaders = computed<ColumnHeader[]>(() => {
       totalDurationMs: tally?.total_duration_ms ?? null,
       runId: null,
       params: sharedParams(props.rows, index),
+      paramGroupNames: [],
       comment: null,
     }
   })
@@ -636,6 +642,14 @@ function tokenLabel(cell: CompareCellView): string | null {
                    text on hover (they are short and comparing them at a glance
                    is the point); the note is a peek, because it is free text
                    that can run to a paragraph. -->
+              <span
+                v-if="column.paramGroupNames.length > 0"
+                class="col-sub col-param-groups"
+                :title="`Parameter groups: ${column.paramGroupNames.join(', ')}`"
+              >
+                <i class="pi pi-tag" aria-hidden="true" />
+                {{ column.paramGroupNames.join(', ') }}
+              </span>
               <span v-if="column.params" class="col-sub col-params" :title="column.params">
                 <i class="pi pi-sliders-h" aria-hidden="true" />
                 {{ column.params }}
@@ -1045,14 +1059,16 @@ thead .row-header-cell {
    answers down by a row of header height, and the full text is on the
    element's `title` (short enough that a native tooltip is the right weight
    for it — the note beside it is what earns a peek). */
-.col-params {
+.col-params,
+.col-param-groups {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.col-params .pi {
+.col-params .pi,
+.col-param-groups .pi {
   font-size: 0.625rem;
   margin-right: 0.1875rem;
 }

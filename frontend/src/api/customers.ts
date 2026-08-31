@@ -21,6 +21,7 @@ export interface CustomerCounts {
   toolsets: number
   test_groups: number
   runs: number
+  param_groups: number
   total: number
 }
 

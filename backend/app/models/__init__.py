@@ -9,6 +9,7 @@ from app.models.auth import ApiToken, Session, User, UserInvite, UserRole
 from app.models.base import Base
 from app.models.customers import Customer
 from app.models.endpoints import Endpoint, EndpointModel, EndpointModelSource, EndpointPlatform
+from app.models.param_groups import ParamGroup
 from app.models.prompts import Prompt, PromptKind, PromptVersion
 from app.models.runs import (
     RatedVia,
@@ -43,6 +44,7 @@ __all__ = [
     "EndpointModel",
     "EndpointModelSource",
     "EndpointPlatform",
+    "ParamGroup",
     "Prompt",
     "PromptKind",
     "PromptVersion",

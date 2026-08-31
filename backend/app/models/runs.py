@@ -65,6 +65,11 @@ class Run(Base):
     comment: Mapped[str | None]
     #: JSON array of the group names this run covered.
     group_names: Mapped[str]
+    #: JSON array of the parameter-group names selected at creation, `NULL` when
+    #: none were. Display-only provenance, frozen like `group_names` — the
+    #: merged wire truth is `params`, and there is deliberately no FK to
+    #: `param_groups`: editing or deleting a group never touches a past run.
+    param_group_names: Mapped[str | None]
     #: JSON snapshot of endpoint/server/model metadata probed at creation time.
     llm_info: Mapped[str | None]
     status: Mapped[RunStatus] = mapped_column(Text, server_default="pending")

@@ -12,6 +12,7 @@ import pytest
 from app.services.params import (
     RESERVED_PARAM_KEYS,
     ParamsError,
+    combine_group_params,
     merge_params,
     parse_params_json,
     strip_reserved,
@@ -148,6 +149,76 @@ class TestMergeParams:
         merge_params(defaults, overrides)
         assert defaults == {"temperature": 0.2}
         assert overrides == {"temperature": None, "seed": 7}
+
+
+class TestCombineGroupParams:
+    def test_folds_disjoint_groups_into_one_layer(self) -> None:
+        assert combine_group_params(
+            [
+                ("no thinking", {"chat_template_kwargs": {"enable_thinking": False}}),
+                ("temp 0", {"temperature": 0}),
+            ]
+        ) == {"chat_template_kwargs": {"enable_thinking": False}, "temperature": 0}
+
+    def test_nothing_selected_is_none(self) -> None:
+        assert combine_group_params([]) is None
+        assert combine_group_params([("empty", {}), ("also empty", None)]) is None
+
+    def test_refuses_two_groups_fighting_over_one_key_and_names_all_three(self) -> None:
+        # Groups are a set, not a stack: selection order deciding the value
+        # would be exactly the silent combination nobody asked for.
+        with pytest.raises(ParamsError) as excinfo:
+            combine_group_params(
+                [("temp 0", {"temperature": 0}), ("creative", {"temperature": 1.2})]
+            )
+        message = str(excinfo.value)
+        assert '"temp 0"' in message
+        assert '"creative"' in message
+        assert '"temperature"' in message
+
+    def test_the_same_value_twice_coexists(self) -> None:
+        assert combine_group_params(
+            [("a", {"temperature": 0}), ("b", {"temperature": 0})]
+        ) == {"temperature": 0}
+
+    def test_a_reordered_nested_object_is_the_same_value(self) -> None:
+        # Compared as key-sorted JSON — the wire reading, not dict identity.
+        assert combine_group_params(
+            [
+                ("a", {"chat_template_kwargs": {"x": 1, "y": 2}}),
+                ("b", {"chat_template_kwargs": {"y": 2, "x": 1}}),
+            ]
+        ) == {"chat_template_kwargs": {"x": 1, "y": 2}}
+
+    def test_an_int_and_a_float_of_equal_value_differ(self) -> None:
+        # `1` and `1.0` serialize differently, so they would differ on the wire.
+        with pytest.raises(ParamsError):
+            combine_group_params([("a", {"seed": 1}), ("b", {"seed": 1.0})])
+
+    def test_nulls_are_kept_for_the_merge_to_drop(self) -> None:
+        # A group null is the unset signal aimed at an endpoint default;
+        # dropping it here would blunt it before the merge.
+        assert combine_group_params(
+            [("no thinking", {"reasoning_effort": None}), ("temp 0", {"temperature": 0})]
+        ) == {"reasoning_effort": None, "temperature": 0}
+
+    def test_two_groups_agreeing_on_null_coexist(self) -> None:
+        assert combine_group_params(
+            [("a", {"reasoning_effort": None}), ("b", {"reasoning_effort": None})]
+        ) == {"reasoning_effort": None}
+
+    def test_three_level_merge_precedence(self) -> None:
+        # The whole chain as run creation performs it: endpoint defaults under
+        # the combined groups under the run's own overrides.
+        defaults = {"temperature": 0.2, "top_p": 0.9, "seed": 7}
+        groups = combine_group_params(
+            [("no thinking", {"temperature": 0, "seed": None})]
+        )
+        overrides = {"temperature": 0.7}
+        assert merge_params(merge_params(defaults, groups), overrides) == {
+            "temperature": 0.7,
+            "top_p": 0.9,
+        }
 
 
 class TestParseParamsJson:

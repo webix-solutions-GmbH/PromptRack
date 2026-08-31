@@ -33,7 +33,7 @@ from typing import Literal
 from sqlalchemy import ColumnElement, and_, or_
 from sqlalchemy.orm import InstrumentedAttribute
 
-from app.models import Endpoint, Prompt, Run, TestGroup, Toolset
+from app.models import Endpoint, ParamGroup, Prompt, Run, TestGroup, Toolset
 
 #: Where a scope came from: a user's session, a row it was derived from, or the
 #: system escape hatch.
@@ -125,9 +125,16 @@ def require_customer_id(scope: Scope) -> int:
     return scope.customer_id
 
 
-#: The five root tables that carry `customer_id`. Every other table inherits its
+#: The six root tables that carry `customer_id`. Every other table inherits its
 #: scope through a foreign key to one of these.
-type ScopedRoot = type[Endpoint] | type[Prompt] | type[Toolset] | type[TestGroup] | type[Run]
+type ScopedRoot = (
+    type[Endpoint]
+    | type[Prompt]
+    | type[Toolset]
+    | type[TestGroup]
+    | type[Run]
+    | type[ParamGroup]
+)
 
 
 def scope_where(scope: Scope, model: ScopedRoot) -> ColumnElement[bool] | None:

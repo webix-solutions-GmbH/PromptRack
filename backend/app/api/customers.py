@@ -41,6 +41,7 @@ class ContentCountsView(BaseModel):
     toolsets: int
     test_groups: int
     runs: int
+    param_groups: int
     total: int
 
 
@@ -91,6 +92,7 @@ def _content_view(counts: CustomerContentCounts) -> ContentCountsView:
         toolsets=counts.toolsets,
         test_groups=counts.test_groups,
         runs=counts.runs,
+        param_groups=counts.param_groups,
         total=counts.total,
     )
 
@@ -162,6 +164,7 @@ def _held_contents(counts: CustomerContentCounts) -> list[str]:
         (counts.toolsets, "toolset"),
         (counts.test_groups, "test group"),
         (counts.runs, "run"),
+        (counts.param_groups, "parameter group"),
     )
     return [f"{count} {label}{'' if count == 1 else 's'}" for count, label in labels if count]
 

@@ -118,6 +118,7 @@ from app.repos.documents import (
     update_document,
 )
 from app.repos.endpoints import list_endpoint_models, list_endpoints, list_loaded_models
+from app.repos.param_groups import list_param_groups
 from app.repos.prompt_versions import (
     NoChangesError,
     NotAttributedError,
@@ -792,6 +793,34 @@ async def set_baseline_tool(
 
 
 # ---------------------------------------------------------------------------
+# Parameter groups
+# ---------------------------------------------------------------------------
+
+
+@_tool(
+    "list_param_groups",
+    "List the workspace's parameter groups — named, reusable request-param presets (e.g. a "
+    '"no thinking" group holding the provider\'s reasoning toggle). create_run takes them by '
+    "name or id and merges them between the endpoint's default_params and the run's own params.",
+    write=False,
+)
+async def list_param_groups_tool(ctx: Context, customer: CustomerArg = None) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "list_param_groups") as (session, scope, _):
+        groups = await list_param_groups(scope, session)
+        return {
+            "param_groups": [
+                {
+                    "id": group.id,
+                    "name": group.name,
+                    "description": group.description,
+                    "params": parse_params_json(group.params) or {},
+                }
+                for group in groups
+            ]
+        }
+
+
+# ---------------------------------------------------------------------------
 # Test groups and test cases
 # ---------------------------------------------------------------------------
 
@@ -809,6 +838,15 @@ async def _resolve_toolsets(
         return []
     rows = await list_toolsets(scope, session)
     return [resolve_row_ref(ref, rows, "toolset").id for ref in refs]
+
+
+async def _resolve_param_groups(
+    scope: Scope, session: AsyncSession, refs: Sequence[RowRef]
+) -> list[int]:
+    if not refs:
+        return []
+    rows = await list_param_groups(scope, session)
+    return [resolve_row_ref(ref, rows, "parameter group").id for ref in refs]
 
 
 async def _test_case_views(
@@ -1661,6 +1699,7 @@ def _run_header(run: Run) -> dict[str, Any]:
         "base_url": endpoint.get("base_url"),
         "model": run.model_id,
         "params": _json_value(run.params),
+        "param_groups": _json_value(run.param_group_names) or [],
         "comment": run.comment,
         "groups": _json_value(run.group_names) or [],
         "status": run.status,
@@ -1817,13 +1856,21 @@ async def create_run_tool(
             "refused if also given inside params."
         ),
     ] = None,
+    param_groups: Annotated[
+        list[str | int] | None,
+        Field(
+            description="Optional names or ids of parameter groups (list_param_groups) to merge "
+            "between the endpoint's default_params and this call's own params. Two groups "
+            "setting one key to different values are refused."
+        ),
+    ] = None,
     params: Annotated[
         dict[str, Any] | None,
         Field(
             description="Extra request-body parameters sent verbatim, e.g. "
             '{"top_k": 20, "reasoning_effort": "low"}. Merged over the endpoint\'s '
-            "default_params (see list_endpoints), with these values winning per key. A null "
-            "value unsets an endpoint default rather than sending null."
+            "default_params and any selected parameter groups, with these values winning per "
+            "key. A null value unsets a lower level's key rather than sending null."
         ),
     ] = None,
     comment: Annotated[
@@ -1843,6 +1890,10 @@ async def create_run_tool(
         if not group_refs:
             raise McpToolError('"groups" must name at least one test group.')
         group_ids = [(await _resolve_group(scope, session, ref)).id for ref in group_refs]
+
+        param_group_ids = await _resolve_param_groups(
+            scope, session, parse_row_refs(param_groups, "param_groups") if param_groups else []
+        )
 
         model_id = (model or "").strip()
         if not model_id:
@@ -1886,6 +1937,7 @@ async def create_run_tool(
                 model_id=model_id,
                 group_ids=group_ids,
                 params={**named, **cleaned} or None,
+                param_group_ids=param_group_ids,
                 comment=comment,
             )
         except (
@@ -1893,6 +1945,8 @@ async def create_run_tool(
             ToolConfigError,
             NoUserMessageError,
             CrossCustomerError,
+            # Two selected parameter groups fighting over one key.
+            ParamsError,
         ) as exc:
             # These are refusals for the caller (an empty group, a tool test
             # without tools, a case with no user message), not server faults.

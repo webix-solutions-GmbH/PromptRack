@@ -17,9 +17,11 @@ What is refused is therefore structural, not semantic:
   column is a JSON object stored as text and the wire format is JSON;
 * anything past 16 KiB serialized, so a paste accident cannot become a column.
 
-Params attach at **two levels** — an endpoint's `default_params` and a run's own
-overrides — and :func:`merge_params` is the whole of that relationship: shallow,
-per-key, run wins. Shallow because a nested object (vLLM's
+Params attach at **three levels** — an endpoint's `default_params`, the
+parameter groups a run selects (folded into one layer by
+:func:`combine_group_params`), and the run's own overrides — merged in that
+order by chaining :func:`merge_params`: shallow, per-key, the later layer wins.
+Shallow because a nested object (vLLM's
 `chat_template_kwargs`) is one setting the provider reads whole, so replacing it
 wholesale is the only merge that cannot invent a combination nobody asked for.
 A `None` override **unsets** a default rather than sending a null: nulls are the
@@ -38,7 +40,7 @@ these functions.
 """
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 #: Keys `app.services.llm` sets itself when it builds the request body. A
@@ -113,6 +115,40 @@ def merge_params(
     merged: dict[str, Any] = {**(defaults or {}), **(overrides or {})}
     kept = {key: item for key, item in merged.items() if item is not None}
     return kept or None
+
+
+def combine_group_params(
+    groups: Sequence[tuple[str, Mapping[str, Any] | None]],
+) -> dict[str, Any] | None:
+    """The selected parameter groups folded into one layer, or `None`.
+
+    Groups are selected as a set, not a stack, so two groups giving one key
+    *different* values is refused by name rather than resolved by selection
+    order — the same reasoning that refuses duplicate tool names across
+    selected toolsets (`app.services.tool_config`). The same key with the same
+    value (compared as key-sorted serialized JSON, so `1` and `1.0` differ the
+    way they would on the wire while a reordered nested object does not)
+    coexists fine, `None` included: a null here is the unset
+    signal a group may aim at an endpoint default, exactly like a run override.
+
+    Keys are preserved with their `None` values — dropping them is
+    :func:`merge_params`'s job, *after* this layer has had its chance to unset
+    a default underneath it.
+    """
+    combined: dict[str, Any] = {}
+    origin: dict[str, str] = {}
+    for group_name, params in groups:
+        for key, item in (params or {}).items():
+            if key in combined and json.dumps(item, sort_keys=True) != json.dumps(
+                combined[key], sort_keys=True
+            ):
+                raise ParamsError(
+                    f'Parameter groups "{origin[key]}" and "{group_name}" both set '
+                    f'"{key}" to different values. Deselect one of them.'
+                )
+            combined[key] = item
+            origin.setdefault(key, group_name)
+    return combined or None
 
 
 def parse_params_json(raw: str | None) -> dict[str, Any] | None:

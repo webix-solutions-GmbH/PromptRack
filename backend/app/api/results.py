@@ -29,6 +29,7 @@ at them.
 
 from __future__ import annotations
 
+import json
 from typing import Annotated
 
 from fastapi import APIRouter, Query
@@ -208,6 +209,20 @@ def _to_cell(scope: Scope, row: CompareCellRow, column_key: str = "") -> Compare
     )
 
 
+def _param_group_names(raw: str | None) -> list[str]:
+    """The frozen `runs.param_group_names` array, or `[]` — degrades silently,
+    like every read of a stored JSON column: a malformed snapshot must never
+    keep a run out of the picker.
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return []
+    return [name for name in parsed if isinstance(name, str)] if isinstance(parsed, list) else []
+
+
 def _run_view(row: ComparableRunRow, group_names: list[str]) -> CompareRunView:
     run = row.run
     return CompareRunView(
@@ -221,6 +236,7 @@ def _run_view(row: ComparableRunRow, group_names: list[str]) -> CompareRunView:
         # Verbatim, not parsed: `formatParams` on the client already renders
         # this shape for a run's own page.
         params=run.params,
+        param_group_names=_param_group_names(run.param_group_names),
         comment=run.comment,
         good=row.good,
         meh=row.meh,

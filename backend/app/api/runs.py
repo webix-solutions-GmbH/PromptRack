@@ -115,6 +115,9 @@ class RunView(BaseModel):
     endpoint_snapshot: dict[str, Any] | None
     model_id: str
     params: dict[str, Any] | None
+    #: Names of the parameter groups selected at creation — display-only
+    #: provenance, frozen like `group_names`; `params` is the merged wire truth.
+    param_group_names: list[str]
     comment: str | None
     group_names: list[str]
     llm_info: dict[str, Any] | None
@@ -230,6 +233,9 @@ class RunCreateRequest(BaseModel):
     endpoint_id: int
     model_id: str = Field(min_length=1)
     group_ids: list[int] = Field(min_length=1)
+    #: Parameter groups to merge between the endpoint's defaults and `params`.
+    #: Two selected groups fighting over one key are refused, not ordered.
+    param_group_ids: list[int] | None = None
     params: dict[str, Any] | None = None
     comment: str | None = None
 
@@ -283,12 +289,16 @@ class RatingRequest(BaseModel):
 
 def _run_view(run: Run) -> RunView:
     group_names = _json_value(run.group_names)
+    param_group_names = _json_value(run.param_group_names)
     return RunView(
         id=run.id,
         endpoint_id=run.endpoint_id,
         endpoint_snapshot=_json_value(run.endpoint_snapshot),
         model_id=run.model_id,
         params=_json_value(run.params),
+        param_group_names=(
+            param_group_names if isinstance(param_group_names, list) else []
+        ),
         comment=run.comment,
         group_names=group_names if isinstance(group_names, list) else [],
         llm_info=_json_value(run.llm_info),
@@ -403,11 +413,12 @@ async def create_run_endpoint(
             model_id=body.model_id,
             group_ids=body.group_ids,
             params=body.params,
+            param_group_ids=body.param_group_ids,
             comment=body.comment,
         )
     except CrossCustomerError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except (RunCreateError, ToolConfigError, NoUserMessageError) as exc:
+    except (RunCreateError, ToolConfigError, NoUserMessageError, ParamsError) as exc:
         # `NoUserMessageError` is not a `RunCreateError` on purpose (a test case
         # left with neither content nor a task prompt — a deleted prompt SET
         # NULLs the slot), but at this boundary it is the same thing: a refusal

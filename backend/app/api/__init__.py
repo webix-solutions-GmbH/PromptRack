@@ -6,6 +6,7 @@ from app.api.customers import router as customers_router
 from app.api.endpoints import router as endpoints_router
 from app.api.invites import router as invites_router
 from app.api.mocks import router as mocks_router
+from app.api.param_groups import router as param_groups_router
 from app.api.prompts import router as prompts_router
 from app.api.results import router as results_matrix_router
 from app.api.runs import results_router
@@ -35,6 +36,7 @@ router.include_router(users_router)
 router.include_router(invites_router)
 router.include_router(customers_router)
 router.include_router(endpoints_router)
+router.include_router(param_groups_router)
 router.include_router(prompts_router)
 router.include_router(toolsets_router)
 router.include_router(test_groups_router)

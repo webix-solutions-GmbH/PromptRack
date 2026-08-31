@@ -41,9 +41,10 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Endpoint, Prompt, TestCase, TestGroup
+from app.models import Endpoint, ParamGroup, Prompt, TestCase, TestGroup
 from app.repos.documents import list_corpus_stats
 from app.repos.endpoints import get_endpoint, touch_endpoint_model
+from app.repos.param_groups import list_param_groups_by_ids
 from app.repos.prompt_versions import list_version_refs
 from app.repos.prompts import list_prompts_by_ids
 from app.repos.runs import create_run, insert_run_results
@@ -59,7 +60,7 @@ from app.scope import Scope
 from app.services.attribution import VersionRef, match_version
 from app.services.llm_info import LlmInfo, probe_llm_info, serialize_llm_info
 from app.services.message_assembly import assert_user_message
-from app.services.params import merge_params, parse_params_json
+from app.services.params import combine_group_params, merge_params, parse_params_json
 from app.services.tool_config import assert_tool_config
 from app.services.tool_loop import SnapshotTool, ToolDefinition, serialize_tools_snapshot
 
@@ -100,14 +101,16 @@ async def create_run_record(
     model_id: str,
     group_ids: Sequence[int],
     params: Mapping[str, Any] | None = None,
+    param_group_ids: Sequence[int] | None = None,
     comment: str | None = None,
     probe: LlmInfoProbe | None = None,
 ) -> CreatedRun:
     """Creates a run and materializes one `run_results` row per test case.
 
-    `params` is this run's **overrides** over the endpoint's `default_params`,
-    not the whole of what it sends: the two are merged below, and a `None` value
-    here unsets a default rather than sending a null (`app.services.params`).
+    `params` is this run's **overrides** over the endpoint's `default_params`
+    and the selected parameter groups, not the whole of what it sends: the
+    three levels are merged below, and a `None` value here unsets a lower
+    level's key rather than sending a null (`app.services.params`).
     """
     unique_group_ids = list(dict.fromkeys(group_ids))
     if not unique_group_ids:
@@ -117,11 +120,20 @@ async def create_run_record(
     if endpoint is None:
         raise RunCreateError("Endpoint not found.")
 
-    # The snapshot point for parameters. The endpoint's defaults are read once,
-    # here, and only the merged result is frozen below — so editing those
-    # defaults afterwards can no more change what this run sends (or resends on
-    # Resume) than editing a prompt can change what it asked.
-    merged_params = merge_params(parse_params_json(endpoint.default_params), params)
+    param_groups = await _resolve_param_groups(scope, session, param_group_ids)
+
+    # The snapshot point for parameters. The endpoint's defaults and the
+    # selected groups are read once, here, and only the merged result is frozen
+    # below — so editing either afterwards can no more change what this run
+    # sends (or resends on Resume) than editing a prompt can change what it
+    # asked. `combine_group_params` raising on two groups fighting over one key
+    # surfaces as `ParamsError` at the API boundary, like any other bad params.
+    group_layer = combine_group_params(
+        [(group.name, parse_params_json(group.params)) for group in param_groups]
+    )
+    merged_params = merge_params(
+        merge_params(parse_params_json(endpoint.default_params), group_layer), params
+    )
 
     groups = await list_test_groups_by_ids(scope, session, unique_group_ids)
     if not groups:
@@ -152,6 +164,9 @@ async def create_run_record(
             endpoint_snapshot=_endpoint_snapshot(endpoint),
             model_id=model_id,
             params=json.dumps(merged_params) if merged_params else None,
+            param_group_names=(
+                json.dumps([group.name for group in param_groups]) if param_groups else None
+            ),
             llm_info=serialize_llm_info(info),
             comment=cleaned_comment or None,
             group_names=json.dumps([group.name for group in groups]),
@@ -188,6 +203,31 @@ async def create_run_record(
 # ---------------------------------------------------------------------------
 # Resolution
 # ---------------------------------------------------------------------------
+
+
+async def _resolve_param_groups(
+    scope: Scope, session: AsyncSession, param_group_ids: Sequence[int] | None
+) -> list[ParamGroup]:
+    """The selected parameter groups, refused by id when any is gone.
+
+    The read is scoped, so an id from another workspace and a deleted one look
+    the same here — and naming the missing id rather than silently merging the
+    rest is what keeps a run from quietly sending fewer params than the caller
+    selected.
+    """
+    unique_ids = list(dict.fromkeys(param_group_ids or []))
+    if not unique_ids:
+        return []
+    groups = await list_param_groups_by_ids(scope, session, unique_ids)
+    missing = sorted(set(unique_ids) - {group.id for group in groups})
+    if missing:
+        ids = ", ".join(str(group_id) for group_id in missing)
+        raise RunCreateError(
+            f"The selected parameter group{'s' if len(missing) > 1 else ''} "
+            f"(id{'s' if len(missing) > 1 else ''} {ids}) no longer exist"
+            f"{'' if len(missing) > 1 else 's'} in this workspace."
+        )
+    return groups
 
 
 async def _resolve_prompts(

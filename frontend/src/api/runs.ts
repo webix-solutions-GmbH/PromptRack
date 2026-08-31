@@ -37,6 +37,9 @@ export interface RunView {
   endpoint_snapshot: EndpointSnapshot | null
   model_id: string
   params: Record<string, unknown> | null
+  /** Names of the parameter groups selected at creation — display-only
+   * provenance, frozen like `group_names`; `params` is the merged wire truth. */
+  param_group_names: string[]
   comment: string | null
   group_names: string[]
   llm_info: LlmInfo | null
@@ -194,9 +197,12 @@ export interface RunCreateInput {
   endpoint_id: number
   model_id: string
   group_ids: number[]
+  /** Parameter groups merged between the endpoint's `default_params` and
+   * `params`. Two groups setting one key to different values are refused. */
+  param_group_ids?: number[]
   /** Extra request-body params sent verbatim, merged over the endpoint's
-   * `default_params` (this run's keys win). A `null` value unsets an
-   * endpoint default for that key rather than sending it. */
+   * `default_params` and the selected parameter groups (this run's keys win).
+   * A `null` value unsets a lower level's key rather than sending it. */
   params?: Record<string, unknown> | null
   comment?: string | null
 }

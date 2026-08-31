@@ -6,6 +6,7 @@ import EndpointsView from '../views/EndpointsView.vue'
 import EndpointEditView from '../views/EndpointEditView.vue'
 import ToolsetsView from '../views/ToolsetsView.vue'
 import ToolsetEditView from '../views/ToolsetEditView.vue'
+import ParamGroupsView from '../views/ParamGroupsView.vue'
 import PromptsView from '../views/PromptsView.vue'
 import PromptEditView from '../views/PromptEditView.vue'
 import TestCasesView from '../views/TestCasesView.vue'
@@ -111,6 +112,11 @@ const router = createRouter({
       name: 'toolset-edit',
       component: ToolsetEditView,
       props: true,
+    },
+    {
+      path: '/param-groups',
+      name: 'param-groups',
+      component: ParamGroupsView,
     },
     {
       path: '/workspaces',
