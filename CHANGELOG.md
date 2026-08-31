@@ -5,7 +5,7 @@ also that build's container image tag — `0.3.0` here is
 `ghcr.io/webix-solutions-gmbh/promptrack:0.3.0`, and the GitHub release on the
 same tag carries this section verbatim.
 
-## Unreleased
+## 0.4.0 — 2026-08-31
 
 - Parameter groups: named request-param presets ("no thinking") selectable on any run, merged between the endpoint's defaults and the run's own params
 
