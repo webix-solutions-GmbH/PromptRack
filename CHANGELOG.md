@@ -5,7 +5,7 @@ also that build's container image tag — `0.3.0` here is
 `ghcr.io/webix-solutions-gmbh/promptrack:0.3.0`, and the GitHub release on the
 same tag carries this section verbatim.
 
-## Unreleased
+## 0.5.0 — 2026-11-19
 
 - Manual (mock) toolsets and their tools can be listed, created, updated and deleted over MCP
 - Members can create and edit manual toolsets; MCP-server toolsets, sharing and deleting stay admin
