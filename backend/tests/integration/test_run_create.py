@@ -116,7 +116,7 @@ async def _seed(session: AsyncSession, scope: Scope) -> Fixture:
         name="lookup_order",
         description="Look up an order.",
         parameters_json='{"type": "object", "properties": {}}',
-        mock_response="ORIGINAL MOCK RESPONSE",
+        mock_responses=["ORIGINAL MOCK RESPONSE"],
     )
 
     group = await create_test_group(scope, session, name="General")
@@ -201,7 +201,9 @@ async def test_freezes_text_prompt_and_tools_against_later_edits(
         scope, session, fixture.system_prompt_id, {"content": "EDITED SYSTEM TEXT"}
     )
     await update_prompt(scope, session, fixture.task_prompt_id, {"content": "EDITED TASK TEXT"})
-    await update_tool(scope, session, fixture.tool_id, {"mock_response": "EDITED MOCK RESPONSE"})
+    await update_tool(
+        scope, session, fixture.tool_id, {"mock_responses": ["EDITED MOCK RESPONSE"]}
+    )
     await delete_toolset(scope, session, fixture.toolset_id)
     session.expire_all()
 
@@ -808,7 +810,7 @@ async def test_refuses_two_toolsets_that_define_the_same_tool_name(
 ):
     fixture = await _seed(session, scope)
     second = await create_toolset(scope, session, name="Second desk", kind="manual")
-    await create_tool(scope, session, second.id, name="lookup_order", mock_response="OTHER")
+    await create_tool(scope, session, second.id, name="lookup_order", mock_responses=["OTHER"])
     await replace_toolset_links(
         scope, session, fixture.test_case_id, [fixture.toolset_id, second.id]
     )
@@ -852,3 +854,163 @@ async def test_refuses_a_test_case_linked_to_a_foreign_toolset(
             group_ids=[fixture.group_id],
             probe=_no_probe,
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-case mock overrides and conversation history
+# ---------------------------------------------------------------------------
+
+HISTORY = [
+    {"role": "user", "content": "List open orders."},
+    {"role": "assistant", "content": '{"orders": [4711, 4712]}'},
+]
+
+
+async def test_an_override_is_frozen_into_that_cases_snapshot_only(
+    session: AsyncSession, scope: Scope
+):
+    fixture = await _seed(session, scope)
+    # A second case on the same shared toolset, without an override.
+    plain = await create_test_case(
+        scope,
+        session,
+        group_id=fixture.group_id,
+        title="Plain",
+        content="x",
+        tool_mode="execute",
+        sort_order=20,
+    )
+    await replace_toolset_links(scope, session, plain.id, [fixture.toolset_id])
+    await update_test_case(
+        scope,
+        session,
+        fixture.test_case_id,
+        {"mock_overrides": {"lookup_order": ["OVERRIDE 1", "OVERRIDE 2"]}},
+    )
+    session.expire_all()
+
+    overridden, untouched = await _run_once(session, scope, fixture)
+
+    snapshot = json.loads(overridden.tools_snapshot or "[]")
+    assert snapshot[0]["mock_response"] == "OVERRIDE 1"
+    assert snapshot[0]["mock_responses"] == ["OVERRIDE 1", "OVERRIDE 2"]
+    assert "ORIGINAL MOCK RESPONSE" not in (overridden.tools_snapshot or "")
+    assert json.loads(untouched.tools_snapshot or "[]")[0]["mock_response"] == (
+        "ORIGINAL MOCK RESPONSE"
+    )
+
+    # Frozen: clearing the override afterwards changes nothing in the run.
+    frozen, run_id = overridden.tools_snapshot, overridden.run_id
+    await update_test_case(scope, session, fixture.test_case_id, {"mock_overrides": None})
+    session.expire_all()
+    [again, _] = await list_run_results(scope, session, run_id)
+    assert again.tools_snapshot == frozen
+
+
+async def test_a_stale_override_name_refuses_the_run_naming_the_case(
+    session: AsyncSession, scope: Scope
+):
+    fixture = await _seed(session, scope)
+    await update_test_case(
+        scope, session, fixture.test_case_id, {"mock_overrides": {"lookup_order": ["X"]}}
+    )
+    # Renamed after the case was authored: the override now names nothing.
+    # `update_tool` refuses this rename (`ToolOverriddenError`), so the stale
+    # state is written underneath it — run creation is the backstop for data
+    # that got there some other way.
+    await session.execute(
+        text("UPDATE tools SET name = 'find_order' WHERE id = :id"), {"id": fixture.tool_id}
+    )
+    session.expire_all()
+
+    with pytest.raises(
+        ToolConfigError,
+        match='Test case "Order status" overrides the canned response of "lookup_order"',
+    ):
+        await _run_once(session, scope, fixture)
+
+    assert await list_runs(scope, session) == []
+
+
+async def test_an_override_is_not_frozen_into_a_definitions_run(
+    session: AsyncSession, scope: Scope
+):
+    # `definitions` never sends a canned response, so the override would only
+    # show up as false "tools" drift — the toolset's own responses are frozen.
+    fixture = await _seed(session, scope)
+    await update_test_case(
+        scope,
+        session,
+        fixture.test_case_id,
+        {"tool_mode": "definitions", "mock_overrides": {"lookup_order": ["OVERRIDE"]}},
+    )
+    session.expire_all()
+
+    [row] = await _run_once(session, scope, fixture)
+
+    snapshot = json.loads(row.tools_snapshot or "[]")
+    assert snapshot[0]["mock_response"] == "ORIGINAL MOCK RESPONSE"
+    assert "OVERRIDE" not in (row.tools_snapshot or "")
+
+
+async def test_a_definitions_run_still_refuses_a_stale_override_name(
+    session: AsyncSession, scope: Scope
+):
+    fixture = await _seed(session, scope)
+    await update_test_case(
+        scope,
+        session,
+        fixture.test_case_id,
+        {"tool_mode": "definitions", "mock_overrides": {"lookup_order": ["X"]}},
+    )
+    await session.execute(
+        text("UPDATE tools SET name = 'find_order' WHERE id = :id"), {"id": fixture.tool_id}
+    )
+    session.expire_all()
+
+    with pytest.raises(ToolConfigError, match='overrides the canned response of "lookup_order"'):
+        await _run_once(session, scope, fixture)
+
+
+async def test_an_override_on_a_case_with_tool_mode_none_is_inert(
+    session: AsyncSession, scope: Scope
+):
+    fixture = await _seed(session, scope)
+    await update_test_case(
+        scope,
+        session,
+        fixture.test_case_id,
+        {"tool_mode": "none", "mock_overrides": {"no_such_tool": ["X"]}},
+    )
+    session.expire_all()
+
+    [row] = await _run_once(session, scope, fixture)
+
+    assert row.tools_snapshot is None
+
+
+async def test_history_is_frozen_and_survives_editing_the_case(
+    session: AsyncSession, scope: Scope
+):
+    fixture = await _seed(session, scope)
+    await update_test_case(scope, session, fixture.test_case_id, {"history": HISTORY})
+    session.expire_all()
+
+    [before] = await _run_once(session, scope, fixture)
+    assert json.loads(before.history or "null") == HISTORY
+    frozen, run_id = before.history, before.run_id
+
+    await update_test_case(
+        scope,
+        session,
+        fixture.test_case_id,
+        {"history": [{"role": "user", "content": "Other"}, {"role": "assistant", "content": "Y"}]},
+    )
+    session.expire_all()
+    [after] = await list_run_results(scope, session, run_id)
+    assert after.history == frozen
+
+    await update_test_case(scope, session, fixture.test_case_id, {"history": None})
+    session.expire_all()
+    [cleared_run] = await _run_once(session, scope, fixture)
+    assert cleared_run.history is None

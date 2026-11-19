@@ -125,6 +125,11 @@ class RunResult(Base):
     #: The task prompt's draft text, verbatim. Prepended to `test_case_text`
     #: (blank line between) to make the user message.
     task_prompt_text: Mapped[str | None]
+    #: The conversation history, frozen from the test case: a JSON array of
+    #: `{"role", "content"}` sent between the system message and the user
+    #: message. NULL = none. Frozen like the three texts, so editing the case
+    #: never changes what a past run displays or what Resume sends.
+    history: Mapped[str | None]
     #: The exact JSON array of tool definitions sent to the model. Editing or
     #: deleting a toolset afterwards can never rewrite what a past run asked
     #: for.

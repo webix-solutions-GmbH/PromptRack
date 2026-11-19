@@ -31,20 +31,29 @@ What stayed ours, because it is policy rather than protocol:
 * **Epoch millis on the wire**: `get_run`/`list_runs` emit numbers, which is
   what external agents expect to parse.
 
-Deliberately absent, both carried over from the old surface: endpoints,
-toolsets and tools are not writable here (a base URL with an API key and an MCP
-server URL are credentials, and this app's line is content vs. credentials),
-and neither are customer workspaces (creating an engagement is a human decision
-with billing behind it). `deploy` joins them for the same reason spelled out in
-the spec: marking a version deployed is a human claim about a customer's
-production system.
+Deliberately absent: endpoints are not writable here, and neither is anything
+about a toolset that holds or reaches a credential — an `mcp` toolset, its
+server URL and headers, sharing a toolset with every workspace, deleting one
+(a base URL with an API key and an MCP server URL are credentials, and this
+app's line is content vs. credentials). Neither are customer workspaces
+(creating an engagement is a human decision with billing behind it). `deploy`
+joins them for the same reason spelled out in the spec: marking a version
+deployed is a human claim about a customer's production system.
 
-One of those lines is drawn a level lower than the others. A `documents`
-toolset's **markdown corpus** *is* writable here (`list_documents`,
-`create_document`, `update_document`): the container is a toolset and stays a UI
-act, but the documents inside it are content — the documentation another
-repository already holds, which is exactly what this surface exists to move. So
-every corpus tool names an existing toolset and none of them creates one.
+That line runs *through* toolsets rather than around them, at two levels:
+
+* A **manual** toolset holds no credentials — a name, a description and mock
+  tools with canned responses — so it is content, and writable here
+  (`list_toolsets`, `get_tool`, `create_toolset`, `update_toolset`,
+  `create_tool`, `update_tool`, `delete_tool`). `create_toolset` only ever
+  makes a manual one, and every tool write refuses another kind by name.
+  `delete_tool` is the one delete on this surface: a tool is content, test cases
+  select the toolset rather than the tool, and every past run froze the tools it
+  offered into `tools_snapshot`.
+* A `documents` toolset's **markdown corpus** is writable (`list_documents`,
+  `create_document`, `update_document`) while the toolset itself is made in the
+  UI: the documents inside it are content — the documentation another
+  repository already holds, which is exactly what this surface exists to move.
 
 Transport is streamable HTTP in **stateless** mode: every POST is
 self-contained, nothing survives a restart, and more than one app process is
@@ -102,6 +111,7 @@ from app.models import (
     RunResult,
     TestCase,
     TestGroup,
+    Tool,
     Toolset,
 )
 from app.repos.customers import (
@@ -162,7 +172,19 @@ from app.repos.test_cases import (
     update_test_case,
 )
 from app.repos.test_cases import create_test_group as create_test_group_row
-from app.repos.toolsets import list_tools, list_toolsets
+from app.repos.toolsets import (
+    HandAuthoredToolError,
+    ToolNameConflictError,
+    ToolOverriddenError,
+    ToolsetNameConflictError,
+    create_tool,
+    create_toolset,
+    delete_tool,
+    list_tools,
+    list_toolsets,
+    update_tool,
+    update_toolset,
+)
 from app.scope import CrossCustomerError, Scope
 from app.services.attribution import VersionRef, head_version, is_dirty
 from app.services.documents import (
@@ -172,10 +194,19 @@ from app.services.documents import (
 )
 from app.services.executor import execute_run, run_in_background
 from app.services.llm_info import parse_llm_info
-from app.services.message_assembly import NoUserMessageError
+from app.services.message_assembly import HistoryError, NoUserMessageError, decode_history
 from app.services.params import ParamsError, parse_params_json, validate_params
 from app.services.run_create import RunCreateError, create_run_record
 from app.services.run_lock import is_run_executing
+from app.services.tool_authoring import (
+    clean_mock_overrides,
+    clean_mock_responses,
+    clean_parameters_json,
+    clean_tool_description,
+    clean_tool_name,
+    decode_mock_overrides,
+    decode_mock_responses,
+)
 from app.services.tool_config import ToolConfigError, assert_tool_config, normalize_max_turns
 from app.services.tool_loop import parse_transcript
 
@@ -207,13 +238,17 @@ INSTRUCTIONS = (
     "them. Calls that name a run or result by id (get_run, get_run_result, set_rating, "
     "execute_run) need no workspace — the id is globally unique, so the row resolves it — and "
     "refuse a named workspace that contradicts the row, naming the actual one. "
-    "Endpoints, toolsets and workspaces are deliberately read-only here — they hold "
-    "credentials, or are a human decision — and marking a version deployed stays a human claim "
-    "made in the UI. "
-    "The markdown corpus inside a documents toolset is the one thing writable at a level "
-    "below that: the toolset is created in the UI, its documents are content, so push a "
-    "repository's documentation in with create_document and a test case then measures how well "
-    "a model retrieves from it. "
+    "Endpoints and workspaces are deliberately read-only here — they hold credentials, or are "
+    "a human decision — and marking a version deployed stays a human claim made in the UI. "
+    "Toolsets are split along the same line: a manual toolset (hand-authored mock tools with "
+    "canned responses) is content, so create it with create_toolset and fill it with "
+    "create_tool / update_tool / delete_tool — delete_tool is the one delete here, safe because "
+    "every run froze the tools it offered. Anything holding or reaching a credential stays in "
+    "the UI: MCP toolsets, their server URL and headers, sharing a toolset across workspaces, "
+    "and deleting a toolset. "
+    "The markdown corpus inside a documents toolset is writable too: the toolset is created in "
+    "the UI, its documents are content, so push a repository's documentation in with "
+    "create_document and a test case then measures how well a model retrieves from it. "
     "Every call acts as the owner of the API token it carries, with that account's role: a "
     "read-only account is refused every tool that writes."
 )
@@ -288,6 +323,30 @@ def raw_arguments(ctx: Context) -> Mapping[str, Any]:
     params = ctx.request_context.params or {}
     arguments = params.get("arguments")
     return arguments if isinstance(arguments, Mapping) else {}
+
+
+#: The client-facing schema of an optional free-text argument, declared on an
+#: `Any` annotation instead of `str | None` — and that is load-bearing. The SDK
+#: `json.loads` every string argument whose annotation is not exactly `str`
+#: before validating it (a workaround for clients that JSON-encode lists), so
+#: under `str | None` a description or test-case content that *is* a JSON
+#: object or array arrives as a dict and is refused ("Input should be a valid
+#: string"), and the literal text "null" silently becomes None. Such arguments
+#: are read back verbatim with :func:`_raw_text`; a required plain `str` is not
+#: pre-parsed and needs none of this.
+TEXT_ARG_SCHEMA: dict[str, Any] = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+
+
+def _raw_text(ctx: Context, key: str) -> str | None:
+    """A free-text argument exactly as the caller sent it — see `TEXT_ARG_SCHEMA`.
+
+    Refuses anything but a string or null, which is what the declared schema
+    promises and what the `str | None` annotation used to enforce.
+    """
+    value = raw_arguments(ctx).get(key)
+    if value is None or isinstance(value, str):
+        return value
+    raise McpToolError(f'"{key}" must be a string.')
 
 
 def _actor(ctx: Context) -> Actor:
@@ -662,7 +721,9 @@ async def update_prompt_tool(
     ctx: Context,
     prompt: Annotated[str | int, Field(description="Name or id of the prompt to change.")],
     name: Annotated[str | None, Field(description="New name.")] = None,
-    content: Annotated[str | None, Field(description="New draft text.")] = None,
+    content: Annotated[
+        Any, Field(description="New draft text.", json_schema_extra=TEXT_ARG_SCHEMA)
+    ] = None,
     kind: Annotated[
         Literal["system", "task"] | None,
         Field(description="Move the prompt to the other channel. Refused while referenced."),
@@ -671,6 +732,7 @@ async def update_prompt_tool(
 ) -> dict[str, Any]:
     async with _scoped_call(ctx, customer, "update_prompt") as (session, scope, _):
         target = await _resolve_prompt(scope, session, parse_row_ref(prompt, '"prompt"'))
+        content = _raw_text(ctx, "content")
 
         values: dict[str, Any] = {}
         if name is not None:
@@ -917,6 +979,7 @@ async def _test_case_views(
                     None if system_prompt is None else system_prompt.content
                 ),
                 "task_prompt_text": None if task_prompt is None else task_prompt.content,
+                "history": [turn.to_json() for turn in decode_history(case.history)],
                 "tool_mode": case.tool_mode,
                 "tool_choice": case.tool_choice,
                 "max_turns": case.max_turns,
@@ -925,11 +988,78 @@ async def _test_case_views(
                     for link in links
                     if link.test_case_id == case.id
                 ],
+                "mock_overrides": decode_mock_overrides(case.mock_overrides),
                 "created_at": _millis(case.created_at),
                 "updated_at": _millis(case.updated_at),
             }
         )
     return views
+
+
+#: `Any` with the real schema spelled out, for the reason `MockResponseArg`
+#: gives: a typed annotation would let pydantic coerce or reject the turns with
+#: a model dump instead of `validate_history`'s sentence. Nested strings are
+#: never pre-parsed by the SDK (only a top-level string is), so a turn whose
+#: content *is* JSON stays text.
+HistoryArg = Annotated[
+    Any,
+    Field(
+        description="Earlier conversation turns sent before this test's user message, for a "
+        'follow-up question: a list of {"role": "user"|"assistant", "content": string}. It must '
+        'start with "user", alternate, and end with "assistant" (the test\'s own user message '
+        "is the next turn); at most 50 turns. Omit for none.",
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "role": {"type": "string", "enum": ["user", "assistant"]},
+                            "content": {"type": "string"},
+                        },
+                        "required": ["role", "content"],
+                    },
+                },
+                {"type": "null"},
+            ]
+        },
+    ),
+]
+
+#: Same reasoning as `HistoryArg`: each value is text sent verbatim, and a JSON
+#: answer has to survive as the string it is.
+MockOverridesArg = Annotated[
+    Any,
+    Field(
+        description="Per-case canned responses, replacing a manual tool's own for this test "
+        "case only — so one shared mock toolset serves many cases. An object mapping a tool "
+        "name to a string (answers every call) or a list of strings (answers by call order, the "
+        "last repeating). Each key must name an enabled manual tool of the selected toolsets. "
+        "A JSON answer is passed as a string. Ignored while tool_mode is \"none\".",
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ]
+                    },
+                },
+                {"type": "null"},
+            ]
+        },
+    ),
+]
+
+
+def _mock_overrides_value(value: Any) -> dict[str, list[str]]:
+    """`mock_overrides` as a caller sent it, cleaned; `[]` reads as "none" too."""
+    if isinstance(value, list) and not value:
+        return {}
+    return _clean(clean_mock_overrides, value)
 
 
 async def _test_case_view_by_id(
@@ -1056,7 +1186,12 @@ async def list_test_cases_tool(
     "For an ordinary one-shot test leave the tool fields out. "
     'For a tool/API test set tool_mode to "definitions" (record what the model wanted to call, '
     'execute nothing) or "execute" (really run the calls and loop) and name the toolsets to '
-    "offer; toolsets themselves are authored in the web UI, not here.",
+    "offer (list_toolsets). A manual mock toolset can be authored here first with "
+    "create_toolset and create_tool; MCP and documents toolsets are created in the web UI. "
+    "mock_overrides replaces a manual tool's canned responses for this case only, so one "
+    "shared mock toolset can serve many cases. For a follow-up question pass history: the "
+    "earlier user/assistant turns, sent between the system message and this case's user "
+    "message.",
     write=True,
 )
 async def create_test_case_tool(
@@ -1067,17 +1202,20 @@ async def create_test_case_tool(
     ],
     title: Annotated[str, Field(description="Short label shown in lists and comparisons.")],
     content: Annotated[
-        str | None,
+        Any,
         Field(
-            description="The data half of the user message, sent after the task prompt. May be "
-            "omitted when a task prompt is the whole user message."
+            description="The data half of the user message, sent after the task prompt, "
+            "verbatim (a JSON document is passed as a string). May be omitted when a task "
+            "prompt is the whole user message.",
+            json_schema_extra=TEXT_ARG_SCHEMA,
         ),
     ] = None,
     expected_output: Annotated[
-        str | None,
+        Any,
         Field(
             description="What a good answer looks like. The rubric shown next to the result "
-            "when rating; never sent to the model."
+            "when rating; never sent to the model.",
+            json_schema_extra=TEXT_ARG_SCHEMA,
         ),
     ] = None,
     system_prompt: Annotated[
@@ -1109,11 +1247,16 @@ async def create_test_case_tool(
             "tool names must not collide."
         ),
     ] = None,
+    history: HistoryArg = None,
+    mock_overrides: MockOverridesArg = None,
     customer: CustomerArg = None,
 ) -> dict[str, Any]:
     async with _scoped_call(ctx, customer, "create_test_case") as (session, scope, _):
         if not title.strip():
             raise McpToolError('"title" is required.')
+        content = _raw_text(ctx, "content")
+        expected_output = _raw_text(ctx, "expected_output")
+        overrides = _mock_overrides_value(mock_overrides)
 
         group_row = await _resolve_group(scope, session, parse_row_ref(group, '"group"'))
         system_prompt_id = await _resolve_slot(
@@ -1135,6 +1278,7 @@ async def create_test_case_tool(
                 tool_mode=tool_mode,
                 toolset_ids=toolset_ids,
                 subject=f'Test case "{title.strip()}"',
+                mock_overrides=overrides,
             )
             case = await create_test_case(
                 scope,
@@ -1148,6 +1292,8 @@ async def create_test_case_tool(
                 tool_mode=tool_mode,
                 tool_choice=tool_choice,
                 max_turns=normalize_max_turns(max_turns),
+                history=history,
+                mock_overrides=overrides,
             )
             await replace_toolset_links(scope, session, case.id, toolset_ids)
         except (
@@ -1155,6 +1301,7 @@ async def create_test_case_tool(
             CrossCustomerError,
             PromptSlotError,
             NoUserMessageError,
+            HistoryError,
         ) as exc:
             raise McpToolError(str(exc)) from exc
 
@@ -1165,7 +1312,8 @@ async def create_test_case_tool(
 @_tool(
     "update_test_case",
     "Change fields of an existing test case. Only the fields you pass are touched; pass null to "
-    "clear an optional one. Past runs keep the text they froze, so editing is safe.",
+    "clear an optional one (history and mock_overrides also clear with [] / {}). Past runs keep "
+    "the text, history and canned responses they froze, so editing is safe.",
     write=True,
 )
 async def update_test_case_tool(
@@ -1176,9 +1324,15 @@ async def update_test_case_tool(
     ] = None,
     title: Annotated[str | None, Field(description="New title.")] = None,
     content: Annotated[
-        str | None, Field(description="New data half of the user message, or null to clear it.")
+        Any,
+        Field(
+            description="New data half of the user message, verbatim, or null to clear it.",
+            json_schema_extra=TEXT_ARG_SCHEMA,
+        ),
     ] = None,
-    expected_output: Annotated[str | None, Field(description="New rubric, or null.")] = None,
+    expected_output: Annotated[
+        Any, Field(description="New rubric, or null.", json_schema_extra=TEXT_ARG_SCHEMA)
+    ] = None,
     system_prompt: Annotated[
         str | int | None,
         Field(description='A kind="system" prompt asset, or null to empty the slot.'),
@@ -1194,6 +1348,8 @@ async def update_test_case_tool(
         list[str | int] | None,
         Field(description="Replaces the case's toolsets. Pass [] to offer none."),
     ] = None,
+    history: HistoryArg = None,
+    mock_overrides: MockOverridesArg = None,
     customer: CustomerArg = None,
 ) -> dict[str, Any]:
     async with _scoped_call(ctx, customer, "update_test_case") as (session, scope, _):
@@ -1218,9 +1374,9 @@ async def update_test_case_tool(
             # Blank content is legal now — a task prompt can be the whole user
             # message. `update_test_case` refuses only the case where clearing
             # it leaves the row with nothing to send.
-            values["content"] = _blank_to_none(content)
+            values["content"] = _blank_to_none(_raw_text(ctx, "content"))
         if has_key(args, "expected_output"):
-            values["expected_output"] = _blank_to_none(expected_output)
+            values["expected_output"] = _blank_to_none(_raw_text(ctx, "expected_output"))
         if has_key(args, "system_prompt"):
             values["system_prompt_id"] = await _resolve_slot(
                 scope, session, system_prompt, '"system_prompt"'
@@ -1235,6 +1391,11 @@ async def update_test_case_tool(
             values["tool_choice"] = tool_choice
         if has_key(args, "max_turns"):
             values["max_turns"] = normalize_max_turns(max_turns)
+        if has_key(args, "history"):
+            # Validated (and refused by sentence) inside `update_test_case`.
+            values["history"] = history or []
+        if has_key(args, "mock_overrides"):
+            values["mock_overrides"] = _mock_overrides_value(mock_overrides)
 
         # The tool configuration has to be checked as it will be *after* the
         # patch: switching tool_mode without naming toolsets keeps the ones
@@ -1250,6 +1411,11 @@ async def update_test_case_tool(
             links = await list_toolset_links(scope, session, [test_case_id])
             toolset_ids = [link.toolset_id for link in links]
 
+        # Override names are re-validated only when the patch touches what they
+        # are checked against — see `app.api.test_cases.patch_test_case_endpoint`.
+        recheck_overrides = (
+            "mock_overrides" in values or "tool_mode" in values or replace_links
+        )
         try:
             await assert_tool_config(
                 scope,
@@ -1257,6 +1423,13 @@ async def update_test_case_tool(
                 tool_mode=values.get("tool_mode", existing.tool_mode),
                 toolset_ids=toolset_ids,
                 subject=f'Test case "{values.get("title", existing.title)}"',
+                mock_overrides=(
+                    None
+                    if not recheck_overrides
+                    else values["mock_overrides"]
+                    if "mock_overrides" in values
+                    else decode_mock_overrides(existing.mock_overrides)
+                ),
             )
             if values:
                 await update_test_case(scope, session, test_case_id, values)
@@ -1267,6 +1440,7 @@ async def update_test_case_tool(
             CrossCustomerError,
             PromptSlotError,
             NoUserMessageError,
+            HistoryError,
         ) as exc:
             raise McpToolError(str(exc)) from exc
 
@@ -1319,15 +1493,16 @@ def _pick_corpus(rows: Sequence[Toolset], value: Any, label: str = '"toolset"') 
 
     A workspace holding no documents toolset at all is refused before the
     reference is even resolved: no value could be right, and the one actionable
-    fact is that the container is made in the UI.
+    fact is that the container is made in the UI (`create_toolset` only ever
+    makes a manual one).
     """
     corpora = [row for row in rows if row.kind == "documents"]
     if not corpora:
         raise McpToolError(
-            "This workspace has no documents toolset. A corpus lives inside one, and the "
-            "toolset itself is created in the web UI: a toolset is the container that can hold "
-            "credentials, so it is not writable here — the documents inside one are content, "
-            "and they are."
+            "This workspace has no documents toolset. A corpus lives inside one, and a "
+            "documents toolset is created in the web UI by an administrator (create_toolset "
+            "here only ever makes a manual one) — the documents inside it are content, and "
+            "those are writable here."
         )
 
     toolset = resolve_row_ref(parse_row_ref(value, label), rows, "toolset")
@@ -1340,22 +1515,25 @@ def _pick_corpus(rows: Sequence[Toolset], value: Any, label: str = '"toolset"') 
     return toolset
 
 
-def _assert_own_corpus(scope: Scope, toolset: Toolset) -> None:
-    """A corpus borrowed from Base is read-only, said out loud.
+def _assert_own_toolset(scope: Scope, toolset: Toolset, what: str = "it") -> None:
+    """A toolset borrowed from Base is read-only, said out loud.
 
     Sharing needs no permission layer — a write asks the ownership predicate and
     a borrowed row simply matches nothing — but that silence is the wrong answer
     for an agent, which would read the unchanged row back as a successful edit.
     So the refusal is explicit, exactly as `app.api.toolsets._refuse_if_borrowed`
-    makes the same no-op an explicit 403. `create_document` is already refused
-    underneath by `assert_same_customer`; naming the reason up here keeps both
-    writes refusing in the same words.
+    makes the same no-op an explicit 403. `create_document` and `create_tool`
+    are already refused underneath by `assert_same_customer`; naming the reason
+    up here keeps every write refusing in the same words.
+
+    `what` names the part being written — "its corpus", "its tools" — so the
+    refusal says what is read-only rather than only that something is.
     """
     if toolset.customer_id == scope.customer_id:
         return
     raise McpToolError(
-        f'Toolset "{toolset.name}" ({toolset.id}) is shared from the Base workspace, so its '
-        "corpus is read-only here. Name that workspace as `customer` to change it."
+        f'Toolset "{toolset.name}" ({toolset.id}) is shared from the Base workspace, so '
+        f"{what} is read-only here. Name that workspace as `customer` to change it."
     )
 
 
@@ -1453,10 +1631,10 @@ def _document_content(value: str) -> str:
     "List the markdown corpora this workspace can retrieve from, and the documents in each: "
     "path, title and size, never the text (the model itself reads that at run time through "
     "read_document). Omit `toolset` for every corpus, which is also how you find out which "
-    "documents toolsets exist — toolsets are not writable here, so this is the step before "
-    "create_document. Each corpus also reports its three retrieval tools and whether they are "
-    "enabled: a corpus with search_documents disabled is a deliberate test of navigating by "
-    "list and read alone.",
+    "documents toolsets exist — a documents toolset is created in the web UI, so this is the "
+    "step before create_document. Each corpus also reports its three retrieval tools and "
+    "whether they are enabled: a corpus with search_documents disabled is a deliberate test "
+    "of navigating by list and read alone.",
     write=False,
 )
 async def list_documents_tool(
@@ -1540,10 +1718,11 @@ async def create_document_tool(
     ],
     content: Annotated[str, Field(description="The markdown, verbatim.")],
     title: Annotated[
-        str | None,
+        Any,
         Field(
             description="Label shown in list_documents and beside search hits. Defaults to "
-            "the markdown's own first heading, falling back to the path's file stem."
+            "the markdown's own first heading, falling back to the path's file stem.",
+            json_schema_extra=TEXT_ARG_SCHEMA,
         ),
     ] = None,
     customer: CustomerArg = None,
@@ -1551,10 +1730,11 @@ async def create_document_tool(
     async with _scoped_call(ctx, customer, "create_document") as (session, scope, _):
         rows = await list_toolsets(scope, session)
         corpus = _pick_corpus(rows, toolset)
-        _assert_own_corpus(scope, corpus)
+        _assert_own_toolset(scope, corpus, "its corpus")
 
         cleaned_path = _document_path(path)
         cleaned_content = _document_content(content)
+        title = _raw_text(ctx, "title")
 
         try:
             document = await create_document(
@@ -1573,7 +1753,7 @@ async def create_document_tool(
             )
         except DocumentPathConflictError as exc:
             raise McpToolError(f"{exc} Use update_document to change it.") from exc
-        except CrossCustomerError as exc:  # pragma: no cover - `_assert_own_corpus` first
+        except CrossCustomerError as exc:  # pragma: no cover - `_assert_own_toolset` first
             raise McpToolError(str(exc)) from exc
 
         await session.commit()
@@ -1599,8 +1779,12 @@ async def update_document_tool(
         str | int,
         Field(description='Path (e.g. "guides/refunds.md") or id of the document to change.'),
     ],
-    content: Annotated[str | None, Field(description="New markdown, verbatim.")] = None,
-    title: Annotated[str | None, Field(description="New label.")] = None,
+    content: Annotated[
+        Any, Field(description="New markdown, verbatim.", json_schema_extra=TEXT_ARG_SCHEMA)
+    ] = None,
+    title: Annotated[
+        Any, Field(description="New label.", json_schema_extra=TEXT_ARG_SCHEMA)
+    ] = None,
     path: Annotated[
         str | None,
         Field(
@@ -1613,7 +1797,7 @@ async def update_document_tool(
     async with _scoped_call(ctx, customer, "update_document") as (session, scope, _):
         rows = await list_toolsets(scope, session)
         corpus = _pick_corpus(rows, toolset)
-        _assert_own_corpus(scope, corpus)
+        _assert_own_toolset(scope, corpus, "its corpus")
 
         # The candidate list is this corpus's documents only, so an id belonging
         # to another corpus reads as "no such document" — the scoped-read rule
@@ -1624,6 +1808,8 @@ async def update_document_tool(
             [_DocumentRow(meta) for meta in metas],
             "document",
         ).meta
+        content = _raw_text(ctx, "content")
+        title = _raw_text(ctx, "title")
 
         values: dict[str, Any] = {}
         if title is not None:
@@ -1648,6 +1834,558 @@ async def update_document_tool(
         if written is None:  # pragma: no cover - deleted between the two statements
             raise McpToolError(f"No document with id {target.id}.")
         return {"document": _document_view(written, corpus), "changed": sorted(values)}
+
+
+# ---------------------------------------------------------------------------
+# Manual toolsets — mock tools as content
+#
+# A `manual` toolset holds no credentials: a name, a description, and tools whose
+# definitions and canned responses are exactly the kind of content another
+# repository already has (an agent's own tool schemas, recorded API answers). So
+# it is writable here, the same way a corpus is — and the line stays where the
+# credentials are: an `mcp` toolset (a server URL plus headers) and a `documents`
+# toolset (synthesized tools) are created and changed in the web UI, and so are
+# sharing a toolset with every workspace and deleting one, which cascades into
+# test cases. `create_toolset` only ever makes a `manual` one.
+#
+# `delete_tool` is the one delete over MCP, and deliberately so: a tool is
+# content, nothing points at it by id (a test case selects the *toolset*), and
+# every past run froze the tools it offered into `tools_snapshot`, so removing
+# one changes no measurement already taken.
+#
+# What a valid name, schema or canned response is comes from
+# `app.services.tool_authoring` — the rules the HTTP door asks too — and which
+# tool may be written at all (a name the toolset already uses, any tool on a
+# documents toolset) is refused inside the repository. All this section adds is
+# the translation of both into `McpToolError`.
+# ---------------------------------------------------------------------------
+
+#: Why each non-manual kind is not writable here — the second half of
+#: `_pick_manual_toolset`'s refusal.
+_UNWRITABLE_KIND_REASONS = {
+    "mcp": "its tools are discovered from its MCP server, and the toolset holds credentials "
+    "(a server URL and headers), so it is changed only in the web UI",
+    "documents": "its three retrieval tools are synthesized from the corpus and cannot be "
+    "written by hand; add documents to it with create_document instead",
+}
+
+
+def _pick_manual_toolset(
+    rows: Sequence[Toolset], value: Any, label: str = '"toolset"'
+) -> Toolset:
+    """The manual toolset a write names, refusing any other kind by its kind.
+
+    Modelled on `_pick_corpus`, and for the same reason: resolution runs over
+    every *visible* toolset, so naming an MCP or documents toolset is answered
+    with what is wrong with that row rather than with "no such toolset" about a
+    row sitting right there. The refusal then lists the manual toolsets that do
+    exist. Unlike a corpus, an empty list is not refused up front — the caller
+    can make one with `create_toolset`, and the refusal says so.
+    """
+    toolset = resolve_row_ref(parse_row_ref(value, label), rows, "toolset")
+    if toolset.kind == "manual":
+        return toolset
+    manual = [row for row in rows if row.kind == "manual"]
+    known = (
+        f"Manual toolsets here: {', '.join(f'{row.name} ({row.id})' for row in manual)}."
+        if manual
+        else "There are no manual toolsets here yet; create_toolset makes one."
+    )
+    reason = _UNWRITABLE_KIND_REASONS.get(toolset.kind, "only manual toolsets are writable here")
+    raise McpToolError(
+        f'Toolset "{toolset.name}" ({toolset.id}) is kind "{toolset.kind}": {reason}. {known}'
+    )
+
+
+async def _resolve_tool(
+    scope: Scope, session: AsyncSession, toolset: Toolset, value: Any
+) -> Tool:
+    """One tool by name or id, *within* the named toolset.
+
+    The candidate list is that toolset's tools only, so an id belonging to
+    another toolset reads as "no such tool" — the scoped-read rule `_DocumentRow`
+    follows for a document — and a miss lists the tools that are there.
+    """
+    tools = await list_tools(scope, session, toolset_ids=[toolset.id])
+    return resolve_row_ref(parse_row_ref(value, '"tool"'), tools, "tool")
+
+
+def _tool_summary(tool: Tool) -> dict[str, Any]:
+    """One tool without its long texts — what lists and every write answer with.
+
+    Real tool descriptions run to tens of thousands of characters and canned
+    responses to more, so echoing them back would spend the caller's context on
+    text it just sent. Their sizes are reported instead; `get_tool` is the read
+    that carries the full texts.
+    """
+    responses = decode_mock_responses(tool.mock_responses)
+    return {
+        "id": tool.id,
+        "name": tool.name,
+        "enabled": tool.enabled,
+        "source": tool.source,
+        "description_chars": len(tool.description or ""),
+        "mock_response_count": len(responses),
+        "mock_response_chars": [len(response) for response in responses],
+    }
+
+
+def _toolset_summary(
+    scope: Scope, toolset: Toolset, tools: Sequence[Tool]
+) -> dict[str, Any]:
+    own = [tool for tool in tools if tool.toolset_id == toolset.id]
+    return {
+        "id": toolset.id,
+        "name": toolset.name,
+        "description": toolset.description,
+        "kind": toolset.kind,
+        # Shared from Base: selectable from every engagement, editable only
+        # where it lives.
+        "is_global": toolset.is_global,
+        "editable": toolset.customer_id == scope.customer_id,
+        "tool_count": len(own),
+        "enabled_tool_count": sum(1 for tool in own if tool.enabled),
+        "tools": [_tool_summary(tool) for tool in own],
+    }
+
+
+def _parameters_value(raw: str) -> Any:
+    """The stored schema as an object, or the raw string if it is not JSON."""
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+def _clean(fn: Callable[..., Any], value: Any) -> Any:
+    """`app.services.tool_authoring`'s `ValueError`, in this door's vocabulary."""
+    try:
+        return fn(value)
+    except ValueError as exc:
+        raise McpToolError(str(exc)) from exc
+
+
+def _toolset_name_refusal(scope: Scope, exc: ToolsetNameConflictError) -> McpToolError:
+    """The repository's name refusal (see `ToolsetNameConflictError`), with a
+    hint only this door can give: the clash is one this caller may edit here.
+    """
+    clash = exc.clash
+    hint = (
+        " Use update_toolset to change it."
+        if clash.kind == "manual" and clash.customer_id == scope.customer_id
+        else " Pick another name."
+    )
+    return McpToolError(f"{exc}{hint}")
+
+
+#: The patchable fields of `update_tool`, mapped to their column names.
+_TOOL_PATCH_COLUMNS = {
+    "name": "name",
+    "description": "description",
+    "parameters": "parameters_json",
+    "mock_response": "mock_responses",
+    "enabled": "enabled",
+}
+
+#: `Any` with an explicit schema, read raw — the same reason as `MockResponseArg`:
+#: the SDK would otherwise pre-parse a JSON string into whatever it holds and
+#: answer a non-object with a pydantic dump instead of the shared sentence.
+ParametersArg = Annotated[
+    Any,
+    Field(
+        description="JSON Schema for the arguments, as an object (or a JSON string). Omit for "
+        "a tool that takes no arguments.",
+        json_schema_extra={
+            "anyOf": [{"type": "object"}, {"type": "string"}, {"type": "null"}],
+        },
+    ),
+]
+
+
+def _raw_parameters(ctx: Context) -> Any:
+    """`parameters` exactly as the caller sent it — see `ParametersArg`."""
+    value = raw_arguments(ctx).get("parameters")
+    if value is None or isinstance(value, str | dict):
+        return value
+    raise McpToolError("Parameters must be a JSON object (a JSON Schema).")
+
+#: `Any` on the Python side, with the real schema spelled out for clients — and
+#: that is load-bearing, not laziness. The SDK `json.loads` every string
+#: argument whose annotation is not plain `str` before validating it (a
+#: workaround for clients that JSON-encode lists), so under `str | list[str]` a
+#: canned response that *is* JSON — the ordinary case — arrives as a dict and is
+#: refused, and one that is a JSON array silently becomes several responses.
+#: The tools read the caller's original value off `raw_arguments` instead
+#: (`_raw_mock_response`), and `clean_mock_responses` checks its shape.
+MockResponseArg = Annotated[
+    Any,
+    Field(
+        description="What the tool answers the model with instead of calling anything, "
+        "verbatim (a JSON answer is passed as a string). A string answers every call; a list "
+        "of strings answers by call order — the first call of this tool within a result gets "
+        "the first entry, the second the second, and the last repeats for every later call (at "
+        "most 20). Omit for none: the model is then told the tool has no canned response.",
+        json_schema_extra={
+            "anyOf": [
+                {"type": "string"},
+                {"type": "array", "items": {"type": "string"}},
+                {"type": "null"},
+            ]
+        },
+    ),
+]
+
+
+#: `mock_response` under the name `get_tool` reads the value back as. Without
+#: it a caller round-tripping `get_tool`'s output into `update_tool` would have
+#: its canned responses silently dropped, since the SDK ignores an unknown
+#: argument rather than refusing it.
+MockResponsesAliasArg = Annotated[
+    Any,
+    Field(
+        description='Alias of mock_response, under the name get_tool returns them as; same '
+        "value (a string, or a list of strings by call order). Pass one of the two, not both.",
+        json_schema_extra={
+            "anyOf": [
+                {"type": "string"},
+                {"type": "array", "items": {"type": "string"}},
+                {"type": "null"},
+            ]
+        },
+    ),
+]
+
+#: The two names one canned-response argument may arrive under.
+_MOCK_RESPONSE_KEYS = ("mock_response", "mock_responses")
+
+
+def _raw_mock_response(ctx: Context) -> tuple[bool, Any]:
+    """`mock_response` (or its alias `mock_responses`) exactly as the caller
+    sent it — see `MockResponseArg` — and whether either was sent at all, which
+    is what patch semantics need. Both at once is refused rather than one
+    silently winning.
+    """
+    args = raw_arguments(ctx)
+    present = [key for key in _MOCK_RESPONSE_KEYS if has_key(args, key)]
+    if len(present) > 1:
+        raise McpToolError(
+            'Pass the canned responses as "mock_response" or as its alias "mock_responses", '
+            "not both."
+        )
+    if not present:
+        return False, None
+    return True, args.get(present[0])
+
+
+@_tool(
+    "list_toolsets",
+    "List every toolset this workspace can offer a test case — manual (hand-authored mock "
+    "tools), mcp (discovered from a live server) and documents (a markdown corpus) — with its "
+    "tools: name, enabled, source, and the size of each description and canned response, never "
+    "the texts themselves (get_tool reads one tool in full). `editable` is false for a toolset "
+    "shared from the Base workspace. Only manual toolsets are writable here: create_toolset, "
+    "update_toolset, create_tool, update_tool, delete_tool.",
+    write=False,
+)
+async def list_toolsets_tool(ctx: Context, customer: CustomerArg = None) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "list_toolsets") as (session, scope, _):
+        rows = await list_toolsets(scope, session)
+        tools = await list_tools(scope, session, toolset_ids=[row.id for row in rows])
+        return {
+            "count": len(rows),
+            "toolsets": [_toolset_summary(scope, row, tools) for row in rows],
+        }
+
+
+@_tool(
+    "get_tool",
+    "Read one tool in full: its description, parameters (the JSON Schema object the model is "
+    "offered) and, for a manual tool, its canned responses in call order. Works on a toolset "
+    "of any kind.",
+    write=False,
+)
+async def get_tool_tool(
+    ctx: Context,
+    toolset: Annotated[str | int, Field(description="Name or id of the toolset holding it.")],
+    tool: Annotated[str | int, Field(description="Name or id of the tool within that toolset.")],
+    customer: CustomerArg = None,
+) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "get_tool") as (session, scope, _):
+        rows = await list_toolsets(scope, session)
+        target_set = resolve_row_ref(parse_row_ref(toolset, '"toolset"'), rows, "toolset")
+        target = await _resolve_tool(scope, session, target_set, tool)
+        return {
+            "tool": {
+                "id": target.id,
+                "toolset": {"id": target_set.id, "name": target_set.name, "kind": target_set.kind},
+                "name": target.name,
+                "enabled": target.enabled,
+                "source": target.source,
+                "description": target.description,
+                "parameters": _parameters_value(target.parameters_json),
+                "mock_responses": decode_mock_responses(target.mock_responses),
+                "first_seen_at": _millis(target.first_seen_at),
+                "last_seen_at": _millis(target.last_seen_at),
+            }
+        }
+
+
+@_tool(
+    "create_toolset",
+    "Create a manual toolset: a named bundle of hand-authored mock tools that answer with "
+    "canned responses, which is what keeps a multi-turn tool test deterministic across models. "
+    "Then add tools with create_tool and select the toolset on a test case. MCP and documents "
+    "toolsets, and sharing a toolset across workspaces, are created in the web UI. A name "
+    "already taken (case-insensitively) is refused — use update_toolset to change that one.",
+    write=True,
+)
+async def create_toolset_tool(
+    ctx: Context,
+    name: Annotated[str, Field(description='Short label, e.g. "Invoice ERP mocks".')],
+    description: Annotated[
+        Any,
+        Field(
+            description="What these tools stand in for. Optional.",
+            json_schema_extra=TEXT_ARG_SCHEMA,
+        ),
+    ] = None,
+    customer: CustomerArg = None,
+) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "create_toolset") as (session, scope, _):
+        cleaned = name.strip()
+        if not cleaned:
+            raise McpToolError('"name" is required.')
+
+        try:
+            row = await create_toolset(
+                scope,
+                session,
+                name=cleaned,
+                description=_blank_to_none_stripped(_raw_text(ctx, "description")),
+            )
+        except ToolsetNameConflictError as exc:
+            raise _toolset_name_refusal(scope, exc) from exc
+        await session.commit()
+        return {"toolset": _toolset_summary(scope, row, [])}
+
+
+@_tool(
+    "update_toolset",
+    "Rename or re-describe a manual toolset this workspace owns. Only the fields you pass are "
+    "touched; pass description null to clear it. Its kind, server and sharing are changed only "
+    "in the web UI.",
+    write=True,
+)
+async def update_toolset_tool(
+    ctx: Context,
+    toolset: Annotated[str | int, Field(description="Name or id of the manual toolset.")],
+    name: Annotated[str | None, Field(description="New name.")] = None,
+    description: Annotated[
+        Any,
+        Field(description="New description, or null.", json_schema_extra=TEXT_ARG_SCHEMA),
+    ] = None,
+    customer: CustomerArg = None,
+) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "update_toolset") as (session, scope, _):
+        args = raw_arguments(ctx)
+        rows = await list_toolsets(scope, session)
+        target = _pick_manual_toolset(rows, toolset)
+        _assert_own_toolset(scope, target)
+
+        values: dict[str, Any] = {}
+        if has_key(args, "name"):
+            if not name or not name.strip():
+                raise McpToolError('"name" cannot be blank.')
+            values["name"] = name.strip()
+        if has_key(args, "description"):
+            values["description"] = _blank_to_none_stripped(_raw_text(ctx, "description"))
+
+        if values:
+            try:
+                await update_toolset(scope, session, target.id, values)
+            except ToolsetNameConflictError as exc:
+                raise _toolset_name_refusal(scope, exc) from exc
+            await session.commit()
+            # A bulk UPDATE: re-read rather than trust the instance in hand.
+            await session.refresh(target)
+
+        tools = await list_tools(scope, session, toolset_ids=[target.id])
+        return {"toolset": _toolset_summary(scope, target, tools), "changed": sorted(values)}
+
+
+@_tool(
+    "create_tool",
+    "Add a hand-authored mock tool to a manual toolset. The model is offered it like any "
+    "function (name, description, parameters) and, in an executing test case, gets "
+    "mock_response back verbatim instead of anything being called. mock_responses is accepted "
+    "as an alias of mock_response (the name get_tool returns them under); pass one, not both. "
+    "Descriptions and canned responses may be long (up to 200,000 characters each). A name the "
+    "toolset already has is refused — use update_tool.",
+    write=True,
+)
+async def create_tool_tool(
+    ctx: Context,
+    toolset: Annotated[
+        str | int, Field(description="Name or id of the manual toolset (create_toolset).")
+    ],
+    name: Annotated[
+        str,
+        Field(
+            description="The function name the model calls: letters, digits, underscores and "
+            "hyphens, at most 64."
+        ),
+    ],
+    description: Annotated[
+        Any,
+        Field(
+            description="What the tool does, as the model will read it.",
+            json_schema_extra=TEXT_ARG_SCHEMA,
+        ),
+    ] = None,
+    parameters: ParametersArg = None,
+    mock_response: MockResponseArg = None,
+    mock_responses: MockResponsesAliasArg = None,
+    customer: CustomerArg = None,
+) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "create_tool") as (session, scope, _):
+        rows = await list_toolsets(scope, session)
+        target_set = _pick_manual_toolset(rows, toolset)
+        _assert_own_toolset(scope, target_set, "its tools")
+        _, raw_responses = _raw_mock_response(ctx)
+
+        try:
+            tool = await create_tool(
+                scope,
+                session,
+                target_set.id,
+                name=_clean(clean_tool_name, name),
+                description=_clean(clean_tool_description, _raw_text(ctx, "description")),
+                parameters_json=_clean(clean_parameters_json, _raw_parameters(ctx)),
+                mock_responses=_clean(clean_mock_responses, raw_responses),
+            )
+        except ToolNameConflictError as exc:
+            raise McpToolError(f"{exc} Use update_tool to change it.") from exc
+        except (HandAuthoredToolError, CrossCustomerError) as exc:  # pragma: no cover
+            # `_pick_manual_toolset` and `_assert_own_toolset` refuse both first.
+            raise McpToolError(str(exc)) from exc
+
+        await session.commit()
+        return {
+            "tool": _tool_summary(tool),
+            "toolset": {"id": target_set.id, "name": target_set.name},
+        }
+
+
+@_tool(
+    "update_tool",
+    "Change a tool in a manual toolset. Only the fields you pass are touched; pass description "
+    "or mock_response as null to clear it, parameters as null for no arguments. mock_responses "
+    "is accepted as an alias of mock_response (the name get_tool returns them under); pass "
+    "one, not both. enabled false keeps the tool but stops offering it. Renaming or disabling "
+    "a tool that test cases override (their mock_overrides name it) is refused, naming how "
+    "many cases in which workspaces — remove those overrides first. Past runs keep the tool "
+    "definitions and canned responses they froze, so editing is safe.",
+    write=True,
+)
+async def update_tool_tool(
+    ctx: Context,
+    toolset: Annotated[str | int, Field(description="Name or id of the manual toolset.")],
+    tool: Annotated[str | int, Field(description="Name or id of the tool within that toolset.")],
+    name: Annotated[str | None, Field(description="New function name.")] = None,
+    description: Annotated[
+        Any,
+        Field(description="New description, or null.", json_schema_extra=TEXT_ARG_SCHEMA),
+    ] = None,
+    parameters: ParametersArg = None,
+    mock_response: MockResponseArg = None,
+    mock_responses: MockResponsesAliasArg = None,
+    enabled: Annotated[
+        bool | None, Field(description="Whether test cases offer this tool to the model.")
+    ] = None,
+    customer: CustomerArg = None,
+) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "update_tool") as (session, scope, _):
+        # Presence, not value — see `update_test_case`: only an explicit null
+        # may clear a field.
+        args = raw_arguments(ctx)
+        rows = await list_toolsets(scope, session)
+        target_set = _pick_manual_toolset(rows, toolset)
+        _assert_own_toolset(scope, target_set, "its tools")
+        target = await _resolve_tool(scope, session, target_set, tool)
+
+        values: dict[str, Any] = {}
+        if has_key(args, "name"):
+            values["name"] = _clean(clean_tool_name, name or "")
+        if has_key(args, "description"):
+            values["description"] = _clean(
+                clean_tool_description, _raw_text(ctx, "description")
+            )
+        if has_key(args, "parameters"):
+            values["parameters_json"] = _clean(clean_parameters_json, _raw_parameters(ctx))
+        responses_sent, raw_responses = _raw_mock_response(ctx)
+        if responses_sent:
+            values["mock_responses"] = _clean(clean_mock_responses, raw_responses)
+        if has_key(args, "enabled"):
+            if enabled is None:
+                raise McpToolError('"enabled" must be true or false.')
+            values["enabled"] = enabled
+
+        if values:
+            try:
+                await update_tool(scope, session, target.id, values)
+            except (ToolNameConflictError, ToolOverriddenError) as exc:
+                raise McpToolError(str(exc)) from exc
+            except HandAuthoredToolError as exc:  # pragma: no cover - refused above
+                raise McpToolError(str(exc)) from exc
+            await session.commit()
+            await session.refresh(target)
+
+        changed = sorted(key for key, column in _TOOL_PATCH_COLUMNS.items() if column in values)
+        return {"tool": _tool_summary(target), "changed": changed}
+
+
+@_tool(
+    "delete_tool",
+    "Remove a tool from a manual toolset. The one delete available here: a tool is content, and "
+    "every finished run froze the tools it offered, so no past measurement changes. Test cases "
+    "select the toolset, not the tool, so cases that merely offer it stop offering it — and a "
+    "toolset left with no enabled tools is refused at run creation. A tool that test cases "
+    "override by name (their mock_overrides) is refused, naming how many cases in which "
+    "workspaces: remove those overrides first. To keep the tool but stop offering it, use "
+    "update_tool with enabled false instead (refused for an overridden tool the same way).",
+    write=True,
+    destructive=True,
+)
+async def delete_tool_tool(
+    ctx: Context,
+    toolset: Annotated[str | int, Field(description="Name or id of the manual toolset.")],
+    tool: Annotated[str | int, Field(description="Name or id of the tool to remove.")],
+    customer: CustomerArg = None,
+) -> dict[str, Any]:
+    async with _scoped_call(ctx, customer, "delete_tool") as (session, scope, _):
+        rows = await list_toolsets(scope, session)
+        target_set = _pick_manual_toolset(rows, toolset)
+        _assert_own_toolset(scope, target_set, "its tools")
+        target = await _resolve_tool(scope, session, target_set, tool)
+
+        deleted = {
+            "id": target.id,
+            "name": target.name,
+            "toolset": {"id": target_set.id, "name": target_set.name},
+        }
+        try:
+            await delete_tool(scope, session, target.id)
+        except ToolOverriddenError as exc:
+            raise McpToolError(str(exc)) from exc
+        await session.commit()
+        return {"deleted": deleted}
+
+
+def _blank_to_none_stripped(value: str | None) -> str | None:
+    """Trimmed, with blank as None — how the HTTP door stores a description."""
+    if value is None:
+        return None
+    return value.strip() or None
 
 
 # ---------------------------------------------------------------------------
@@ -1874,7 +2612,11 @@ async def create_run_tool(
         ),
     ] = None,
     comment: Annotated[
-        str | None, Field(description='Note describing the conditions, e.g. "Q4_K_M, 8k ctx".')
+        Any,
+        Field(
+            description='Note describing the conditions, e.g. "Q4_K_M, 8k ctx".',
+            json_schema_extra=TEXT_ARG_SCHEMA,
+        ),
     ] = None,
     execute: Annotated[bool, Field(description="Start executing right away.")] = False,
     customer: CustomerArg = None,
@@ -1938,7 +2680,7 @@ async def create_run_tool(
                 group_ids=group_ids,
                 params={**named, **cleaned} or None,
                 param_group_ids=param_group_ids,
-                comment=comment,
+                comment=_raw_text(ctx, "comment"),
             )
         except (
             RunCreateError,
@@ -2198,6 +2940,12 @@ async def get_run_result_tool(
             "test_case_text": result.test_case_text,
             "system_prompt_text": result.system_prompt_text,
             "task_prompt_text": result.task_prompt_text,
+            # The earlier turns sent before the user message, frozen; null when
+            # the case had none. A follow-up is graded with these in mind — and
+            # they are authored input, so as injectable as the three texts.
+            "history": (
+                [turn.to_json() for turn in decode_history(result.history)] or None
+            ),
             "expected_output": result.expected_output,
             "status": result.status,
             "error": result.error,
@@ -2264,11 +3012,12 @@ async def set_rating_tool(
         ),
     ],
     note: Annotated[
-        str | None,
+        Any,
         Field(
             description="Why this verdict. Shown beside the rating in the UI, next to the badge "
             "marking the row as judge-rated. Worth stating which check decided it: the badge "
-            "records that an agent judged, not how."
+            "records that an agent judged, not how.",
+            json_schema_extra=TEXT_ARG_SCHEMA,
         ),
     ] = None,
     customer: RowCustomerArg = None,
@@ -2293,7 +3042,7 @@ async def set_rating_tool(
             session,
             result_id,
             rating=None if rating == "unrated" else rating,
-            rating_note=_blank_to_none(note),
+            rating_note=_blank_to_none(_raw_text(ctx, "note")),
             write_note=has_key(args, "note"),
             # `rating` is required here, so the write always includes it and
             # always stamps the credential that judged.

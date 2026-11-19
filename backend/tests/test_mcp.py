@@ -43,7 +43,7 @@ from app.mcp.refs import (
 from app.mcp.server import (
     _WRITES,
     KIND_VALUES,
-    _assert_own_corpus,
+    _assert_own_toolset,
     _call,
     _document_content,
     _document_path,
@@ -51,6 +51,7 @@ from app.mcp.server import (
     _DocumentRow,
     _parse_kind,
     _pick_corpus,
+    _pick_manual_toolset,
     _tools_called,
     mcp_server,
     raw_arguments,
@@ -316,6 +317,17 @@ EXPECTED_TOOLS = {
     "list_documents": False,
     "create_document": True,
     "update_document": True,
+    # Manual toolsets hold no credentials, so they are content: listable,
+    # creatable and editable here, with their tools. `delete_tool` is the one
+    # delete on this surface — a tool is content and every run froze its own.
+    # MCP/documents kinds, sharing and deleting a toolset stay in the UI.
+    "list_toolsets": False,
+    "get_tool": False,
+    "create_toolset": True,
+    "update_toolset": True,
+    "create_tool": True,
+    "update_tool": True,
+    "delete_tool": True,
     "create_run": True,
     "execute_run": True,
     "get_run": False,
@@ -333,13 +345,29 @@ class TestRegistry:
     async def test_exactly_the_specified_tools_are_offered(self) -> None:
         assert set(await _tools()) == set(EXPECTED_TOOLS)
 
-    async def test_no_tool_writes_to_endpoints_toolsets_or_workspaces(self) -> None:
+    async def test_no_tool_writes_to_endpoints_or_workspaces(self) -> None:
         names = set(await _tools())
         writes = ("create_endpoint", "update_endpoint")
         assert not {name for name in names if name.startswith(writes)}
-        assert not {name for name in names if "toolset" in name}
         assert not {name for name in names if name.startswith("create_customer")}
         assert "deploy" not in names and "mark_deployed" not in names
+
+    async def test_toolsets_are_never_deleted_or_shared_here(self) -> None:
+        # Manual toolsets are writable, but deleting one cascades into test
+        # cases and sharing one reaches every workspace — both stay in the UI.
+        names = set(await _tools())
+        assert "delete_toolset" not in names
+        for name in ("create_toolset", "update_toolset"):
+            properties = (await _tools())[name].input_schema["properties"]
+            assert not {"kind", "is_global", "mcp_url", "mcp_headers"} & set(properties), name
+
+    async def test_delete_tool_is_the_one_destructive_tool(self) -> None:
+        destructive = {
+            name
+            for name, tool in (await _tools()).items()
+            if tool.annotations is not None and tool.annotations.destructive_hint
+        }
+        assert destructive == {"delete_tool"}
 
     async def test_read_only_annotation_and_the_role_gate_agree(self) -> None:
         # One declaration per tool feeds both, which is what keeps a writing
@@ -559,15 +587,57 @@ class TestPickCorpus:
             _pick_corpus(self.rows, {})
 
 
-class TestOwnCorpus:
+class TestOwnToolset:
     def test_a_corpus_this_workspace_owns_is_writable(self) -> None:
-        _assert_own_corpus(scope_for_customer(1), ToolsetRow(3, "Handbook", "documents", 1))
+        _assert_own_toolset(
+            scope_for_customer(1), ToolsetRow(3, "Handbook", "documents", 1), "its corpus"
+        )
 
     def test_a_borrowed_corpus_is_refused_rather_than_silently_ignored(self) -> None:
         # The repository's write predicate would make this a no-op, and the agent
         # would read the unchanged row back as a successful edit.
-        with pytest.raises(McpToolError, match="read-only here"):
-            _assert_own_corpus(scope_for_customer(2), ToolsetRow(3, "Handbook", "documents", 1))
+        with pytest.raises(McpToolError, match="its corpus is read-only here"):
+            _assert_own_toolset(
+                scope_for_customer(2), ToolsetRow(3, "Handbook", "documents", 1), "its corpus"
+            )
+
+    def test_a_borrowed_manual_toolset_names_what_is_read_only(self) -> None:
+        with pytest.raises(McpToolError, match="its tools is read-only here"):
+            _assert_own_toolset(
+                scope_for_customer(2), ToolsetRow(2, "Invoice mocks", "manual", 1), "its tools"
+            )
+
+
+class TestPickManualToolset:
+    rows = [
+        ToolsetRow(1, "Odoo MCP", "mcp"),
+        ToolsetRow(2, "Invoice mocks", "manual"),
+        ToolsetRow(3, "Handbook", "documents"),
+    ]
+
+    def test_resolves_a_manual_toolset_by_name_or_id(self) -> None:
+        assert _pick_manual_toolset(self.rows, "invoice mocks").id == 2
+        assert _pick_manual_toolset(self.rows, "2").name == "Invoice mocks"
+
+    def test_an_mcp_toolset_is_refused_by_kind_naming_the_credentials(self) -> None:
+        with pytest.raises(McpToolError) as excinfo:
+            _pick_manual_toolset(self.rows, "Odoo MCP")
+        message = str(excinfo.value)
+        assert 'is kind "mcp"' in message
+        assert "credentials" in message
+        assert "Invoice mocks (2)" in message
+
+    def test_a_documents_toolset_is_refused_pointing_at_create_document(self) -> None:
+        with pytest.raises(McpToolError, match='kind "documents".*create_document'):
+            _pick_manual_toolset(self.rows, 3)
+
+    def test_no_manual_toolset_points_at_create_toolset(self) -> None:
+        with pytest.raises(McpToolError, match="create_toolset makes one"):
+            _pick_manual_toolset([ToolsetRow(1, "Odoo MCP", "mcp")], 1)
+
+    def test_an_unknown_name_lists_what_exists(self) -> None:
+        with pytest.raises(McpToolError, match="Known: Odoo MCP"):
+            _pick_manual_toolset(self.rows, "Nope")
 
 
 class TestDocumentReference:

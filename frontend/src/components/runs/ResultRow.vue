@@ -2,7 +2,9 @@
 // One test case's result inside a run: its frozen inputs, its outcome, its
 // manual verdict. The run's **three** frozen texts show apart — the system
 // prompt, the task prompt and the case's own content — each prompt with its
-// own attribution badge (spec §"Attribution surfaced"). Reading the three
+// own attribution badge (spec §"Attribution surfaced") — plus, for a
+// follow-up case, the frozen earlier conversation in send order between the
+// system prompt and the user message's two halves. Reading the three
 // columns and never the transcript is deliberate: `transcript_json` records the
 // *assembled* messages, which cannot say which half came from where.
 import { computed } from 'vue'
@@ -32,6 +34,8 @@ const emit = defineEmits<{
 }>()
 
 const isToolRun = computed(() => props.result.tool_mode !== 'none')
+/** The frozen earlier turns; null (no history) reads as none. */
+const history = computed(() => props.result.history ?? [])
 const hasTranscript = computed(
   () => isToolRun.value && (props.result.transcript?.length ?? 0) > 0,
 )
@@ -83,7 +87,9 @@ const contentTtft = computed(() =>
     />
 
     <details class="prompt-details">
-      <summary>Prompts &amp; test case{{ isToolRun ? ' & tools' : '' }}</summary>
+      <summary>
+        Prompts{{ history.length > 0 ? ', conversation' : '' }} &amp; test case{{ isToolRun ? ' & tools' : '' }}
+      </summary>
       <div class="prompt-body">
         <div class="prompt-field">
           <span class="field-label">
@@ -91,6 +97,22 @@ const contentTtft = computed(() =>
             <Tag v-if="systemVersionLabel" severity="secondary" :value="systemVersionLabel" />
           </span>
           <pre class="pre">{{ result.system_prompt_text ?? '(no system message)' }}</pre>
+        </div>
+        <!-- Send order: the earlier turns went out after the system message
+             and before the user message the task prompt and content make up. -->
+        <div v-if="history.length > 0" class="prompt-field">
+          <span class="field-label">Earlier conversation ({{ history.length }} turns)</span>
+          <div class="history">
+            <div
+              v-for="(turn, turnIndex) in history"
+              :key="turnIndex"
+              class="history-turn"
+              :class="`history-${turn.role}`"
+            >
+              <span class="history-role">{{ turn.role === 'user' ? 'User' : 'Assistant' }}</span>
+              <pre class="pre">{{ turn.content }}</pre>
+            </div>
+          </div>
         </div>
         <div class="prompt-field">
           <span class="field-label">
@@ -293,6 +315,31 @@ const contentTtft = computed(() =>
 
 .pre.italic {
   font-style: italic;
+}
+
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.history-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+/* The assistant's side a step in, so the two voices read apart. */
+.history-assistant {
+  margin-left: 1rem;
+}
+
+.history-role {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--p-text-muted-color);
 }
 
 .think-summary {

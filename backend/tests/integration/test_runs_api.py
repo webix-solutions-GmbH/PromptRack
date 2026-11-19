@@ -150,6 +150,39 @@ class TestRunCrud:
         assert results[0]["task_prompt_text"] is None
         assert results[0]["system_prompt_version_id"] is None
         assert results[0]["task_prompt_version_id"] is None
+        # No conversation history: null, not an empty list.
+        assert results[0]["history"] is None
+
+    async def test_a_result_row_reports_its_frozen_history(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint = await create_endpoint(scope, session, name="Box", base_url=DEAD_ENDPOINT)
+        group = await create_test_group(scope, session, name="Group")
+        history = [
+            {"role": "user", "content": "List open invoices."},
+            {"role": "assistant", "content": "4711, 4712."},
+        ]
+        await create_test_case(
+            scope, session, group_id=group.id, title="First", content="Only DE.", history=history
+        )
+        await session.commit()
+        created = await create_run_record(
+            scope,
+            session,
+            endpoint_id=endpoint.id,
+            model_id="test-model",
+            group_ids=[group.id],
+            probe=_no_probe,
+        )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        detail = await client.get(f"/api/runs/{created.run_id}")
+        assert detail.status_code == 200, detail.text
+        [result] = detail.json()["results"]
+        assert result["history"] == history
 
     async def test_a_result_row_reports_all_three_frozen_texts(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace

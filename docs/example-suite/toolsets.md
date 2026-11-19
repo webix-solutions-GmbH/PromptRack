@@ -1,19 +1,21 @@
-# Toolsets (create these in the UI)
+# Toolsets
 
-PromptRack does not accept toolsets or tools over MCP — a toolset row holds an MCP URL and headers, which are credentials, and the app's line is content over the API, credentials in the UI. So these three go in by hand, **before** an agent creates the test cases; the test cases reference them by name.
+Three **manual** toolsets — canned responses, no server, no credentials — so they can be created over MCP or by hand. Either way, create them **before** the test cases: the test cases reference them by name.
 
-Where: **Toolsets → New toolset**, kind **Manual**, then **Add tool** once per tool. Requires an admin account (creating a toolset is admin; adding tools to it is member).
+**Over MCP:** `create_toolset(name, description)` once per `##` block, then `create_tool(toolset, name, description, parameters, mock_response)` once per `###` block. Pass `parameters` as the JSON object below and `mock_response` as the text below, verbatim. `list_toolsets` afterwards should show 3 toolsets with 4 + 5 + 3 enabled tools.
+
+**In the UI:** **Toolsets → New toolset** (a member account is enough for a manual toolset), then **New tool** once per tool.
 
 Field mapping:
 
-| Block below | Field in the UI |
-| --- | --- |
-| the `##` heading | toolset **Name** |
-| toolset Description | toolset **Description** |
-| the `###` heading | tool **Name** |
-| tool Description | tool **Description** |
-| Parameters | **Parameters (JSON Schema)** |
-| Mock response | **Mock response** |
+| Block below | MCP argument | Field in the UI |
+| --- | --- | --- |
+| the `##` heading | `create_toolset` `name` | toolset **Name** |
+| toolset Description | `create_toolset` `description` | toolset **Description** |
+| the `###` heading | `create_tool` `name` | tool **Name** |
+| tool Description | `create_tool` `description` | tool **Description** |
+| Parameters | `create_tool` `parameters` | **Parameters (JSON Schema)** |
+| Mock response | `create_tool` `mock_response` | **Mock response** |
 
 Every tool below is `enabled`. A manual tool answers with its `mock_response` **verbatim**, which is what makes a multi-turn tool test byte-identical across every model you compare.
 

@@ -10,7 +10,7 @@
 import { api } from './client'
 import type { Rating } from '../lib/rating'
 import type { ResultStatus } from './runs'
-import type { ToolChoice, ToolMode } from './testCases'
+import type { HistoryTurn, ToolChoice, ToolMode } from './testCases'
 
 export type CompareMode = 'runs' | 'models'
 
@@ -77,6 +77,9 @@ export interface CompareCellView {
    * is what lets "the instruction changed" and "the data changed" be two
    * different drift sentences. */
   task_prompt_text: string | null
+  /** The earlier conversation turns frozen into the row, or null for none;
+   * compared on its own ("conversation history" in `drift`). */
+  history: HistoryTurn[] | null
   /** The rubric as frozen into this row — never rendered per cell. The row
    * carries the copy its cells agree on (`CompareRowView.expected_output`);
    * this is only what that decision is made from, server-side. */
@@ -118,6 +121,9 @@ export interface CompareRowView {
   group_name: string
   test_case_title: string
   test_case_text: string | null
+  /** The row's earlier conversation turns, carried the same way as
+   * `test_case_text`; null when there are none. */
+  history: HistoryTurn[] | null
   cells: (CompareCellView | null)[]
   /** The rubric every cell of this row froze — `null` both when there is no
    * rubric and when the cells disagree about it, in which case `drift` carries
@@ -141,7 +147,8 @@ export interface CompareRowView {
   rubric_edited_since: boolean
   /** Conditions not held constant across this row's cells. The three frozen
    * texts are named separately — `"system prompt"`, `"task prompt"`,
-   * `"test case text"` — alongside `"expected output"`, `"tools"`,
+   * `"test case text"`, plus `"conversation history"` — alongside
+   * `"expected output"`, `"tools"`,
    * `"tool mode"`, `"tool choice"`, `"params"` and `"max turns"`; model mode
    * adds `"<part> edited since"`, for a *sent* part rewritten after every
    * compared run and for the rubric, which is not sent and so carries the

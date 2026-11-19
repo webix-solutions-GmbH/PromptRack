@@ -15,19 +15,34 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.main import app
+from app.models import Customer
+from app.repos.customers import create_customer
+from app.repos.test_cases import create_test_case, create_test_group, replace_toolset_links
 from app.repos.toolsets import create_tool, create_toolset, get_toolset
-from app.scope import Scope
+from app.scope import Scope, scope_from_row
 from app.services import mcp_client
 
 CreateWorkspace = Callable[[str], Awaitable[tuple[int, Scope]]]
 
 PASSWORD = "correct horse battery staple"
+
+
+async def _make_base(session: AsyncSession) -> tuple[int, Scope]:
+    """A Base workspace, flagged the way the migration flags it — see
+    `test_workspaces._make_base`, which this mirrors.
+    """
+    customer = await create_customer(session, name="Base")
+    await session.execute(
+        update(Customer).where(Customer.id == customer.id).values(is_base=True)
+    )
+    return customer.id, scope_from_row(customer.id)
 
 
 @pytest_asyncio.fixture
@@ -293,13 +308,79 @@ class TestToolsetCrud:
         assert stored is not None
         assert stored.mcp_headers is None
 
-    async def test_a_member_cannot_create_a_toolset(
+    async def test_a_member_creates_and_edits_a_manual_toolset(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
     ) -> None:
+        """A manual toolset holds no credentials, so it is content."""
         customer_id, _ = await create_workspace("Acme")
         await session.commit()
         await make_user(session, "member@example.com", "member", customer_id)
         await login(client, "member@example.com")
+
+        created = await client.post(
+            "/api/toolsets", json={"name": "box", "description": "mocks", "kind": "manual"}
+        )
+        assert created.status_code == 201, created.text
+        toolset_id = created.json()["id"]
+
+        updated = await client.put(
+            f"/api/toolsets/{toolset_id}",
+            json={"name": "box v2", "description": None, "kind": "manual"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert (updated.json()["name"], updated.json()["description"]) == ("box v2", None)
+
+    async def test_a_member_is_refused_everything_that_touches_a_credential(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        manual = await create_toolset(scope, session, name="Mocks")
+        mcp = await create_toolset(
+            scope, session, name="Odoo", kind="mcp", mcp_url="http://mcp:9000/mcp"
+        )
+        manual_id, mcp_id = manual.id, mcp.id
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        refused_creates = [
+            {"name": "x", "kind": "mcp", "mcp_url": "http://mcp:9000/mcp"},
+            {"name": "x", "kind": "documents"},
+            {"name": "x", "is_global": True},
+            {"name": "x", "mcp_headers": '{"Authorization": "Bearer s3cret"}'},
+            {"name": "x", "mcp_url": None},
+        ]
+        for body in refused_creates:
+            response = await client.post("/api/toolsets", json=body)
+            assert response.status_code == 403, body
+            assert "administrator" in response.json()["message"]
+
+        refused_updates = [
+            (manual_id, {"name": "Mocks", "kind": "mcp", "mcp_url": "http://mcp:9000/mcp"}),
+            (manual_id, {"name": "Mocks", "kind": "documents"}),
+            (manual_id, {"name": "Mocks", "is_global": False}),
+            (manual_id, {"name": "Mocks", "mcp_headers": None}),
+            # Renaming an MCP toolset is still an edit of a credential-holding row.
+            (mcp_id, {"name": "Odoo v2", "kind": "mcp", "mcp_url": "http://mcp:9000/mcp"}),
+            (mcp_id, {"name": "Odoo v2", "kind": "manual"}),
+        ]
+        for toolset_id, body in refused_updates:
+            response = await client.put(f"/api/toolsets/{toolset_id}", json=body)
+            assert response.status_code == 403, body
+
+        assert (await client.delete(f"/api/toolsets/{manual_id}")).status_code == 403
+
+        session.expire_all()
+        stored = await get_toolset(scope, session, mcp_id)
+        assert stored is not None and (stored.name, stored.kind) == ("Odoo", "mcp")
+
+    async def test_a_viewer_cannot_create_a_toolset(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, _ = await create_workspace("Acme")
+        await session.commit()
+        await make_user(session, "viewer@example.com", "viewer", customer_id)
+        await login(client, "viewer@example.com")
 
         response = await client.post("/api/toolsets", json={"name": "box"})
         assert response.status_code == 403
@@ -328,6 +409,37 @@ class TestToolsetCrud:
         deleted = await client.delete(f"/api/toolsets/{toolset.id}")
         assert deleted.status_code == 204
         assert (await client.get(f"/api/toolsets/{toolset.id}")).status_code == 404
+
+    async def test_a_name_another_visible_toolset_holds_is_refused(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """Case-insensitive over visible rows — the same rule MCP resolves names
+        by — on create and on a rename; an unchanged name is never re-checked.
+        """
+        customer_id, scope = await create_workspace("Acme")
+        await create_toolset(scope, session, name="Odoo")
+        other = await create_toolset(scope, session, name="Other")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        created = await client.post("/api/toolsets", json={"name": "ODOO"})
+        assert created.status_code == 409, created.text
+        assert 'A toolset named "Odoo" already exists' in created.json()["message"]
+
+        renamed = await client.put(f"/api/toolsets/{other.id}", json={"name": "odoo"})
+        assert renamed.status_code == 409, renamed.text
+        assert (await get_toolset(scope, session, other.id)).name == "Other"
+
+        # A duplicate that already exists stays saveable under its own name.
+        await session.execute(
+            text("UPDATE toolsets SET name = 'Odoo' WHERE id = :id"), {"id": other.id}
+        )
+        await session.commit()
+        resaved = await client.put(
+            f"/api/toolsets/{other.id}", json={"name": "Odoo", "description": "kept"}
+        )
+        assert resaved.status_code == 200, resaved.text
 
     async def test_a_toolset_in_another_workspace_is_a_404(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
@@ -358,7 +470,7 @@ class TestToolCrud:
             json={
                 "name": "convert_currency",
                 "description": "Returns a conversion rate.",
-                "mock_response": '{"rate": 1.1}',
+                "mock_responses": ['{"rate": 1.1}'],
             },
         )
         assert created.status_code == 201, created.text
@@ -366,6 +478,7 @@ class TestToolCrud:
         assert body["source"] == "manual"
         assert body["enabled"] is True
         assert body["parameters_json"] == '{"type": "object", "properties": {}}'
+        assert body["mock_responses"] == ['{"rate": 1.1}']
 
         detail = await client.get(f"/api/toolsets/{toolset.id}")
         assert [t["name"] for t in detail.json()["tools"]] == ["convert_currency"]
@@ -373,10 +486,82 @@ class TestToolCrud:
 
         updated = await client.put(
             f"/api/toolsets/{toolset.id}/tools/{body['id']}",
-            json={"name": "convert_currency", "mock_response": '{"rate": 1.25}'},
+            json={"name": "convert_currency", "mock_responses": ['{"rate": 1.25}']},
         )
         assert updated.status_code == 200
-        assert updated.json()["mock_response"] == '{"rate": 1.25}'
+        assert updated.json()["mock_responses"] == ['{"rate": 1.25}']
+
+        # Omitted (or []) clears them: a PUT is a full replace.
+        cleared = await client.put(
+            f"/api/toolsets/{toolset.id}/tools/{body['id']}", json={"name": "convert_currency"}
+        )
+        assert cleared.json()["mock_responses"] == []
+
+    async def test_mock_responses_round_trip_in_call_order(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        toolset = await create_toolset(scope, session, name="Odoo")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        created = await client.post(
+            f"/api/toolsets/{toolset.id}/tools",
+            json={
+                "name": "poll_status",
+                "mock_responses": [' {"status": "pending"} ', '{"status": "done"}'],
+            },
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["mock_responses"] == ['{"status": "pending"}', '{"status": "done"}']
+
+        detail = (await client.get(f"/api/toolsets/{toolset.id}")).json()
+        assert detail["tools"][0]["mock_responses"] == [
+            '{"status": "pending"}',
+            '{"status": "done"}',
+        ]
+
+        blank_entry = await client.post(
+            f"/api/toolsets/{toolset.id}/tools",
+            json={"name": "other", "mock_responses": ["one", "  "]},
+        )
+        assert blank_entry.status_code == 422
+        too_many = await client.post(
+            f"/api/toolsets/{toolset.id}/tools",
+            json={"name": "other", "mock_responses": ["x"] * 21},
+        )
+        assert too_many.status_code == 422
+
+    async def test_long_descriptions_and_mock_responses_round_trip(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """A real customer tool: a ~60k multi-line description and canned answer."""
+        customer_id, scope = await create_workspace("Acme")
+        toolset = await create_toolset(scope, session, name="SIMPOS")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        description = ("Looks a record up.\n" * 3200)[:60_000].strip()
+        answer = '{"rows": [' + ",".join(['"' + "x" * 50 + '"'] * 1150) + "]}"
+        assert len(answer) > 58_000
+
+        created = await client.post(
+            f"/api/toolsets/{toolset.id}/tools",
+            json={"name": "lookup", "description": description, "mock_responses": [answer]},
+        )
+        assert created.status_code == 201, created.text
+        detail = (await client.get(f"/api/toolsets/{toolset.id}")).json()
+        assert detail["tools"][0]["description"] == description
+        assert detail["tools"][0]["mock_responses"] == [answer]
+
+        too_long = await client.post(
+            f"/api/toolsets/{toolset.id}/tools",
+            json={"name": "huge", "description": "x" * 200_001},
+        )
+        assert too_long.status_code == 422
+        assert "200,000" in too_long.json()["message"]
 
     async def test_a_duplicate_tool_name_is_refused(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
@@ -485,6 +670,56 @@ class TestToolCrud:
 
         detail = await client.get(f"/api/toolsets/{toolset.id}")
         assert detail.json()["tools"] == []
+
+    async def test_a_tool_test_cases_override_cannot_be_renamed_disabled_or_deleted(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """A global toolset overridden from another workspace: the refusal has to
+        count cases the writer cannot see, or the write strands them silently.
+        """
+        base_id, base = await _make_base(session)
+        _, acme = await create_workspace("Acme")
+        shared = await create_toolset(base, session, name="Shared mocks", is_global=True)
+        tool = await create_tool(
+            base, session, shared.id, name="fetch_page", mock_responses=["page 1"]
+        )
+        group = await create_test_group(acme, session, name="Paging")
+        for title in ("One", "Two"):
+            case = await create_test_case(
+                acme,
+                session,
+                group_id=group.id,
+                title=title,
+                content="x",
+                tool_mode="execute",
+                mock_overrides={"fetch_page": ["only page"]},
+            )
+            await replace_toolset_links(acme, session, case.id, [shared.id])
+        await session.commit()
+        await make_user(session, "admin@example.com", "admin", base_id)
+        await login(client, "admin@example.com")
+
+        tool_url = f"/api/toolsets/{shared.id}/tools/{tool.id}"
+        for response in (
+            await client.put(tool_url, json={"name": "get_page", "mock_responses": ["page 1"]}),
+            await client.put(f"{tool_url}/enabled", json={"enabled": False}),
+            await client.delete(tool_url),
+        ):
+            assert response.status_code == 409, response.text
+            message = response.json()["message"]
+            assert '2 test cases override the canned responses of "fetch_page"' in message
+            assert "(2 in Acme)" in message
+            assert "Remove those overrides" in message
+
+        # Editing the tool without renaming it stays allowed.
+        edited = await client.put(
+            tool_url, json={"name": "fetch_page", "mock_responses": ["page 1", "page 2"]}
+        )
+        assert edited.status_code == 200, edited.text
+        detail = await client.get(f"/api/toolsets/{shared.id}")
+        assert [(t["name"], t["enabled"]) for t in detail.json()["tools"]] == [
+            ("fetch_page", True)
+        ]
 
     async def test_a_tool_from_a_different_toolset_is_a_404(
         self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace

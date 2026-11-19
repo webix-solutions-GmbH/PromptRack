@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import users as user_store
@@ -30,11 +31,15 @@ from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.auth.tokens import create_token
 from app.main import app
+from app.models import Customer
+from app.models import TestCase as CaseModel
+from app.repos.customers import create_customer
 from app.repos.endpoints import create_endpoint
 from app.repos.param_groups import create_param_group
 from app.repos.runs import list_run_results
 from app.repos.test_cases import create_test_group
-from app.scope import Scope
+from app.repos.toolsets import create_tool, create_toolset
+from app.scope import Scope, scope_from_row
 
 CreateWorkspace = Callable[[str], Awaitable[tuple[int, Scope]]]
 
@@ -168,7 +173,9 @@ async def test_mcp_endpoint(
             # the wire adds is that every registered tool really reaches a client,
             # with the `readOnlyHint` the `_WRITES` declaration derives.
             advertised = {tool["name"]: tool for tool in listed["result"]["tools"]}
-            assert len(advertised) == 24
+            assert len(advertised) == 31
+            assert advertised["list_toolsets"]["annotations"]["readOnlyHint"] is True
+            assert advertised["delete_tool"]["annotations"]["destructiveHint"] is True
             assert advertised["list_param_groups"]["annotations"]["readOnlyHint"] is True
             assert advertised["list_documents"]["annotations"]["readOnlyHint"] is True
             assert advertised["create_document"]["annotations"]["readOnlyHint"] is False
@@ -811,3 +818,851 @@ async def test_mcp_endpoint(
             )
             assert failed
             assert "no thinking" in message
+
+            await _manual_toolsets_over_mcp(client, session, token, viewer, acme)
+            await _history_and_overrides_over_mcp(client, token)
+            await _json_looking_text_over_mcp(client, token)
+            await _overridden_tools_over_mcp(client, session, token)
+
+
+#: Free text that the SDK's `pre_parse_json` would turn into something else:
+#: an object, an array, and the literal word null.
+JSON_LOOKING_TEXTS = ('{"invoice": 1}', '["a"]', "null")
+
+
+async def _json_looking_text_over_mcp(client: AsyncClient, token: str) -> None:
+    """Free-text arguments arrive as the exact strings sent.
+
+    The SDK `json.loads` every string argument not annotated as plain `str`, so
+    under `str | None` an extraction suite's JSON content was refused ("Input
+    should be a valid string") and the text "null" silently became None. Every
+    optional free-text argument is read raw instead (`_raw_text`).
+    """
+    failed, payload = await call(
+        client, token, "create_test_group", {"customer": "Acme", "name": "Extraction"}
+    )
+    assert not failed, payload
+
+    for text in JSON_LOOKING_TEXTS:
+        failed, payload = await call(
+            client,
+            token,
+            "create_test_case",
+            {
+                "customer": "Acme",
+                "group": "Extraction",
+                "title": f"Verbatim {text}",
+                "content": text,
+                "expected_output": text,
+            },
+        )
+        assert not failed, (text, payload)
+        case = payload["test_case"]
+        assert (case["content"], case["expected_output"]) == (text, text)
+
+        failed, payload = await call(
+            client,
+            token,
+            "update_test_case",
+            {"customer": "Acme", "test_case_id": case["id"], "content": f"{text}", "title": "t"},
+        )
+        assert not failed, (text, payload)
+        assert payload["test_case"]["content"] == text
+
+        failed, payload = await call(
+            client,
+            token,
+            "update_test_case",
+            {"customer": "Acme", "test_case_id": case["id"], "expected_output": text},
+        )
+        assert not failed, (text, payload)
+        assert payload["test_case"]["expected_output"] == text
+
+    # An explicit JSON null still clears, and a non-string is refused by name.
+    failed, payload = await call(
+        client,
+        token,
+        "update_test_case",
+        {"customer": "Acme", "test_case_id": case["id"], "expected_output": None},
+    )
+    assert not failed, payload
+    assert payload["test_case"]["expected_output"] is None
+    failed, message = await call(
+        client,
+        token,
+        "update_test_case",
+        {"customer": "Acme", "test_case_id": case["id"], "content": {"invoice": 1}},
+    )
+    assert failed
+    assert '"content" must be a string' in message
+
+    # Tool and toolset descriptions.
+    for index, text in enumerate(JSON_LOOKING_TEXTS):
+        failed, payload = await call(
+            client,
+            token,
+            "create_toolset",
+            {"customer": "Acme", "name": f"Verbatim set {index}", "description": text},
+        )
+        assert not failed, (text, payload)
+        assert payload["toolset"]["description"] == text
+        failed, payload = await call(
+            client,
+            token,
+            "update_toolset",
+            {"customer": "Acme", "toolset": f"Verbatim set {index}", "description": text},
+        )
+        assert not failed, (text, payload)
+        assert payload["toolset"]["description"] == text
+        failed, payload = await call(
+            client,
+            token,
+            "create_tool",
+            {
+                "customer": "Acme",
+                "toolset": f"Verbatim set {index}",
+                "name": "echo",
+                "description": text,
+            },
+        )
+        assert not failed, (text, payload)
+        failed, payload = await call(
+            client,
+            token,
+            "update_tool",
+            {
+                "customer": "Acme",
+                "toolset": f"Verbatim set {index}",
+                "tool": "echo",
+                "description": text,
+            },
+        )
+        assert not failed, (text, payload)
+        failed, payload = await call(
+            client,
+            token,
+            "get_tool",
+            {"customer": "Acme", "toolset": f"Verbatim set {index}", "tool": "echo"},
+        )
+        assert payload["tool"]["description"] == text
+
+    # Prompt drafts and document titles/markdown.
+    for index, text in enumerate(JSON_LOOKING_TEXTS):
+        failed, payload = await call(
+            client,
+            token,
+            "create_prompt",
+            {"customer": "Acme", "name": f"Verbatim prompt {index}", "content": "draft"},
+        )
+        assert not failed, payload
+        failed, payload = await call(
+            client,
+            token,
+            "update_prompt",
+            {"customer": "Acme", "prompt": f"Verbatim prompt {index}", "content": text},
+        )
+        assert not failed, (text, payload)
+        assert payload["prompt"]["content"] == text
+
+        failed, payload = await call(
+            client,
+            token,
+            "create_document",
+            {
+                "customer": "Acme",
+                "toolset": "Handbook",
+                "path": f"verbatim-{index}.md",
+                "content": "# Heading\n\nBody.",
+                "title": text,
+            },
+        )
+        assert not failed, (text, payload)
+        assert payload["document"]["title"] == text
+        failed, payload = await call(
+            client,
+            token,
+            "update_document",
+            {
+                "customer": "Acme",
+                "toolset": "Handbook",
+                "document": f"verbatim-{index}.md",
+                "content": text,
+                "title": text,
+            },
+        )
+        assert not failed, (text, payload)
+        assert payload["document"]["title"] == text
+        assert payload["document"]["chars"] == len(text)
+
+
+async def _overridden_tools_over_mcp(
+    client: AsyncClient, session: AsyncSession, token: str
+) -> None:
+    """A tool test cases override by name cannot be renamed, disabled or
+    deleted out from under them, and `mock_responses` is `mock_response`'s alias.
+    """
+    failed, payload = await call(
+        client, token, "create_toolset", {"customer": "Acme", "name": "Override guard"}
+    )
+    assert not failed, payload
+    # The alias, under the name get_tool reads it back as.
+    failed, payload = await call(
+        client,
+        token,
+        "create_tool",
+        {
+            "customer": "Acme",
+            "toolset": "Override guard",
+            "name": "fetch_page",
+            "mock_responses": ["page 1", "page 2"],
+        },
+    )
+    assert not failed, payload
+    assert payload["tool"]["mock_response_count"] == 2
+    failed, message = await call(
+        client,
+        token,
+        "create_tool",
+        {
+            "customer": "Acme",
+            "toolset": "Override guard",
+            "name": "both",
+            "mock_response": "a",
+            "mock_responses": ["b"],
+        },
+    )
+    assert failed
+    assert "not both" in message
+    failed, payload = await call(
+        client,
+        token,
+        "update_tool",
+        {
+            "customer": "Acme",
+            "toolset": "Override guard",
+            "tool": "fetch_page",
+            "mock_responses": '{"page": 3}',
+        },
+    )
+    assert not failed, payload
+    assert payload["changed"] == ["mock_response"]
+    failed, payload = await call(
+        client,
+        token,
+        "get_tool",
+        {"customer": "Acme", "toolset": "Override guard", "tool": "fetch_page"},
+    )
+    assert payload["tool"]["mock_responses"] == ['{"page": 3}']
+    failed, message = await call(
+        client,
+        token,
+        "update_tool",
+        {
+            "customer": "Acme",
+            "toolset": "Override guard",
+            "tool": "fetch_page",
+            "mock_response": "a",
+            "mock_responses": "b",
+        },
+    )
+    assert failed
+    assert "not both" in message
+
+    failed, payload = await call(
+        client,
+        token,
+        "create_test_case",
+        {
+            "customer": "Acme",
+            "group": "Extraction",
+            "title": "Paged",
+            "content": "Read every page.",
+            "tool_mode": "execute",
+            "toolsets": ["Override guard"],
+            "mock_overrides": {"fetch_page": ["only page"]},
+        },
+    )
+    assert not failed, payload
+    case_id = payload["test_case"]["id"]
+
+    for arguments in (
+        {"tool": "fetch_page", "name": "get_page"},
+        {"tool": "fetch_page", "enabled": False},
+    ):
+        failed, message = await call(
+            client,
+            token,
+            "update_tool",
+            {"customer": "Acme", "toolset": "Override guard", **arguments},
+        )
+        assert failed, arguments
+        assert '1 test case overrides the canned responses of "fetch_page" (1 in Acme)' in message
+        assert "Remove that override" in message
+    failed, message = await call(
+        client,
+        token,
+        "delete_tool",
+        {"customer": "Acme", "toolset": "Override guard", "tool": "fetch_page"},
+    )
+    assert failed
+    assert "before deleting the tool" in message
+
+    # A stale override that got in some other way does not block unrelated
+    # edits of the case; touching the tool configuration re-validates it.
+    await session.execute(
+        update(CaseModel)
+        .where(CaseModel.id == case_id)
+        .values(mock_overrides=json.dumps({"gone_tool": ["x"]}))
+    )
+    await session.commit()
+    failed, payload = await call(
+        client,
+        token,
+        "update_test_case",
+        {"customer": "Acme", "test_case_id": case_id, "title": "Paged (renamed)"},
+    )
+    assert not failed, payload
+    failed, message = await call(
+        client,
+        token,
+        "update_test_case",
+        {"customer": "Acme", "test_case_id": case_id, "tool_mode": "definitions"},
+    )
+    assert failed
+    assert 'overrides the canned response of "gone_tool"' in message
+
+    # With the override gone, the tool is free to change.
+    failed, payload = await call(
+        client,
+        token,
+        "update_test_case",
+        {"customer": "Acme", "test_case_id": case_id, "mock_overrides": None},
+    )
+    assert not failed, payload
+    failed, payload = await call(
+        client,
+        token,
+        "update_tool",
+        {"customer": "Acme", "toolset": "Override guard", "tool": "fetch_page", "name": "get_page"},
+    )
+    assert not failed, payload
+
+
+async def _history_and_overrides_over_mcp(client: AsyncClient, token: str) -> None:
+    """`history` and `mock_overrides` on create/update_test_case, and the
+    frozen history on `get_run_result`.
+
+    The JSON-text answer is the point of `MockOverridesArg` being `Any`: an
+    override that *is* JSON has to arrive as the string it is, not as the
+    object the SDK's pre-parser would make of it.
+    """
+    history = [
+        {"role": "user", "content": "List open orders."},
+        {"role": "assistant", "content": '{"orders": [4711, 4712]}'},
+    ]
+    json_answer = '{"status": "shipped", "items": [1, 2]}'
+
+    failed, payload = await call(
+        client, token, "create_toolset", {"customer": "Acme", "name": "Follow-up mocks"}
+    )
+    assert not failed, payload
+    for name in ("lookup_order", "list_orders"):
+        failed, payload = await call(
+            client,
+            token,
+            "create_tool",
+            {
+                "customer": "Acme",
+                "toolset": "Follow-up mocks",
+                "name": name,
+                "mock_response": "SHARED",
+            },
+        )
+        assert not failed, payload
+    failed, payload = await call(
+        client, token, "create_test_group", {"customer": "Acme", "name": "Follow-ups"}
+    )
+    assert not failed, payload
+
+    failed, payload = await call(
+        client,
+        token,
+        "create_test_case",
+        {
+            "customer": "Acme",
+            "group": "Follow-ups",
+            "title": "Only Germany",
+            "content": "Same list, only Germany.",
+            "tool_mode": "execute",
+            "toolsets": ["Follow-up mocks"],
+            "history": history,
+            "mock_overrides": {"lookup_order": json_answer, "list_orders": ["p1", "p2"]},
+        },
+    )
+    assert not failed, payload
+    case = payload["test_case"]
+    assert case["history"] == history
+    assert case["mock_overrides"] == {
+        "lookup_order": [json_answer],
+        "list_orders": ["p1", "p2"],
+    }
+    case_id = case["id"]
+
+    # Refusals read as sentences naming the case.
+    failed, message = await call(
+        client,
+        token,
+        "create_test_case",
+        {
+            "customer": "Acme",
+            "group": "Follow-ups",
+            "title": "Dangling",
+            "content": "x",
+            "history": history[:1],
+        },
+    )
+    assert failed
+    assert 'Test case "Dangling": ' in message
+    assert 'end with an "assistant"' in message
+    failed, message = await call(
+        client,
+        token,
+        "create_test_case",
+        {
+            "customer": "Acme",
+            "group": "Follow-ups",
+            "title": "Typo",
+            "content": "x",
+            "tool_mode": "execute",
+            "toolsets": ["Follow-up mocks"],
+            "mock_overrides": {"lookup_ordr": "x"},
+        },
+    )
+    assert failed
+    assert 'overrides the canned response of "lookup_ordr"' in message
+    assert "list_orders, lookup_order" in message
+    failed, message = await call(
+        client,
+        token,
+        "create_test_case",
+        {
+            "customer": "Acme",
+            "group": "Follow-ups",
+            "title": "Object",
+            "content": "x",
+            "tool_mode": "execute",
+            "toolsets": ["Follow-up mocks"],
+            "mock_overrides": {"lookup_order": {"status": "shipped"}},
+        },
+    )
+    assert failed
+    assert "pass a JSON answer as a string" in message
+
+    # Presence-patched: an unrelated field leaves both alone ...
+    failed, payload = await call(
+        client,
+        token,
+        "update_test_case",
+        {"customer": "Acme", "test_case_id": case_id, "title": "Only Germany (DE)"},
+    )
+    assert not failed, payload
+    assert payload["test_case"]["history"] == history
+    assert payload["test_case"]["mock_overrides"]["lookup_order"] == [json_answer]
+    # ... a string override is a one-element list ...
+    failed, payload = await call(
+        client,
+        token,
+        "update_test_case",
+        {"customer": "Acme", "test_case_id": case_id, "mock_overrides": {"list_orders": "one"}},
+    )
+    assert not failed, payload
+    assert payload["test_case"]["mock_overrides"] == {"list_orders": ["one"]}
+    # ... and null, {} and [] all clear.
+    for clearing in (None, {}, []):
+        failed, payload = await call(
+            client,
+            token,
+            "update_test_case",
+            {"customer": "Acme", "test_case_id": case_id, "mock_overrides": clearing},
+        )
+        assert not failed, payload
+        assert payload["test_case"]["mock_overrides"] == {}
+    for clearing in (None, []):
+        failed, payload = await call(
+            client,
+            token,
+            "update_test_case",
+            {"customer": "Acme", "test_case_id": case_id, "history": clearing},
+        )
+        assert not failed, payload
+        assert payload["test_case"]["history"] == []
+    failed, payload = await call(
+        client,
+        token,
+        "update_test_case",
+        {"customer": "Acme", "test_case_id": case_id, "history": history},
+    )
+    assert not failed, payload
+
+    # The frozen copy comes back from the result.
+    failed, payload = await call(
+        client,
+        token,
+        "create_run",
+        {"customer": "Acme", "endpoint": "Spark", "model": "qwen3:8b", "groups": ["Follow-ups"]},
+    )
+    assert not failed, payload
+    failed, payload = await call(client, token, "get_run", {"run_id": payload["run"]["id"]})
+    assert not failed, payload
+    [row] = payload["results"]
+    failed, payload = await call(client, token, "get_run_result", {"result_id": row["result_id"]})
+    assert not failed, payload
+    assert payload["result"]["history"] == history
+
+
+async def _manual_toolsets_over_mcp(
+    client: AsyncClient, session: AsyncSession, token: str, viewer: str, acme: Scope
+) -> None:
+    """The seven toolset tools: manual toolsets are content and writable here,
+    every other kind and every borrowed row is refused by name.
+
+    A helper of the one test function rather than a test of its own — see the
+    module docstring on why the lifespan can be entered only once.
+    """
+    base_id, base = await _make_base(session)
+    shared = await create_toolset(base, session, name="Shared mocks", is_global=True)
+    await create_tool(base, session, shared.id, name="shared_lookup", mock_responses=["{}"])
+    await create_toolset(acme, session, name="Odoo live", kind="mcp", mcp_url=DEAD_ENDPOINT)
+    await create_toolset(acme, session, name="Handbook", kind="documents")
+    await session.commit()
+    del base_id
+
+    # --- create_toolset ----------------------------------------------------
+    failed, payload = await call(
+        client,
+        token,
+        "create_toolset",
+        {"customer": "Acme", "name": "SIMPOS mocks", "description": "  Stand-ins.  "},
+    )
+    assert not failed, payload
+    toolset = payload["toolset"]
+    assert (toolset["kind"], toolset["description"], toolset["editable"]) == (
+        "manual",
+        "Stand-ins.",
+        True,
+    )
+
+    # A duplicate name — any kind, case-insensitively, shared ones included —
+    # would make every later name reference ambiguous.
+    for name in ("simpos MOCKS", "Odoo live", "shared mocks"):
+        failed, message = await call(
+            client, token, "create_toolset", {"customer": "Acme", "name": name}
+        )
+        assert failed, name
+        assert "ambiguous" in message
+    failed, message = await call(
+        client, token, "create_toolset", {"customer": "Acme", "name": "simpos mocks"}
+    )
+    assert "update_toolset" in message
+
+    # --- create_tool: a ~60k description and canned answer round-trip -----
+    description = ("Looks a SIMPOS record up by its key.\n" * 1700)[:60_000].strip()
+    answer = json.dumps({"rows": ["y" * 50] * 1150})
+    assert len(answer) > 58_000
+    failed, payload = await call(
+        client,
+        token,
+        "create_tool",
+        {
+            "customer": "Acme",
+            "toolset": "SIMPOS mocks",
+            "name": "lookup_record",
+            "description": description,
+            "parameters": {"type": "object", "properties": {"key": {"type": "string"}}},
+            "mock_response": answer,
+        },
+    )
+    assert not failed, payload
+    created = payload["tool"]
+    # Writes echo sizes, never the texts back.
+    assert created["description_chars"] == len(description)
+    assert created["mock_response_count"] == 1
+    assert created["mock_response_chars"] == [len(answer)]
+    assert "description" not in created
+
+    failed, payload = await call(
+        client,
+        token,
+        "get_tool",
+        {"customer": "Acme", "toolset": toolset["id"], "tool": "lookup_record"},
+    )
+    assert not failed, payload
+    full = payload["tool"]
+    assert full["description"] == description
+    assert full["mock_responses"] == [answer]
+    assert full["parameters"]["properties"]["key"] == {"type": "string"}
+    assert full["source"] == "manual"
+
+    # A list answers by call order; a JSON-string schema is accepted too.
+    failed, payload = await call(
+        client,
+        token,
+        "create_tool",
+        {
+            "customer": "Acme",
+            "toolset": "SIMPOS mocks",
+            "name": "poll_status",
+            "parameters": '{"type": "object", "properties": {}}',
+            "mock_response": ['{"status": "pending"}', '{"status": "done"}'],
+        },
+    )
+    assert not failed, payload
+    assert payload["tool"]["mock_response_count"] == 2
+
+    # The SDK pre-parses JSON-looking strings; a canned answer that is itself a
+    # JSON array must still be *one* response, read verbatim.
+    failed, payload = await call(
+        client,
+        token,
+        "create_tool",
+        {
+            "customer": "Acme",
+            "toolset": "SIMPOS mocks",
+            "name": "list_ids",
+            "mock_response": '["a", "b"]',
+        },
+    )
+    assert not failed, payload
+    assert payload["tool"]["mock_response_count"] == 1
+    failed, payload = await call(
+        client,
+        token,
+        "get_tool",
+        {"customer": "Acme", "toolset": "SIMPOS mocks", "tool": "list_ids"},
+    )
+    assert payload["tool"]["mock_responses"] == ['["a", "b"]']
+
+    # The shared rules, in this door's vocabulary.
+    refusals = [
+        ({"name": "lookup_record"}, "already has a tool"),
+        ({"name": "has space"}, "letters, digits"),
+        ({"name": "ok", "parameters": "[1]"}, "JSON object"),
+        ({"name": "ok", "mock_response": ["one", " "]}, "is blank"),
+        ({"name": "ok", "description": "x" * 200_001}, "200,000"),
+        ({"name": "ok", "mock_response": "a\x00b"}, "NUL"),
+        ({"name": "ok", "mock_response": {"rate": 1.1}}, "as a string"),
+    ]
+    for extra, expected in refusals:
+        failed, message = await call(
+            client,
+            token,
+            "create_tool",
+            {"customer": "Acme", "toolset": "SIMPOS mocks", **extra},
+        )
+        assert failed, extra
+        assert expected in message, (extra, message)
+
+    # --- list_toolsets: every kind, sizes only -----------------------------
+    failed, payload = await call(client, viewer, "list_toolsets", {"customer": "Acme"})
+    assert not failed, payload
+    by_name = {row["name"]: row for row in payload["toolsets"]}
+    assert set(by_name) == {"SIMPOS mocks", "Odoo live", "Handbook", "Shared mocks"}
+    assert by_name["Handbook"]["kind"] == "documents"
+    assert by_name["Handbook"]["tool_count"] == 3
+    assert (by_name["Shared mocks"]["is_global"], by_name["Shared mocks"]["editable"]) == (
+        True,
+        False,
+    )
+    simpos_tools = {tool["name"]: tool for tool in by_name["SIMPOS mocks"]["tools"]}
+    assert simpos_tools["lookup_record"]["description_chars"] == len(description)
+    assert simpos_tools["poll_status"]["mock_response_count"] == 2
+    assert "description" not in json.dumps(simpos_tools).replace("description_chars", "")
+
+    # --- update_tool: patch by presence ------------------------------------
+    failed, payload = await call(
+        client,
+        token,
+        "update_tool",
+        {
+            "customer": "Acme",
+            "toolset": "SIMPOS mocks",
+            "tool": "poll_status",
+            "description": "Polls a job.",
+        },
+    )
+    assert not failed, payload
+    assert payload["changed"] == ["description"]
+    # Untouched fields stay as they were.
+    assert payload["tool"]["mock_response_count"] == 2
+
+    failed, payload = await call(
+        client,
+        token,
+        "update_tool",
+        {
+            "customer": "Acme",
+            "toolset": "SIMPOS mocks",
+            "tool": "poll_status",
+            "description": None,
+            "mock_response": None,
+            "enabled": False,
+        },
+    )
+    assert not failed, payload
+    assert payload["changed"] == ["description", "enabled", "mock_response"]
+    failed, payload = await call(
+        client,
+        token,
+        "get_tool",
+        {"customer": "Acme", "toolset": "SIMPOS mocks", "tool": "poll_status"},
+    )
+    assert (payload["tool"]["description"], payload["tool"]["mock_responses"]) == (None, [])
+    assert payload["tool"]["enabled"] is False
+
+    failed, message = await call(
+        client,
+        token,
+        "update_tool",
+        {
+            "customer": "Acme",
+            "toolset": "SIMPOS mocks",
+            "tool": "poll_status",
+            "name": "lookup_record",
+        },
+    )
+    assert failed
+    assert "already has a tool" in message
+
+    failed, payload = await call(
+        client,
+        token,
+        "update_tool",
+        {
+            "customer": "Acme",
+            "toolset": "SIMPOS mocks",
+            "tool": "poll_status",
+            "name": "poll_job",
+        },
+    )
+    assert not failed, payload
+    assert payload["tool"]["name"] == "poll_job"
+
+    # --- update_toolset ----------------------------------------------------
+    failed, payload = await call(
+        client,
+        token,
+        "update_toolset",
+        {"customer": "Acme", "toolset": "SIMPOS mocks", "description": None},
+    )
+    assert not failed, payload
+    assert payload["toolset"]["description"] is None
+    assert payload["toolset"]["name"] == "SIMPOS mocks"
+    failed, payload = await call(
+        client,
+        token,
+        "update_toolset",
+        {"customer": "Acme", "toolset": "SIMPOS mocks", "name": "SIMPOS"},
+    )
+    assert not failed, payload
+    assert payload["changed"] == ["name"]
+    failed, message = await call(
+        client,
+        token,
+        "update_toolset",
+        {"customer": "Acme", "toolset": "SIMPOS", "name": "Handbook"},
+    )
+    assert failed
+    assert "ambiguous" in message
+
+    # --- other kinds and borrowed rows are refused by name -----------------
+    for tool_name, arguments in (
+        ("create_tool", {"toolset": "Odoo live", "name": "x"}),
+        ("update_toolset", {"toolset": "Odoo live", "name": "y"}),
+        ("delete_tool", {"toolset": "Handbook", "tool": "read_document"}),
+        ("update_tool", {"toolset": "Handbook", "tool": "read_document", "enabled": False}),
+    ):
+        failed, message = await call(
+            client, token, tool_name, {"customer": "Acme", **arguments}
+        )
+        assert failed, (tool_name, arguments)
+        assert 'is kind "' in message
+        assert "SIMPOS (" in message
+    failed, message = await call(
+        client, token, "create_tool", {"customer": "Acme", "toolset": "Odoo live", "name": "x"}
+    )
+    assert "credentials" in message
+
+    for tool_name, arguments in (
+        ("create_tool", {"toolset": "Shared mocks", "name": "x"}),
+        ("update_tool", {"toolset": "Shared mocks", "tool": "shared_lookup", "enabled": False}),
+        ("delete_tool", {"toolset": "Shared mocks", "tool": "shared_lookup"}),
+        ("update_toolset", {"toolset": "Shared mocks", "name": "Mine now"}),
+    ):
+        failed, message = await call(
+            client, token, tool_name, {"customer": "Acme", **arguments}
+        )
+        assert failed, tool_name
+        assert "shared from the Base workspace" in message
+    # Readable from here all the same.
+    failed, payload = await call(
+        client,
+        token,
+        "get_tool",
+        {"customer": "Acme", "toolset": "Shared mocks", "tool": "shared_lookup"},
+    )
+    assert not failed, payload
+    # And writable where it lives.
+    failed, payload = await call(
+        client,
+        token,
+        "update_tool",
+        {
+            "customer": base.customer_id,
+            "toolset": "Shared mocks",
+            "tool": "shared_lookup",
+            "mock_response": ["a", "b"],
+        },
+    )
+    assert not failed, payload
+
+    # --- the read-only gate ------------------------------------------------
+    for tool_name, arguments in (
+        ("create_toolset", {"name": "Nope"}),
+        ("create_tool", {"toolset": "SIMPOS", "name": "nope"}),
+        ("update_tool", {"toolset": "SIMPOS", "tool": "poll_job", "enabled": True}),
+        ("delete_tool", {"toolset": "SIMPOS", "tool": "poll_job"}),
+    ):
+        failed, message = await call(
+            client, viewer, tool_name, {"customer": "Acme", **arguments}
+        )
+        assert failed, tool_name
+        assert "read-only" in message
+
+    # --- delete_tool -------------------------------------------------------
+    failed, payload = await call(
+        client,
+        token,
+        "delete_tool",
+        {"customer": "Acme", "toolset": "SIMPOS", "tool": "poll_job"},
+    )
+    assert not failed, payload
+    assert payload["deleted"]["name"] == "poll_job"
+    failed, message = await call(
+        client,
+        token,
+        "get_tool",
+        {"customer": "Acme", "toolset": "SIMPOS", "tool": "poll_job"},
+    )
+    assert failed
+    assert "lookup_record (" in message
+
+
+async def _make_base(session: AsyncSession) -> tuple[int, Scope]:
+    """A Base workspace, flagged the way the migration flags it — see
+    `test_workspaces._make_base`, which this mirrors.
+    """
+    customer = await create_customer(session, name="Base")
+    await session.execute(
+        update(Customer).where(Customer.id == customer.id).values(is_base=True)
+    )
+    return customer.id, scope_from_row(customer.id)

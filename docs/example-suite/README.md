@@ -4,13 +4,13 @@ The standard PromptRack evaluation suite as a document: 3 manual toolsets, 16 pr
 
 Point an agent at this directory and say *"set up this suite in PromptRack"*, or hand it one group file if that is all you want.
 
-## The split: you do the toolsets, the agent does the test cases
+## The order: toolsets first, then the test cases
 
-**Toolsets and their tools are not writable over MCP** — a toolset holds an MCP server URL and headers, which are credentials, and PromptRack's line is content over the API, credentials in the UI. (The one thing inside a toolset that *is* writable over MCP is a `documents` toolset's markdown corpus, since markdown is content. This suite has no documents toolset, so it does not apply here.) So the work divides:
+All three of this suite's toolsets are **manual** — tools with canned responses, no server and no credentials — so an agent can create them over MCP with `create_toolset` / `create_tool`, exactly like everything else here. (MCP-server and documents toolsets are still created in the web UI: an MCP server URL and its headers are credentials.)
 
 | Step | Who | Where |
 | --- | --- | --- |
-| 1. Create the 3 manual toolsets and their 12 tools | a human, admin account | the web UI → [toolsets.md](toolsets.md) |
+| 1. Create the 3 manual toolsets and their 12 tools | an agent over MCP, or a human (member account) in the web UI | [toolsets.md](toolsets.md) |
 | 2. Create the groups, the 16 prompts and the 38 test cases | an agent | MCP → the four group files |
 
 Do step 1 first. Six test cases reference a toolset by name and `create_test_case` refuses a tool test whose toolsets do not exist or contain no enabled tools — an agent that starts with the test cases will fail halfway through.
@@ -50,7 +50,7 @@ list_customers      → confirms the token and workspace are wired up
 list_test_groups    → what already exists
 ```
 
-Manual and MCP toolsets have no MCP listing tool (not writable over MCP means not readable over it either — `list_documents` lists only `documents` toolsets, and this suite has none) — check **Toolsets** in the UI to confirm step 1 landed the 3 toolsets from `toolsets.md` before creating the six test cases that reference them.
+`list_toolsets` confirms step 1 landed the 3 toolsets from `toolsets.md` (12 enabled tools, each with one mock response) before creating the six test cases that reference them.
 
 ## Step 2b: the prompts
 

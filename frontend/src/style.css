@@ -173,7 +173,8 @@ pre {
 
 /* Same teleport reasoning as .form-dialog: dialog width rules must be global.
  * Three widths and every dialog in the app picks one of them — `.form-dialog`
- * for a creation form, `.view-dialog` for reading one frozen text,
+ * for a creation form, `.view-dialog` for reading one frozen text (or editing
+ * long ones, like a tool's description and mock responses),
  * `.diff-dialog` for two of them side by side. */
 .view-dialog {
   width: min(56rem, 90vw);

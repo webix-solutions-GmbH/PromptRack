@@ -89,9 +89,13 @@ export interface ToolsetInput {
  * server, or synthesized for a documents toolset. The three `documents` rows
  * are real `tools` rows — which is what makes the enabled flag, the collision
  * check and a run's `tools_snapshot` work on them untouched — but they carry no
- * `mock_response` and are never hand-authored, so the editor treats them as
+ * mock responses and are never hand-authored, so the editor treats them as
  * read-only the same way it treats a discovered tool's name. */
 export type ToolSource = 'manual' | 'mcp' | 'documents'
+
+/** Mirrors the backend's `MAX_MOCK_RESPONSES` (`app/services/tool_authoring.py`):
+ * the editor stops offering "add" here rather than letting the save be refused. */
+export const MAX_MOCK_RESPONSES = 20
 
 export interface Tool {
   id: number
@@ -99,7 +103,11 @@ export interface Tool {
   name: string
   description: string | null
   parameters_json: string
-  mock_response: string | null
+  /** Canned answers by call order: the Nth call of this tool within one result
+   * gets entry N, and the last entry repeats for every later call. Empty means
+   * none is configured — a manual tool called then answers the model with an
+   * error, which is itself measured rather than failing the row. */
+  mock_responses: string[]
   enabled: boolean
   source: ToolSource
   first_seen_at: string
@@ -110,7 +118,10 @@ export interface ToolInput {
   name: string
   description?: string | null
   parameters_json?: string
-  mock_response?: string | null
+  /** `[]` or `null` for none. Every entry must be non-blank — the server refuses
+   * a blank one, so the editor validates before sending rather than letting a
+   * half-filled "Call 3" come back as a 422. */
+  mock_responses?: string[] | null
 }
 
 /** One document of a `documents` toolset's corpus, without its markdown — what

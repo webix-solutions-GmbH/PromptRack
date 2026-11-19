@@ -36,7 +36,17 @@ from app.scope import (
     where_scoped,
     where_visible,
 )
-from app.services.message_assembly import assert_user_message
+from app.services.message_assembly import (
+    HistoryTurn,
+    assert_user_message,
+    encode_history,
+    validate_history,
+)
+from app.services.tool_authoring import (
+    clean_mock_overrides,
+    decode_mock_responses,
+    encode_mock_overrides,
+)
 
 # ---------------------------------------------------------------------------
 # Test groups
@@ -208,8 +218,17 @@ async def create_test_case(
     tool_choice: str | None = None,
     max_turns: int = 6,
     sort_order: int = 0,
+    history: Sequence[HistoryTurn | Mapping[str, Any]] | None = None,
+    mock_overrides: Mapping[str, Sequence[str]] | None = None,
 ) -> TestCase:
     """Creates a test case under a group this scope can see.
+
+    `history` goes through :func:`~app.services.message_assembly.validate_history`
+    here, beside the user-message guard, so no door can store one a chat
+    template would refuse. `mock_overrides` is stored as given after the
+    shape/storability check (`clean_mock_overrides`); whether each name is an
+    eligible tool is the caller's `assert_tool_config`, which knows the
+    toolsets being linked.
 
     A guessed group id would otherwise file a case in someone else's workspace,
     where every later read would then find it. The two prompt slots are the
@@ -229,6 +248,7 @@ async def create_test_case(
         content,
         subject=f'Test case "{title}"',
     )
+    turns = validate_history(history, subject=f'Test case "{title}"')
 
     test_case = TestCase(
         group_id=group_id,
@@ -237,9 +257,11 @@ async def create_test_case(
         expected_output=expected_output,
         system_prompt_id=system_prompt_id,
         task_prompt_id=task_prompt_id,
+        history=encode_history(turns),
         tool_mode=tool_mode,
         tool_choice=tool_choice,
         max_turns=max_turns,
+        mock_overrides=encode_mock_overrides(clean_mock_overrides(_plain(mock_overrides))),
         sort_order=sort_order,
     )
     session.add(test_case)
@@ -265,8 +287,24 @@ async def update_test_case(
     """
     if not values:
         return
+    values = dict(values)
     if values.get("group_id") is not None:
         await assert_same_customer(session, scope, TestGroup, values["group_id"])
+
+    # The two JSON columns arrive as data (turns, a name → responses mapping)
+    # and leave as the stored text. `None` / empty clears either.
+    if "history" in values:
+        title = values.get("title")
+        if title is None:
+            existing_row = await get_test_case(scope, session, test_case_id)
+            title = existing_row.title if existing_row is not None else str(test_case_id)
+        values["history"] = encode_history(
+            validate_history(values["history"], subject=f'Test case "{title}"')
+        )
+    if "mock_overrides" in values:
+        values["mock_overrides"] = encode_mock_overrides(
+            clean_mock_overrides(_plain(values["mock_overrides"]))
+        )
 
     system_slot_named = "system_prompt_id" in values
     task_slot_named = "task_prompt_id" in values
@@ -292,6 +330,16 @@ async def update_test_case(
 
     statement = apply_where(update(TestCase), _test_case_where(scope, test_case_id))
     await session.execute(statement.values(**values))
+
+
+def _plain(overrides: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """A mapping of overrides as the plain dict/list shape the cleaner checks."""
+    if overrides is None:
+        return None
+    return {
+        name: list(responses) if isinstance(responses, list | tuple) else responses
+        for name, responses in overrides.items()
+    }
 
 
 async def delete_test_case(scope: Scope, session: AsyncSession, test_case_id: int) -> None:
@@ -336,6 +384,9 @@ class CompareTestCaseRow:
     system_prompt_text: str | None
     task_prompt_text: str | None
     expected_output: str | None
+    #: The live conversation history, raw column text (NULL = none) — the
+    #: fourth sent part model mode compares for "edited since".
+    history: str | None = None
 
 
 async def compare_test_case_rows(
@@ -360,6 +411,7 @@ async def compare_test_case_rows(
             system_prompt.content,
             task_prompt.content,
             TestCase.expected_output,
+            TestCase.history,
         )
         .join(TestGroup, TestCase.group_id == TestGroup.id)
         .outerjoin(system_prompt, TestCase.system_prompt_id == system_prompt.id)
@@ -382,6 +434,7 @@ async def compare_test_case_rows(
             system_prompt_text=row[5],
             task_prompt_text=row[6],
             expected_output=row[7],
+            history=row[8],
         )
         for row in rows.all()
     ]
@@ -525,7 +578,8 @@ class SnapshotToolRow:
     tool_name: str
     description: str | None
     parameters_json: str
-    mock_response: str | None
+    #: The canned answers by call order, decoded from the column's JSON array.
+    mock_responses: tuple[str, ...]
     enabled: bool
     source: str
 
@@ -556,7 +610,7 @@ async def list_snapshot_tool_rows(
             Tool.name,
             Tool.description,
             Tool.parameters_json,
-            Tool.mock_response,
+            Tool.mock_responses,
             Tool.enabled,
             Tool.source,
         )
@@ -578,7 +632,7 @@ async def list_snapshot_tool_rows(
             tool_name=row[3],
             description=row[4],
             parameters_json=row[5],
-            mock_response=row[6],
+            mock_responses=tuple(decode_mock_responses(row[6])),
             enabled=row[7],
             source=row[8],
         )

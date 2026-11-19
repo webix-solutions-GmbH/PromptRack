@@ -42,12 +42,19 @@ interface Row {
 }
 
 // The system and user messages are already shown in the result card's
-// prompt block, so only assistant/tool messages belong in the conversation.
+// prompt block, so only assistant/tool messages belong in the conversation —
+// and only ones a model turn produced. A test case's earlier conversation is
+// recorded in the transcript too (it was sent), but carries no `turn`: it is
+// shown with the prompts, and rendering it here would file a scripted
+// assistant reply under "Turn 1" as if the model had said it.
 // Turn headers are decided in one pass up front — a "have I already shown
 // this turn?" counter cannot be threaded through the template itself.
 const rows = computed<Row[]>(() => {
   const conversation = props.transcript.filter(
-    (message) => message.role === 'assistant' || message.role === 'tool',
+    (message) =>
+      (message.role === 'assistant' || message.role === 'tool') &&
+      message.turn !== undefined &&
+      message.turn !== null,
   )
   let lastHeaderTurn = -1
   return conversation.map((message) => {

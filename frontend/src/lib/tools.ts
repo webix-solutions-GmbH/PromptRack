@@ -35,3 +35,28 @@ export function collectToolNameCollisions(rows: ToolLike[]): string[] {
   }
   return [...collisions].sort()
 }
+
+/**
+ * A `MockResponsesEditor` list as a request carries it, or a readable refusal.
+ * A sole blank field is the single-response layout left empty and means
+ * "none" (`[]`); a blank entry inside a longer list is a call the author meant
+ * to fill in, which the server would refuse anyway — said here naming the call
+ * instead. One rule for both places that edit canned responses: the toolset's
+ * tool dialog and a test case's per-tool override.
+ */
+export function mockResponsesForWire(
+  entries: string[],
+): { ok: true; value: string[] } | { ok: false; error: string } {
+  if (entries.length <= 1) {
+    const only = entries[0] ?? ''
+    return { ok: true, value: only.trim().length > 0 ? [only] : [] }
+  }
+  const blank = entries.findIndex((entry) => entry.trim().length === 0)
+  if (blank !== -1) {
+    return {
+      ok: false,
+      error: `The response for call ${blank + 1} is empty — fill it in or remove it.`,
+    }
+  }
+  return { ok: true, value: entries }
+}

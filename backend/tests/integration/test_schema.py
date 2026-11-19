@@ -56,7 +56,7 @@ async def _seed_everything(session: AsyncSession, scope: Scope) -> dict[str, int
         toolset.id,
         name="lookup_order",
         parameters_json="{}",
-        mock_response="shipped",
+        mock_responses=["shipped"],
     )
 
     group = await create_test_group(scope, session, name="General")

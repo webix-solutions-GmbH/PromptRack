@@ -4,7 +4,9 @@
 // by slot — a `system`-kind prompt sent as the system message and a
 // `task`-kind prompt sent at the head of the user message — plus its own
 // `content`, the data half of that user message. It offers any number of
-// toolsets and carries the rubric that never reaches the model.
+// toolsets and carries the rubric that never reaches the model. A follow-up
+// case also carries earlier user/assistant turns (`history`), and an execute-
+// mode case may override a manual tool's canned responses (`mock_overrides`).
 //
 // One component handles both routes (`/test-cases/new` and
 // `/test-cases/:id`) — `props.id` absent means create.
@@ -25,6 +27,8 @@ import { useToast } from 'primevue/usetoast'
 import {
   testCasesApi,
   testGroupsApi,
+  type HistoryTurn,
+  type MockOverrides,
   type TestCase,
   type TestGroup,
   type ToolChoice,
@@ -33,7 +37,15 @@ import {
 import { promptsApi, kindLabel, PROMPT_KINDS, type Prompt, type PromptKind } from '../api/prompts'
 import { toolsetsApi, type Tool, type Toolset } from '../api/toolsets'
 import { ApiError } from '../api/client'
-import { collectToolNameCollisions, DEFAULT_MAX_TURNS, MAX_TURNS_LIMIT } from '../lib/tools'
+import ConversationEditor from '../components/ConversationEditor.vue'
+import MockResponsesEditor from '../components/MockResponsesEditor.vue'
+import { titleIfShort } from '../lib/format'
+import {
+  collectToolNameCollisions,
+  DEFAULT_MAX_TURNS,
+  MAX_TURNS_LIMIT,
+  mockResponsesForWire,
+} from '../lib/tools'
 import { useAuthStore } from '../stores/auth'
 
 const props = defineProps<{ id?: string }>()
@@ -78,6 +90,11 @@ interface FormState {
   toolsetIds: number[]
   toolChoice: ToolChoice | ''
   maxTurns: number
+  /** Earlier user/assistant turns, sent before the user message. */
+  history: HistoryTurn[]
+  /** Editor lists per tool name, as `MockResponsesEditor` holds them — a key's
+   * presence *is* the toggle. Turned into the wire shape by `overridesForWire`. */
+  mockOverrides: MockOverrides
 }
 
 function emptyForm(groupId: number | null): FormState {
@@ -92,6 +109,8 @@ function emptyForm(groupId: number | null): FormState {
     toolsetIds: [],
     toolChoice: '',
     maxTurns: DEFAULT_MAX_TURNS,
+    history: [],
+    mockOverrides: {},
   }
 }
 
@@ -124,6 +143,10 @@ function applyTestCase(row: TestCase) {
   form.toolsetIds = [...row.toolset_ids]
   form.toolChoice = row.tool_choice ?? ''
   form.maxTurns = row.max_turns || DEFAULT_MAX_TURNS
+  form.history = (row.history ?? []).map((turn) => ({ ...turn }))
+  form.mockOverrides = Object.fromEntries(
+    Object.entries(row.mock_overrides ?? {}).map(([name, responses]) => [name, [...responses]]),
+  )
 }
 
 async function load() {
@@ -248,6 +271,20 @@ const userMessageError = computed(() =>
     : 'This test case has no user message. Give it content, or select a task prompt with text in it.',
 )
 
+// --- conversation history -------------------------------------------------
+
+// Sent verbatim between the system message and the user message above, in
+// order (`run_tool_loop`'s message list). `ConversationEditor` already keeps
+// the roles alternating; the one rule left for the author is the server's
+// "no blank turn" (`validate_history`), surfaced here naming the exchange
+// rather than coming back as a 422.
+const historyError = computed(() => {
+  const blank = form.history.findIndex((turn) => turn.content.trim().length === 0)
+  if (blank === -1) return null
+  const side = form.history[blank].role === 'user' ? 'user' : 'assistant'
+  return `Exchange ${Math.floor(blank / 2) + 1}: the ${side} turn is empty — fill it in or remove the exchange.`
+})
+
 // --- create a prompt without leaving the page ---------------------------
 
 const newPromptOpen = ref(false)
@@ -357,12 +394,100 @@ const toolError = computed(() => {
   return null
 })
 
+// --- per-case mock overrides -------------------------------------------
+
+// One shared manual toolset can serve many cases when a case may swap in its
+// own canned answer for a tool. Keyed by tool *name*, which is what the
+// server validates (`assert_tool_config`: every key an enabled manual tool of
+// the selected toolsets) and what the run freezes into that row's
+// `tools_snapshot`. Only `execute` mode ever sends a canned response, so the
+// controls show only there — but switching modes never drops what is stored:
+// the server keeps the overrides and ignores them outside `execute`.
+
+const executeMode = computed(() => form.toolMode === 'execute')
+
+/** Tools a case may override: enabled (already true of `offeredTools`) and
+ * `manual` — an MCP tool really executes and a documents tool reads the
+ * corpus, so neither has a canned response to replace. */
+const overridableTools = computed(() =>
+  offeredTools.value.filter((tool) => tool.source === 'manual'),
+)
+
+function hasOverride(name: string): boolean {
+  return name in form.mockOverrides
+}
+
+/** On: start from the tool's own responses, which is usually the shape the
+ * override is a variation of. Off: the key goes, and the tool answers with its
+ * own responses again. */
+function toggleOverride(tool: Tool, on: boolean) {
+  if (on) {
+    form.mockOverrides = { ...form.mockOverrides, [tool.name]: [...tool.mock_responses] }
+  } else {
+    removeOverride(tool.name)
+  }
+}
+
+function removeOverride(name: string) {
+  const next = { ...form.mockOverrides }
+  delete next[name]
+  form.mockOverrides = next
+}
+
+function setOverride(name: string, responses: string[]) {
+  form.mockOverrides = { ...form.mockOverrides, [name]: responses }
+}
+
+/** Switched on but nothing to send: its only entry is blank, which
+ * `overridesForWire` drops on save (the "a sole blank field means none" rule
+ * of `mockResponsesForWire`). Said on the row, so the override does not seem
+ * to vanish silently after saving. */
+function overrideWillBeDropped(name: string): boolean {
+  const entries = form.mockOverrides[name]
+  if (entries === undefined) return false
+  const result = mockResponsesForWire(entries)
+  return result.ok && result.value.length === 0
+}
+
+/** Overrides naming a tool the selection no longer offers as an enabled
+ * manual tool — renamed, removed, disabled, or its toolset deselected. The
+ * server refuses to save or run such a case, so each one is listed with a
+ * remove button rather than silently dropped. Not judged while a toolset's
+ * tools are still loading. */
+const staleOverrides = computed(() => {
+  if (toolsLoading.value) return []
+  const offered = new Set(overridableTools.value.map((tool) => tool.name))
+  return Object.keys(form.mockOverrides)
+    .filter((name) => !offered.has(name))
+    .sort()
+})
+
+/** The overrides as the request carries them, or a readable refusal. A fully
+ * blank override is no override (the key is dropped, same as the toolset
+ * editor's "a sole blank field means none"); a blank entry inside a longer
+ * list is refused naming the tool and the call. */
+function overridesForWire(): { ok: true; value: MockOverrides } | { ok: false; error: string } {
+  const value: MockOverrides = {}
+  for (const [name, entries] of Object.entries(form.mockOverrides)) {
+    const responses = mockResponsesForWire(entries)
+    if (!responses.ok) return { ok: false, error: `Override for ${name}: ${responses.error}` }
+    if (responses.value.length > 0) value[name] = responses.value
+  }
+  return { ok: true, value }
+}
+
+const overrideError = computed(() => {
+  const result = overridesForWire()
+  return result.ok ? null : result.error
+})
+
 // --- save --------------------------------------------------------------
 
 const saving = ref(false)
 const saveError = ref<string | null>(null)
 
 function buildInput() {
+  const overrides = overridesForWire()
   return {
     group_id: form.groupId as number,
     title: form.title,
@@ -374,11 +499,21 @@ function buildInput() {
     toolset_ids: form.toolsetIds,
     tool_choice: form.toolChoice || null,
     max_turns: form.maxTurns || DEFAULT_MAX_TURNS,
+    // Always sent, on create and on PATCH alike: this is a whole-form editor,
+    // so `[]` / `{}` is a deliberate "none" that clears what was stored.
+    history: form.history.map((turn) => ({ role: turn.role, content: turn.content })),
+    // `saveBlocked` keeps a refused override from ever reaching here.
+    mock_overrides: overrides.ok ? overrides.value : {},
   }
 }
 
 const saveBlocked = computed(
-  () => toolError.value !== null || userMessageError.value !== null || form.groupId === null,
+  () =>
+    toolError.value !== null ||
+    userMessageError.value !== null ||
+    historyError.value !== null ||
+    overrideError.value !== null ||
+    form.groupId === null,
 )
 
 async function save() {
@@ -542,6 +677,22 @@ async function removeTestCase() {
               </div>
 
               <div class="field">
+                <span class="label">Earlier conversation</span>
+                <ConversationEditor
+                  v-model="form.history"
+                  id-prefix="tc-history"
+                  :readonly="!auth.canWrite"
+                />
+                <p class="hint">
+                  For a follow-up question: user/assistant exchanges sent before this case's own
+                  user message, after the system message.
+                </p>
+                <Message v-if="historyError" severity="error" :closable="false">
+                  {{ historyError }}
+                </Message>
+              </div>
+
+              <div class="field">
                 <label for="tc-content">Content</label>
                 <Textarea id="tc-content" v-model="form.content" rows="6" auto-resize class="mono-input" />
                 <p class="hint">
@@ -569,6 +720,21 @@ async function removeTestCase() {
                     <span class="channel-caption">System message</span>
                     <pre v-if="systemMessagePreview" class="message-text ink-system">{{ systemMessagePreview }}</pre>
                     <p v-else class="segment-empty">(no system message)</p>
+                  </div>
+
+                  <!-- The earlier conversation, in send order: each turn is
+                       its own message, so each gets its own box. -->
+                  <div
+                    v-for="(turn, index) in form.history"
+                    :key="`history-${index}`"
+                    class="message-block message-history"
+                    :class="`message-history-${turn.role}`"
+                  >
+                    <span class="channel-caption">
+                      {{ turn.role === 'user' ? 'User message' : 'Assistant message' }} · earlier
+                    </span>
+                    <pre v-if="turn.content.trim()" class="message-text">{{ turn.content }}</pre>
+                    <p v-else class="segment-empty">(empty — fill it in or remove the exchange)</p>
                   </div>
 
                   <div class="message-block message-user">
@@ -671,7 +837,12 @@ async function removeTestCase() {
                   <p v-if="toolsLoading" class="hint">Loading tools…</p>
                   <p v-else-if="offeredTools.length === 0" class="hint">(no tools)</p>
                   <ul v-else class="offered-tools">
-                    <li v-for="(tool, index) in offeredTools" :key="`${tool.name}-${index}`">
+                    <li
+                      v-for="(tool, index) in offeredTools"
+                      :key="`${tool.name}-${index}`"
+                      class="offered-tool"
+                      :title="titleIfShort(tool.description)"
+                    >
                       <span class="mono">{{ tool.name }}</span>
                       <span v-if="tool.description" class="hint"> — {{ tool.description }}</span>
                     </li>
@@ -681,6 +852,109 @@ async function removeTestCase() {
               </div>
             </div>
           </div>
+
+          <!--
+            Full width below the two columns: an override is a canned response,
+            which can run to tens of thousands of characters and needs the room.
+            Execute mode only — nothing else ever sends a canned response — but
+            the stored overrides survive a mode switch untouched (said in the
+            hint below, so a definitions-mode case doesn't look like it lost them).
+          -->
+          <div v-if="executeMode" class="field overrides">
+            <span class="label">Mock responses for this case</span>
+            <p class="hint">
+              A manual tool answers with its toolset's canned response. Override it here to give this
+              case its own, so one shared toolset can serve many cases.
+            </p>
+            <p v-if="toolsLoading" class="hint">Loading tools…</p>
+            <p v-else-if="overridableTools.length === 0 && staleOverrides.length === 0" class="hint bordered">
+              None of the selected toolsets offers an enabled manual tool.
+            </p>
+            <ul v-else class="override-list">
+              <li
+                v-for="tool in overridableTools"
+                :key="`${tool.toolset_id}-${tool.name}`"
+                class="override-item"
+              >
+                <label class="checkbox-option" :for="`override-${tool.toolset_id}-${tool.name}`">
+                  <Checkbox
+                    v-if="auth.canWrite"
+                    :model-value="hasOverride(tool.name)"
+                    binary
+                    :input-id="`override-${tool.toolset_id}-${tool.name}`"
+                    @update:model-value="(on: boolean) => toggleOverride(tool, on)"
+                  />
+                  <span>
+                    <span class="mono">{{ tool.name }}</span>
+                    <span class="hint">
+                      —
+                      {{
+                        hasOverride(tool.name)
+                          ? overrideWillBeDropped(tool.name)
+                            ? 'override is blank — it will not be saved'
+                            : 'overridden for this case'
+                          : tool.mock_responses.length === 0
+                            ? 'no canned response in its toolset'
+                            : tool.mock_responses.length === 1
+                              ? 'uses its toolset’s response'
+                              : `uses its toolset’s ${tool.mock_responses.length} responses`
+                      }}
+                    </span>
+                  </span>
+                </label>
+                <MockResponsesEditor
+                  v-if="hasOverride(tool.name)"
+                  class="override-editor"
+                  :model-value="form.mockOverrides[tool.name]"
+                  :id-prefix="`override-response-${tool.toolset_id}-${tool.name}`"
+                  :readonly="!auth.canWrite"
+                  @update:model-value="(responses: string[]) => setOverride(tool.name, responses)"
+                />
+              </li>
+            </ul>
+          </div>
+          <p
+            v-else-if="toolsActive && Object.keys(form.mockOverrides).length > 0"
+            class="hint"
+          >
+            This case keeps mock overrides for {{ Object.keys(form.mockOverrides).sort().join(', ') }};
+            they apply only in Execute mode.
+          </p>
+          <!-- An override for a tool the selection no longer offers is refused
+               by the server on save and on run creation in *any* tool mode
+               (`assert_tool_config` checks the names whenever the mode is not
+               "none"), so it is surfaced by name here too — outside the
+               execute-only block, or a definitions-mode save would fail for a
+               reason the page never showed. -->
+          <template v-if="toolsActive">
+            <Message
+              v-for="name in staleOverrides"
+              :key="`stale-${name}`"
+              severity="warn"
+              :closable="false"
+            >
+              <div class="stale-override">
+                <span>
+                  This case overrides <span class="mono">{{ name }}</span>, which none of the selected
+                  toolsets offers as an enabled manual tool any more. The server refuses to save or
+                  run it until the override is removed.
+                </span>
+                <Button
+                  v-if="auth.canWrite"
+                  type="button"
+                  label="Remove override"
+                  size="small"
+                  severity="warn"
+                  outlined
+                  @click="removeOverride(name)"
+                />
+              </div>
+            </Message>
+          </template>
+          <!-- Outside the execute-only block for the same reason: it blocks
+               Save in every mode (`saveBlocked`), so it has to be visible in
+               every mode, or Save is disabled with no reason on screen. -->
+          <Message v-if="overrideError" severity="error" :closable="false">{{ overrideError }}</Message>
         </section>
 
         <Message v-if="saveError" severity="error" :closable="false">{{ saveError }}</Message>
@@ -916,6 +1190,18 @@ async function removeTestCase() {
   border-left-color: var(--pr-case-accent);
 }
 
+/* Earlier turns: no part colour of their own (those are reserved for the
+   system/task/content channels), just a dashed bar so the replayed
+   conversation reads as context rather than as the message under test. */
+.message-history {
+  border-left-style: dashed;
+  background: transparent;
+}
+
+.message-history-assistant {
+  margin-left: 0.75rem;
+}
+
 .channel-caption {
   display: block;
   font-size: 0.6875rem;
@@ -1001,6 +1287,48 @@ async function removeTestCase() {
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.75rem;
+}
+
+/* Name plus the start of the description, two lines at most: a tool's
+ * description is the full text the model is offered and can run to tens of
+ * thousands of characters, which would bury the rest of this column. */
+.offered-tool {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.override-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  font-size: 0.875rem;
+}
+
+.override-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* Indented under its own toggle, so a long editor still reads as belonging
+   to the tool named above it. */
+.override-editor {
+  margin-left: 1.75rem;
+}
+
+.stale-override {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .actions {

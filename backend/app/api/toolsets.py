@@ -1,11 +1,19 @@
 """`/api/toolsets` — tool bundles and what they offer: tools, and a markdown corpus.
 
-Toolset CRUD (it holds `mcp_url` + `mcp_headers`, i.e. credentials) is
-`Admin`; the tools *inside* one are `Writer`, and `POST /{id}/discover` sits
-at `Writer` too — it only ever reveals tool names/descriptions, never the
-headers it authenticates with — the same split `app.api.endpoints` makes
-between endpoint CRUD and `POST /discover`. Reading is `CurrentUser`: every
-role needs the list to build a test case.
+Roles follow content vs. credentials, and the line runs *through* toolset
+writes rather than around them. A `manual` toolset holds no credentials — a
+name, a description and hand-authored tools with canned responses — so it is
+content: `POST` and `PUT` are `Writer`, and a member may create one and edit its
+name and description. Everything that touches a credential or another
+engagement stays `Admin`, checked per request by `_require_admin_for`: any kind
+but `manual` (an `mcp` toolset holds `mcp_url` + `mcp_headers`; a `documents`
+one is converted into by kind, which re-seeds its tools), the URL and headers
+themselves, and `is_global` (sharing reaches every workspace). `DELETE` stays
+`Admin` outright — it cascades into test cases. The tools *inside* a toolset are
+`Writer`, and `POST /{id}/discover` sits at `Writer` too — it only ever reveals
+tool names/descriptions, never the headers it authenticates with — the same
+split `app.api.endpoints` makes between endpoint CRUD and `POST /discover`.
+Reading is `CurrentUser`: every role needs the list to build a test case.
 
 A `documents` toolset's corpus sits at `Writer` for exactly that reason: the
 container may hold credentials, the markdown inside it never does, so it is
@@ -14,10 +22,17 @@ tools a documents toolset offers are synthesized `tools` rows
 (`app.repos.toolsets.sync_document_tools`), re-assertable through
 `POST /{id}/documents/sync` the way MCP tools are re-read through
 `POST /{id}/discover` — which is also why hand-authoring a *fourth* tool on a
-documents toolset is refused here (`_refuse_hand_authored_tool`): it would be
-offered to the model as a canned-response tool with no corpus behind it, and the
-executor routes a call on `tools.source`, so a `manual` row inside a documents
-toolset is a shape nothing downstream accounts for.
+documents toolset is refused (`HandAuthoredToolError`, raised inside the
+repository so the MCP door refuses it too): it would be offered to the model as
+a canned-response tool with no corpus behind it, and the executor routes a call
+on `tools.source`, so a `manual` row inside a documents toolset is a shape
+nothing downstream accounts for.
+
+What a valid tool name, schema or canned response *is* lives in
+`app.services.tool_authoring`, which both write doors ask; `ToolWriteRequest`'s
+validators are this door's translation of its `ValueError` into a 422. A tool's
+canned responses are a list answered by call order (`mock_responses`; the last
+one repeats).
 
 `mcp_headers` is treated exactly like an endpoint's `api_key`: never
 round-tripped back to the client (a `ToolsetView` carries `has_mcp_headers`
@@ -36,6 +51,11 @@ the toolset is, editable only in Base. Deleting one that other workspaces'
 test cases still select is a 409 naming them (`ToolsetInUseError`) — and so is
 clearing `is_global` on one, since un-sharing strands exactly the same links
 behind a row those workspaces can no longer see.
+
+Two more 409s come from the repository: a toolset name another visible toolset
+already holds (`ToolsetNameConflictError`, on create and on a rename), and
+renaming, disabling or deleting a manual tool that test cases override
+(`ToolOverriddenError`, naming how many cases in which workspaces).
 """
 
 import json
@@ -48,7 +68,8 @@ from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.guards import Admin, CurrentScope, CurrentUser, DbSession, Writer
+from app.auth.guards import Actor, Admin, CurrentScope, CurrentUser, DbSession, Writer
+from app.auth.policy import can_administer
 from app.models import Document, Tool, Toolset, ToolsetKind, ToolSource
 from app.repos.customers import NotBaseWorkspaceError
 from app.repos.documents import (
@@ -62,9 +83,12 @@ from app.repos.documents import (
     update_document,
     upsert_document,
 )
-from app.repos.toolsets import McpToolDescriptor as SyncedToolDescriptor
 from app.repos.toolsets import (
+    HandAuthoredToolError,
+    ToolNameConflictError,
+    ToolOverriddenError,
     ToolsetInUseError,
+    ToolsetNameConflictError,
     create_tool,
     create_toolset,
     delete_tool,
@@ -78,6 +102,7 @@ from app.repos.toolsets import (
     update_tool,
     update_toolset,
 )
+from app.repos.toolsets import McpToolDescriptor as SyncedToolDescriptor
 from app.scope import Scope
 from app.services.documents import (
     DOCUMENT_TOOL_NAMES,
@@ -88,12 +113,18 @@ from app.services.documents import (
     normalize_markdown,
 )
 from app.services.mcp_client import McpClientError, list_mcp_tools
+from app.services.tool_authoring import (
+    EMPTY_PARAMETERS_JSON,
+    clean_mock_responses,
+    clean_parameters_json,
+    clean_tool_description,
+    clean_tool_name,
+    decode_mock_responses,
+)
 
 router = APIRouter(prefix="/toolsets", tags=["toolsets"])
 
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
-_TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-_EMPTY_SCHEMA = '{"type": "object", "properties": {}}'
 
 #: Per *document*, not per request. A megabyte of markdown is far more than
 #: `read_document`'s largest window, so a file above this is a sign something
@@ -114,7 +145,8 @@ class ToolView(BaseModel):
     name: str
     description: str | None
     parameters_json: str
-    mock_response: str | None
+    #: Canned answers by call order; the last repeats. Empty = none configured.
+    mock_responses: list[str]
     enabled: bool
     source: ToolSource
     first_seen_at: datetime
@@ -242,42 +274,39 @@ class ToolsetWriteRequest(BaseModel):
 
 
 class ToolWriteRequest(BaseModel):
+    """A full replace of one hand-authored tool.
+
+    Every validator is a one-line call into `app.services.tool_authoring`, the
+    rules the MCP door asks too — so a tool written here and one pushed in by an
+    agent are held to the same name rule, the same schema rule and the same
+    ceiling.
+    """
+
     name: str = Field(min_length=1)
     description: str | None = None
     parameters_json: str | None = None
-    mock_response: str | None = None
+    #: By call order; None or [] means none configured.
+    mock_responses: list[str] | None = None
 
     @field_validator("name")
     @classmethod
     def _validate_name(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not _TOOL_NAME_RE.match(cleaned):
-            raise ValueError(
-                "Tool name may only contain letters, digits, underscores and hyphens (max 64)."
-            )
-        return cleaned
+        return clean_tool_name(value)
 
-    @field_validator("description", "mock_response")
+    @field_validator("description")
     @classmethod
-    def _blank_to_none(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        cleaned = value.strip()
-        return cleaned or None
+    def _validate_description(cls, value: str | None) -> str | None:
+        return clean_tool_description(value)
+
+    @field_validator("mock_responses")
+    @classmethod
+    def _validate_mock_responses(cls, value: list[str] | None) -> list[str]:
+        return clean_mock_responses(value)
 
     @field_validator("parameters_json")
     @classmethod
     def _validate_parameters(cls, value: str | None) -> str:
-        cleaned = (value or "").strip()
-        if not cleaned:
-            return _EMPTY_SCHEMA
-        try:
-            parsed = json.loads(cleaned)
-        except ValueError as exc:
-            raise ValueError("Parameters must be valid JSON.") from exc
-        if not isinstance(parsed, dict):
-            raise ValueError("Parameters must be a JSON object (a JSON Schema).")
-        return cleaned
+        return clean_parameters_json(value)
 
 
 class SetToolEnabledRequest(BaseModel):
@@ -380,7 +409,7 @@ def _tool_view(tool: Tool) -> ToolView:
         name=tool.name,
         description=tool.description,
         parameters_json=tool.parameters_json,
-        mock_response=tool.mock_response,
+        mock_responses=decode_mock_responses(tool.mock_responses),
         enabled=tool.enabled,
         source=tool.source,
         first_seen_at=tool.first_seen_at,
@@ -510,50 +539,64 @@ async def _get_tool_or_404(
     raise HTTPException(status.HTTP_404_NOT_FOUND, "No such tool.")
 
 
-async def _refuse_duplicate_name(
-    scope: Scope, session: AsyncSession, toolset_id: int, name: str
+def _tool_write_http_error(exc: Exception) -> HTTPException:
+    """The two repository refusals about which tool may be written, as HTTP.
+
+    A name conflict and a rename of a tool test cases override are 409s (the
+    request is fine, the current state refuses it); hand-authoring on a
+    documents toolset is a 400 (no state of that toolset would ever accept it) —
+    the same split the corpus routes draw between a path conflict and
+    `_require_documents_kind`.
+    """
+    if isinstance(exc, ToolNameConflictError | ToolOverriddenError):
+        return HTTPException(status.HTTP_409_CONFLICT, str(exc))
+    return HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+
+def _require_admin_for(
+    actor: Actor, existing: Toolset | None, body: ToolsetWriteRequest
 ) -> None:
-    """Pre-checks the `(toolset_id, name)` unique constraint so the caller
-    gets a sentence instead of a raw driver error — see
-    `app.repos.toolsets.create_tool`'s docstring, which deliberately lets the
-    constraint violation escape rather than catching it itself.
+    """Refuses a non-admin any toolset write that touches a credential.
+
+    A `manual` toolset is content — see the module docstring — so a member may
+    create one and rename or re-describe it. What stays `Admin`:
+
+    * **Any kind but `manual`**, stored or requested. An `mcp` toolset is the
+      container for `mcp_url` + `mcp_headers`, and converting to `documents`
+      re-seeds the synthesized tools; editing either kind's name is still an
+      edit of a row whose other half is admin-only, and drawing the line on the
+      row's kind keeps it one sentence.
+    * **`mcp_url` / `mcp_headers`**, whenever the request names them — even
+      blank, since "clear the headers" is a credential write too.
+    * **`is_global`** when named — sharing reaches every workspace. On `POST`
+      only a `true` counts: an explicit `false` is the default restated.
+
+    Asked *before* any write, so a refused request writes nothing at all.
     """
-    existing = await list_tools(scope, session, toolset_ids=[toolset_id])
-    if any(tool.name == name for tool in existing):
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f'This toolset already has a tool called "{name}".'
-        )
-
-
-def _refuse_hand_authored_tool(toolset: Toolset) -> None:
-    """Refuses authoring or rewriting a tool on a `documents` toolset.
-
-    Nothing in the repository layer stops it — `create_tool` only asks that the
-    toolset be this workspace's, and before this feature that was the whole rule,
-    which is why a hand-written tool on an `mcp` toolset is still allowed (a
-    canned `mock_response` beside discovered tools is a useful way to exercise one
-    without its server). A documents toolset is the case where it stops being
-    harmless: its three tools are synthesized from one constant so that every
-    corpus offers the same functions with the same descriptions, and the executor
-    routes a call on `tools.source`, so a fourth `manual` row here would be
-    offered to the model as a canned-response tool with no corpus behind it and
-    quietly turn a retrieval measurement into something else. Rewriting one of
-    the three is the same problem from the other side: a re-worded description is
-    the one variable this feature holds constant across engagements.
-
-    Deleting a tool and flipping `enabled` stay allowed on purpose. Disabling
-    `search_documents` to see whether a model can navigate by `list_documents` and
-    `read_document` alone is one of the more interesting things this can measure,
-    and `POST /{id}/documents/sync` puts a deleted row back.
-    """
-    if toolset.kind != "documents":
+    if can_administer(actor.role):
         return
-    raise HTTPException(
-        status.HTTP_400_BAD_REQUEST,
-        f'"{toolset.name}" is a documents toolset: its tools are synthesized '
-        f"({', '.join(DOCUMENT_TOOL_NAMES)}) and cannot be written by hand. Add "
-        "documents to the corpus instead.",
-    )
+    named = body.model_fields_set
+    if existing is None:
+        touches_credentials = (
+            body.kind != "manual"
+            or body.is_global
+            or "mcp_url" in named
+            or "mcp_headers" in named
+        )
+    else:
+        touches_credentials = (
+            existing.kind != "manual"
+            or body.kind != "manual"
+            or "is_global" in named
+            or "mcp_url" in named
+            or "mcp_headers" in named
+        )
+    if touches_credentials:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Only an administrator can create or change an MCP or documents toolset, its server "
+            "URL or headers, or whether it is shared. A member may write manual toolsets.",
+        )
 
 
 def _toolset_values(
@@ -620,14 +663,19 @@ async def get_toolset_endpoint(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_toolset_endpoint(
-    body: ToolsetWriteRequest, actor: Admin, scope: CurrentScope, session: DbSession
+    body: ToolsetWriteRequest, actor: Writer, scope: CurrentScope, session: DbSession
 ) -> ToolsetDetailView:
-    del actor
+    """`Writer` for a manual toolset; anything touching a credential or sharing
+    is refused to a non-admin by `_require_admin_for`.
+    """
+    _require_admin_for(actor, None, body)
     values = _toolset_values(body, include_headers=True, include_global=True)
     try:
         toolset = await create_toolset(scope, session, **values)
     except NotBaseWorkspaceError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except ToolsetNameConflictError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     await session.commit()
     return await _detail_view(scope, session, toolset)
 
@@ -636,12 +684,12 @@ async def create_toolset_endpoint(
 async def update_toolset_endpoint(
     toolset_id: int,
     body: ToolsetWriteRequest,
-    actor: Admin,
+    actor: Writer,
     scope: CurrentScope,
     session: DbSession,
 ) -> ToolsetDetailView:
-    del actor
-    await _get_owned_or_404(scope, session, toolset_id)
+    existing = await _get_owned_or_404(scope, session, toolset_id)
+    _require_admin_for(actor, existing, body)
 
     # A credential, not content: only touched when the request actually named
     # it (see the module docstring) — but switching to a kind that has no server
@@ -660,9 +708,10 @@ async def update_toolset_endpoint(
         await update_toolset(scope, session, toolset_id, values)
     except NotBaseWorkspaceError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    except ToolsetInUseError as exc:
+    except (ToolsetInUseError, ToolsetNameConflictError) as exc:
         # Un-sharing a toolset other workspaces still select — the same 409 the
-        # delete gives, because it is the same loss one step earlier.
+        # delete gives, because it is the same loss one step earlier — or a
+        # rename onto a name another visible toolset holds.
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     await session.commit()
     refreshed = await _get_or_404(scope, session, toolset_id)
@@ -704,19 +753,19 @@ async def create_tool_endpoint(
     session: DbSession,
 ) -> ToolView:
     del actor
-    toolset = await _get_owned_or_404(scope, session, toolset_id)
-    _refuse_hand_authored_tool(toolset)
-    await _refuse_duplicate_name(scope, session, toolset_id, body.name)
-
-    tool = await create_tool(
-        scope,
-        session,
-        toolset_id,
-        name=body.name,
-        description=body.description,
-        parameters_json=body.parameters_json or _EMPTY_SCHEMA,
-        mock_response=body.mock_response,
-    )
+    await _get_owned_or_404(scope, session, toolset_id)
+    try:
+        tool = await create_tool(
+            scope,
+            session,
+            toolset_id,
+            name=body.name,
+            description=body.description,
+            parameters_json=body.parameters_json or EMPTY_PARAMETERS_JSON,
+            mock_responses=body.mock_responses or [],
+        )
+    except (ToolNameConflictError, HandAuthoredToolError) as exc:
+        raise _tool_write_http_error(exc) from exc
     await session.commit()
     return _tool_view(tool)
 
@@ -731,22 +780,21 @@ async def update_tool_endpoint(
     session: DbSession,
 ) -> ToolView:
     del actor
-    _refuse_hand_authored_tool(await _get_owned_or_404(scope, session, toolset_id))
-    existing = await _get_tool_or_404(scope, session, toolset_id, tool_id)
-    if body.name != existing.name:
-        await _refuse_duplicate_name(scope, session, toolset_id, body.name)
-
-    await update_tool(
-        scope,
-        session,
-        tool_id,
-        {
-            "name": body.name,
-            "description": body.description,
-            "parameters_json": body.parameters_json or _EMPTY_SCHEMA,
-            "mock_response": body.mock_response,
-        },
-    )
+    await _get_tool_or_404(scope, session, toolset_id, tool_id)
+    try:
+        await update_tool(
+            scope,
+            session,
+            tool_id,
+            {
+                "name": body.name,
+                "description": body.description,
+                "parameters_json": body.parameters_json or EMPTY_PARAMETERS_JSON,
+                "mock_responses": body.mock_responses or [],
+            },
+        )
+    except (ToolNameConflictError, HandAuthoredToolError, ToolOverriddenError) as exc:
+        raise _tool_write_http_error(exc) from exc
     await session.commit()
     refreshed = await _get_tool_or_404(scope, session, toolset_id, tool_id)
     return _tool_view(refreshed)
@@ -758,7 +806,10 @@ async def delete_tool_endpoint(
 ) -> None:
     del actor
     await _get_tool_or_404(scope, session, toolset_id, tool_id)
-    await delete_tool(scope, session, tool_id)
+    try:
+        await delete_tool(scope, session, tool_id)
+    except ToolOverriddenError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     await session.commit()
 
 
@@ -776,7 +827,10 @@ async def set_tool_enabled_endpoint(
     """
     del actor
     await _get_tool_or_404(scope, session, toolset_id, tool_id)
-    await set_tool_enabled(scope, session, tool_id, body.enabled)
+    try:
+        await set_tool_enabled(scope, session, tool_id, body.enabled)
+    except ToolOverriddenError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     await session.commit()
     refreshed = await _get_tool_or_404(scope, session, toolset_id, tool_id)
     return _tool_view(refreshed)

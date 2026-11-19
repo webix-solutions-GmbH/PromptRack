@@ -14,11 +14,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
 
-#: `manual` tools are authored in the UI and answer with `mock_response`
-#: verbatim; `mcp` tools are discovered from an MCP server and really executed;
-#: a `documents` toolset holds a markdown corpus and its three retrieval tools
-#: are **synthesized** — neither authored nor discovered — and executed against
-#: the `documents` rows of that same toolset.
+#: `manual` tools are authored in the UI (or over MCP) and answer with their
+#: `mock_responses` verbatim, by call order; `mcp` tools are discovered from an
+#: MCP server and really executed; a `documents` toolset holds a markdown corpus
+#: and its three retrieval tools are **synthesized** — neither authored nor
+#: discovered — and executed against the `documents` rows of that same toolset.
 ToolsetKind = Literal["manual", "mcp", "documents"]
 ToolSource = Literal["manual", "mcp", "documents"]
 
@@ -49,9 +49,11 @@ ToolChoice = Literal["auto", "required", "none"]
 class Toolset(Base):
     """A named bundle of tools. A test case may combine several.
 
-    `mcp_url` and `mcp_headers` are credentials, which is why a toolset is
-    admin-writable in the UI and not writable over MCP at all — and why they
-    are read live at execution rather than frozen into a run.
+    `mcp_url` and `mcp_headers` are credentials, which is why everything that
+    touches them — an `mcp` kind, the URL, the headers, sharing, deleting — is
+    admin-only in the UI and absent over MCP, and why they are read live at
+    execution rather than frozen into a run. A `manual` toolset holds none of
+    them, so it is content: a member may write one, and so may an MCP caller.
     """
 
     __tablename__ = "toolsets"
@@ -98,9 +100,14 @@ class Tool(Base):
     description: Mapped[str | None]
     #: JSON Schema for the function's arguments.
     parameters_json: Mapped[str] = mapped_column(server_default="{}")
-    #: Canned output returned instead of calling anything (manual toolsets).
-    #: This is what keeps a multi-turn test byte-identical across models.
-    mock_response: Mapped[str | None]
+    #: Canned outputs returned instead of calling anything (manual toolsets), as
+    #: a JSON array of strings answered **by call order** — the first call gets
+    #: the first, and the last repeats for every call after. NULL (never `[]`)
+    #: means none configured. JSON text like `parameters_json`, encoded and
+    #: decoded by `app.services.tool_authoring`. This is what keeps a
+    #: multi-turn test byte-identical across models, including one that has to
+    #: page or poll through a tool.
+    mock_responses: Mapped[str | None]
     enabled: Mapped[bool] = mapped_column(server_default=true())
     source: Mapped[ToolSource] = mapped_column(Text, server_default="manual")
     first_seen_at: Mapped[datetime] = mapped_column(server_default=func.now())

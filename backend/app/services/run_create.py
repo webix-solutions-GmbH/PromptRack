@@ -61,6 +61,7 @@ from app.services.attribution import VersionRef, match_version
 from app.services.llm_info import LlmInfo, probe_llm_info, serialize_llm_info
 from app.services.message_assembly import assert_user_message
 from app.services.params import combine_group_params, merge_params, parse_params_json
+from app.services.tool_authoring import decode_mock_overrides
 from app.services.tool_config import assert_tool_config
 from app.services.tool_loop import SnapshotTool, ToolDefinition, serialize_tools_snapshot
 
@@ -310,6 +311,20 @@ async def _resolve_tool_snapshots(
     if not tool_case_ids:
         return {}
 
+    # A case's per-tool override replaces that manual tool's canned responses
+    # in *this case's* frozen snapshot only — so the override is frozen per row
+    # exactly like the toolset's own responses, and `describe_row_drift`'s
+    # "tools" comparison sees it without knowing overrides exist. Only under
+    # `execute`: a `definitions` run never sends a canned response, so freezing
+    # an override there would change nothing the model saw and only surface as
+    # false "tools" drift against a run of the same case without one. (The
+    # names are still validated for every tool mode — `_assert_tool_config`.)
+    overrides = {
+        case.id: decode_mock_overrides(case.mock_overrides)
+        for case in cases
+        if case.tool_mode == "execute" and case.mock_overrides
+    }
+
     rows = [
         row
         for row in await list_snapshot_tool_rows(scope, session, tool_case_ids)
@@ -324,13 +339,18 @@ async def _resolve_tool_snapshots(
     by_case: dict[int, list[SnapshotTool]] = {}
     for row in rows:
         stats = corpora.get(row.toolset_id) if row.source == "documents" else None
+        override = (
+            overrides.get(row.test_case_id, {}).get(row.tool_name)
+            if row.source == "manual"
+            else None
+        )
         by_case.setdefault(row.test_case_id, []).append(
             SnapshotTool(
                 definition=_tool_definition(row),
                 source=row.source,
                 toolset_id=row.toolset_id,
                 toolset_name=row.toolset_name,
-                mock_response=row.mock_response,
+                mock_responses=tuple(override) if override else row.mock_responses,
                 document_count=None if stats is None else stats.document_count,
                 corpus_updated_at=(
                     None
@@ -396,6 +416,11 @@ async def _assert_tool_config(
             tool_mode=case.tool_mode,
             toolset_ids=links.get(case.id, []),
             subject=f'Test case "{case.title}"',
+            # Re-checked here, not only at authoring: a tool renamed, disabled
+            # or deleted since the case was saved must refuse the run naming
+            # the case, rather than leave an override that silently does
+            # nothing.
+            mock_overrides=decode_mock_overrides(case.mock_overrides),
         )
 
 
@@ -480,6 +505,9 @@ def _result_rows(
                     "expected_output": case.expected_output,
                     "system_prompt_text": system_prompt_text,
                     "task_prompt_text": task_prompt_text,
+                    # The fourth sent part, frozen verbatim: what Resume sends
+                    # and what the run displays, whatever the case says later.
+                    "history": case.history,
                     "tools_snapshot": (
                         serialize_tools_snapshot(snapshot) if snapshot else None
                     ),

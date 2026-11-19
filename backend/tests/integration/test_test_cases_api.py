@@ -18,17 +18,20 @@ enforced from *inside* the repository functions so no route can forget them:
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import users as user_store
 from app.auth.passwords import hash_password
 from app.auth.policy import Role
 from app.main import app
+from app.models import TestCase as CaseModel
 from app.repos.prompts import create_prompt, delete_prompt
 from app.repos.test_cases import create_test_case, create_test_group, replace_toolset_links
 from app.repos.toolsets import create_tool, create_toolset, set_tool_enabled
@@ -799,6 +802,371 @@ class TestToolsetLinksAndConfig:
         )
         assert patched.status_code == 200, patched.text
         assert patched.json()["toolset_ids"] == []
+
+
+HISTORY = [
+    {"role": "user", "content": "List open invoices."},
+    {"role": "assistant", "content": '{"invoices": [4711, 4712]}'},
+]
+
+
+async def _stored(session: AsyncSession, test_case_id: int) -> tuple[str | None, str | None]:
+    """The two JSON columns as stored — asserted directly, not via the view."""
+    row = (
+        await session.execute(
+            select(CaseModel.history, CaseModel.mock_overrides).where(
+                CaseModel.id == test_case_id
+            )
+        )
+    ).one()
+    return row[0], row[1]
+
+
+class TestConversationHistory:
+    async def test_round_trips_and_is_stored_as_a_json_array(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        group = await create_test_group(scope, session, name="Group A")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        created = await client.post(
+            "/api/test-cases",
+            json={
+                "group_id": group.id,
+                "title": "Follow-up",
+                "content": "Only Germany.",
+                "history": HISTORY,
+            },
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["history"] == HISTORY
+        assert created.json()["mock_overrides"] == {}
+
+        history, overrides = await _stored(session, created.json()["id"])
+        assert json.loads(history or "null") == HISTORY
+        assert overrides is None
+
+        fetched = await client.get(f"/api/test-cases/{created.json()['id']}")
+        assert fetched.json()["history"] == HISTORY
+
+    async def test_a_case_without_history_reads_back_an_empty_list_and_stores_null(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        group = await create_test_group(scope, session, name="Group A")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        created = await client.post(
+            "/api/test-cases", json={"group_id": group.id, "title": "t", "content": "hi"}
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["history"] == []
+        assert await _stored(session, created.json()["id"]) == (None, None)
+
+    @pytest.mark.parametrize(
+        ("history", "fragment"),
+        [
+            ([{"role": "user", "content": "only a question"}], 'end with an "assistant"'),
+            (
+                [{"role": "assistant", "content": "a"}, {"role": "user", "content": "b"}],
+                'must be "user"',
+            ),
+            (
+                [{"role": "user", "content": "a"}, {"role": "assistant", "content": "  "}],
+                "has no content",
+            ),
+        ],
+    )
+    async def test_an_unsendable_history_is_a_400_naming_the_case(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        create_workspace: CreateWorkspace,
+        history: list[dict[str, str]],
+        fragment: str,
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        group = await create_test_group(scope, session, name="Group A")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        response = await client.post(
+            "/api/test-cases",
+            json={"group_id": group.id, "title": "Follow-up", "content": "x", "history": history},
+        )
+        assert response.status_code == 400, response.text
+        assert response.json()["message"].startswith('Test case "Follow-up": ')
+        assert fragment in response.json()["message"]
+
+    async def test_a_system_role_is_refused_by_the_wire_shape(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        group = await create_test_group(scope, session, name="Group A")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        response = await client.post(
+            "/api/test-cases",
+            json={
+                "group_id": group.id,
+                "title": "t",
+                "content": "x",
+                "history": [
+                    {"role": "system", "content": "a"},
+                    {"role": "assistant", "content": "b"},
+                ],
+            },
+        )
+        assert response.status_code == 422
+        assert "message" in response.json()
+
+    async def test_patch_is_presence_based_and_null_or_empty_clears(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        group = await create_test_group(scope, session, name="Group A")
+        case = await create_test_case(
+            scope, session, group_id=group.id, title="t", content="hi", history=HISTORY
+        )
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        untouched = await client.patch(f"/api/test-cases/{case.id}", json={"title": "Renamed"})
+        assert untouched.status_code == 200, untouched.text
+        assert untouched.json()["history"] == HISTORY
+
+        refused = await client.patch(
+            f"/api/test-cases/{case.id}", json={"history": HISTORY[:1]}
+        )
+        assert refused.status_code == 400
+        assert refused.json()["message"].startswith('Test case "Renamed": ')
+        assert (await _stored(session, case.id))[0] is not None
+
+        for clearing in (None, []):
+            await client.patch(f"/api/test-cases/{case.id}", json={"history": HISTORY})
+            cleared = await client.patch(
+                f"/api/test-cases/{case.id}", json={"history": clearing}
+            )
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["history"] == []
+            assert (await _stored(session, case.id))[0] is None
+
+
+class TestMockOverrides:
+    async def _setup(
+        self, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> tuple[int, Scope, int, int]:
+        customer_id, scope = await create_workspace("Acme")
+        group = await create_test_group(scope, session, name="Group A")
+        toolset = await create_toolset(scope, session, name="Odoo")
+        await create_tool(scope, session, toolset.id, name="lookup", mock_responses=["shared"])
+        disabled = await create_tool(scope, session, toolset.id, name="archived")
+        await set_tool_enabled(scope, session, disabled.id, False)
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        return customer_id, scope, group.id, toolset.id
+
+    async def test_round_trips_and_a_string_is_not_accepted_where_a_list_is_required(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        _, _, group_id, toolset_id = await self._setup(session, create_workspace)
+        await login(client, "member@example.com")
+
+        created = await client.post(
+            "/api/test-cases",
+            json={
+                "group_id": group_id,
+                "title": "t",
+                "content": "hi",
+                "tool_mode": "execute",
+                "toolset_ids": [toolset_id],
+                "mock_overrides": {"lookup": ['{"status": "pending"}', ' {"status": "done"} ']},
+            },
+        )
+        assert created.status_code == 201, created.text
+        expected = {"lookup": ['{"status": "pending"}', '{"status": "done"}']}
+        assert created.json()["mock_overrides"] == expected
+        stored = (await _stored(session, created.json()["id"]))[1]
+        assert json.loads(stored or "null") == expected
+
+    async def test_an_override_of_a_tool_that_is_not_an_enabled_manual_tool_is_refused(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        _, _, group_id, toolset_id = await self._setup(session, create_workspace)
+        await login(client, "member@example.com")
+
+        for name in ("lookpu", "archived"):
+            response = await client.post(
+                "/api/test-cases",
+                json={
+                    "group_id": group_id,
+                    "title": "Case X",
+                    "content": "hi",
+                    "tool_mode": "execute",
+                    "toolset_ids": [toolset_id],
+                    "mock_overrides": {name: ["x"]},
+                },
+            )
+            assert response.status_code == 400, response.text
+            message = response.json()["message"]
+            assert message.startswith(
+                f'Test case "Case X" overrides the canned response of "{name}"'
+            )
+            assert "overridden: lookup." in message
+
+    async def test_a_documents_tool_cannot_be_overridden(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        group = await create_test_group(scope, session, name="Group A")
+        corpus = await create_toolset(scope, session, name="Docs", kind="documents")
+        await session.commit()
+        await make_user(session, "member@example.com", "member", customer_id)
+        await login(client, "member@example.com")
+
+        response = await client.post(
+            "/api/test-cases",
+            json={
+                "group_id": group.id,
+                "title": "t",
+                "content": "hi",
+                "tool_mode": "execute",
+                "toolset_ids": [corpus.id],
+                "mock_overrides": {"search_documents": ["x"]},
+            },
+        )
+        assert response.status_code == 400
+        assert "overridden: none" in response.json()["message"]
+
+    async def test_a_blank_override_is_a_422(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        _, _, group_id, toolset_id = await self._setup(session, create_workspace)
+        await login(client, "member@example.com")
+
+        response = await client.post(
+            "/api/test-cases",
+            json={
+                "group_id": group_id,
+                "title": "t",
+                "content": "hi",
+                "tool_mode": "execute",
+                "toolset_ids": [toolset_id],
+                "mock_overrides": {"lookup": ["  "]},
+            },
+        )
+        assert response.status_code == 422
+        assert "no canned response" in response.json()["message"]
+
+    async def test_overrides_are_kept_but_not_checked_under_tool_mode_none(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        _, _, group_id, _ = await self._setup(session, create_workspace)
+        await login(client, "member@example.com")
+
+        created = await client.post(
+            "/api/test-cases",
+            json={
+                "group_id": group_id,
+                "title": "t",
+                "content": "hi",
+                "mock_overrides": {"no_such_tool": ["x"]},
+            },
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["mock_overrides"] == {"no_such_tool": ["x"]}
+
+    async def test_patch_is_presence_based_and_re_checked_post_patch(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        _, scope, group_id, toolset_id = await self._setup(session, create_workspace)
+        case = await create_test_case(
+            scope,
+            session,
+            group_id=group_id,
+            title="t",
+            content="hi",
+            tool_mode="execute",
+            mock_overrides={"lookup": ["mine"]},
+        )
+        await replace_toolset_links(scope, session, case.id, [toolset_id])
+        await session.commit()
+        await login(client, "member@example.com")
+
+        untouched = await client.patch(f"/api/test-cases/{case.id}", json={"title": "Renamed"})
+        assert untouched.status_code == 200, untouched.text
+        assert untouched.json()["mock_overrides"] == {"lookup": ["mine"]}
+
+        # Dropping the toolset that holds the overridden tool, without clearing
+        # the override, is refused against the post-patch configuration.
+        other = await create_toolset(scope, session, name="Other")
+        await create_tool(scope, session, other.id, name="search")
+        await session.commit()
+        refused = await client.patch(
+            f"/api/test-cases/{case.id}", json={"toolset_ids": [other.id]}
+        )
+        assert refused.status_code == 400
+        assert 'overrides the canned response of "lookup"' in refused.json()["message"]
+
+        for clearing in (None, {}):
+            cleared = await client.patch(
+                f"/api/test-cases/{case.id}", json={"mock_overrides": clearing}
+            )
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["mock_overrides"] == {}
+            assert (await _stored(session, case.id))[1] is None
+            await client.patch(
+                f"/api/test-cases/{case.id}", json={"mock_overrides": {"lookup": ["again"]}}
+            )
+
+    async def test_a_stale_override_only_blocks_a_patch_of_the_tool_configuration(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        """Names are re-validated only when the patch touches the overrides, the
+        toolsets or the tool mode — a title or a rubric edit must not be held
+        hostage by an override gone stale underneath the case.
+        """
+        _, scope, group_id, toolset_id = await self._setup(session, create_workspace)
+        case = await create_test_case(
+            scope,
+            session,
+            group_id=group_id,
+            title="t",
+            content="hi",
+            tool_mode="execute",
+            mock_overrides={"lookup": ["mine"]},
+        )
+        await replace_toolset_links(scope, session, case.id, [toolset_id])
+        # Written underneath the guard that refuses this rename through the API.
+        await session.execute(
+            update(CaseModel)
+            .where(CaseModel.id == case.id)
+            .values(mock_overrides=json.dumps({"gone": ["x"]}))
+        )
+        await session.commit()
+        await login(client, "member@example.com")
+
+        for unrelated in ({"title": "Renamed"}, {"expected_output": "A rubric."}):
+            response = await client.patch(f"/api/test-cases/{case.id}", json=unrelated)
+            assert response.status_code == 200, response.text
+
+        for touching in (
+            {"tool_mode": "definitions"},
+            {"toolset_ids": [toolset_id]},
+            {"mock_overrides": {"gone": ["y"]}},
+        ):
+            response = await client.patch(f"/api/test-cases/{case.id}", json=touching)
+            assert response.status_code == 400, (touching, response.text)
+            assert 'overrides the canned response of "gone"' in response.json()["message"]
 
 
 class TestTheEffectivePromptRouteIsGone:

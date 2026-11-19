@@ -13,13 +13,22 @@ blank task prompt still leaves a user message as long as the case has content.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.services.message_assembly import (
+    MAX_HISTORY_CONTENT_CHARS,
+    MAX_HISTORY_TURNS,
+    HistoryError,
+    HistoryTurn,
     NoUserMessageError,
     assert_user_message,
+    decode_history,
+    encode_history,
     system_message,
     user_message,
+    validate_history,
 )
 
 BLANKS = (None, "", "   ", "\n\n", "\t", " \n\t ")
@@ -116,3 +125,102 @@ class TestAssertUserMessage:
         for task in BLANKS:
             assert_user_message(task, "data", subject="x")
             assert_user_message("task", task, subject="x")
+
+
+def _turns(*pairs: tuple[str, str]) -> list[dict[str, str]]:
+    return [{"role": role, "content": content} for role, content in pairs]
+
+
+GOOD = _turns(("user", "List open invoices."), ("assistant", "4711, 4712 (DE), 4713 (AT)."))
+
+
+class TestValidateHistory:
+    def test_none_and_empty_mean_no_history(self) -> None:
+        assert validate_history(None) == []
+        assert validate_history([]) == []
+
+    def test_returns_history_turns_with_content_kept_verbatim(self) -> None:
+        turns = _turns(("user", "  padded \r\n"), ("assistant", '{"json": true}'))
+        assert validate_history(turns) == [
+            HistoryTurn(role="user", content="  padded \r\n"),
+            HistoryTurn(role="assistant", content='{"json": true}'),
+        ]
+
+    def test_accepts_history_turn_instances_too(self) -> None:
+        turns = [HistoryTurn("user", "a"), HistoryTurn("assistant", "b")]
+        assert validate_history(turns) == turns
+
+    @pytest.mark.parametrize("role", ["system", "tool", "User", None, 3])
+    def test_refuses_any_role_but_user_and_assistant(self, role: object) -> None:
+        turns = [{"role": role, "content": "x"}, {"role": "assistant", "content": "y"}]
+        with pytest.raises(HistoryError, match="History turn 1 has role"):
+            validate_history(turns)
+
+    @pytest.mark.parametrize("content", BLANKS)
+    def test_refuses_blank_content(self, content: str | None) -> None:
+        with pytest.raises(HistoryError, match=r"History turn 2 \(assistant\) has no content"):
+            validate_history(
+                [{"role": "user", "content": "x"}, {"role": "assistant", "content": content}]
+            )
+
+    def test_refuses_a_nul_byte(self) -> None:
+        with pytest.raises(HistoryError, match="NUL"):
+            validate_history(_turns(("user", "a\x00b"), ("assistant", "c")))
+
+    def test_refuses_content_past_the_ceiling(self) -> None:
+        too_long = "x" * (MAX_HISTORY_CONTENT_CHARS + 1)
+        with pytest.raises(HistoryError, match="History turn 1 is"):
+            validate_history(_turns(("user", too_long), ("assistant", "c")))
+        # Exactly at the ceiling is fine.
+        validate_history(_turns(("user", "x" * MAX_HISTORY_CONTENT_CHARS), ("assistant", "c")))
+
+    def test_must_start_with_user(self) -> None:
+        with pytest.raises(HistoryError, match='turn 1 is "assistant" but must be "user"'):
+            validate_history(_turns(("assistant", "a"), ("user", "b"), ("assistant", "c")))
+
+    def test_must_alternate(self) -> None:
+        with pytest.raises(HistoryError, match='turn 2 is "user" but must be "assistant"'):
+            validate_history(_turns(("user", "a"), ("user", "b"), ("assistant", "c")))
+
+    def test_must_end_with_assistant_because_the_test_message_is_next(self) -> None:
+        with pytest.raises(HistoryError, match='end with an "assistant" turn'):
+            validate_history(_turns(("user", "a")))
+        with pytest.raises(HistoryError, match='end with an "assistant" turn'):
+            validate_history(_turns(("user", "a"), ("assistant", "b"), ("user", "c")))
+
+    def test_caps_the_number_of_turns(self) -> None:
+        at_limit = [
+            {"role": "user" if index % 2 == 0 else "assistant", "content": str(index)}
+            for index in range(MAX_HISTORY_TURNS)
+        ]
+        assert len(validate_history(at_limit)) == MAX_HISTORY_TURNS
+        over = [*at_limit, {"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]
+        with pytest.raises(HistoryError, match=f"the limit is {MAX_HISTORY_TURNS}"):
+            validate_history(over)
+
+    @pytest.mark.parametrize("value", ["[]", {"role": "user"}, 42])
+    def test_refuses_something_that_is_not_a_list(self, value: object) -> None:
+        with pytest.raises(HistoryError, match="must be a list"):
+            validate_history(value)  # type: ignore[arg-type]
+
+    def test_refusal_names_the_case_and_is_a_value_error(self) -> None:
+        with pytest.raises(ValueError, match='^Test case "Follow-up": '):
+            validate_history(_turns(("user", "a")), subject='Test case "Follow-up"')
+
+
+class TestHistoryColumn:
+    def test_round_trips_and_empty_is_null(self) -> None:
+        turns = validate_history(GOOD)
+        raw = encode_history(turns)
+        assert raw is not None
+        assert json.loads(raw) == GOOD
+        assert decode_history(raw) == turns
+        assert encode_history([]) is None
+        assert decode_history(None) == []
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["not json", "{}", '"x"', '[{"role": "system", "content": "x"}, 3, {"role": "user"}]'],
+    )
+    def test_decoding_degrades_rather_than_raising(self, raw: str) -> None:
+        assert decode_history(raw) == []

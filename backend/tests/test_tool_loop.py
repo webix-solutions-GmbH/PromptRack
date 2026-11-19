@@ -21,6 +21,7 @@ import pytest
 
 from app.models.toolsets import ToolSource
 from app.services.llm import ChatMessage, LlmResult, ToolCall, compute_tokens_per_sec
+from app.services.message_assembly import HistoryTurn
 from app.services.tool_loop import (
     TOOL_SOURCES,
     Aggregates,
@@ -66,8 +67,15 @@ def tool(
     *,
     source: str = "manual",
     mock_response: str | None = '{"ok":true}',
+    mock_responses: Sequence[str] | None = None,
     toolset_id: int = 1,
 ) -> SnapshotTool:
+    """`mock_response` is the one-response shorthand; `mock_responses` wins."""
+    responses = (
+        tuple(mock_responses)
+        if mock_responses is not None
+        else (() if mock_response is None else (mock_response,))
+    )
     return SnapshotTool(
         definition={
             "type": "function",
@@ -80,7 +88,7 @@ def tool(
         source=source,  # type: ignore[arg-type]
         toolset_id=toolset_id,
         toolset_name="Support Desk (mock)",
-        mock_response=mock_response,
+        mock_responses=responses,
     )
 
 
@@ -350,6 +358,89 @@ class TestPlainCompletion:
 # ---------------------------------------------------------------------------
 
 
+class TestConversationHistory:
+    HISTORY = (
+        HistoryTurn("user", "List open invoices."),
+        HistoryTurn("assistant", '{"invoices": [4711, 4712]}'),
+    )
+
+    async def test_history_lands_between_the_system_and_the_user_message(self):
+        streamer = ScriptedStreamer(llm_result(text="4712"))
+
+        await run(
+            streamer,
+            system_prompt="You are terse.",
+            history=self.HISTORY,
+            user_message="Same list, only Germany.",
+        )
+
+        assert streamer.calls[0]["messages"] == [
+            {"role": "system", "content": "You are terse."},
+            {"role": "user", "content": "List open invoices."},
+            {"role": "assistant", "content": '{"invoices": [4711, 4712]}'},
+            {"role": "user", "content": "Same list, only Germany."},
+        ]
+
+    async def test_history_follows_directly_when_there_is_no_system_prompt(self):
+        streamer = ScriptedStreamer(llm_result(text="4712"))
+
+        await run(streamer, history=self.HISTORY, user_message="Only Germany.")
+
+        assert [message["role"] for message in streamer.calls[0]["messages"]] == [
+            "user",
+            "assistant",
+            "user",
+        ]
+
+    async def test_history_is_in_the_transcript_without_a_turn_index(self):
+        streamer = ScriptedStreamer(
+            llm_result(tool_calls=[call()]), llm_result(text="done")
+        )
+
+        result = await run(
+            streamer,
+            system_prompt="sys",
+            history=self.HISTORY,
+            snapshot=[tool()],
+            tool_mode="execute",
+            max_turns=3,
+        )
+
+        roles_and_turns = [(message.role, message.turn) for message in result.transcript]
+        assert roles_and_turns == [
+            ("system", None),
+            ("user", None),
+            ("assistant", None),
+            ("user", None),
+            ("assistant", 0),
+            ("tool", 0),
+            ("assistant", 1),
+        ]
+        # The authored history is not a model turn: metrics, turn count and the
+        # final answer are the measured turns' alone.
+        assert result.turn_count == 2
+        assert [turn.index for turn in result.turns] == [0, 1]
+        assert result.text == "done"
+        # And the second turn still re-sends the history ahead of the user message.
+        assert streamer.calls[1]["messages"][1:3] == [
+            {"role": "user", "content": "List open invoices."},
+            {"role": "assistant", "content": '{"invoices": [4711, 4712]}'},
+        ]
+        # A transcript round trip keeps the history messages turn-less.
+        parsed = parse_transcript(serialize_transcript(result.transcript)) or []
+        assert [message.turn for message in parsed[:4]] == [None, None, None, None]
+        assert "turn" not in json.loads(serialize_transcript(result.transcript))[2]
+
+    async def test_no_history_leaves_the_request_unchanged(self):
+        streamer = ScriptedStreamer(llm_result(text="42"))
+
+        await run(streamer, history=())
+
+        assert streamer.calls[0]["messages"] == [
+            {"role": "user", "content": "Reconcile invoice 4711."}
+        ]
+
+
 class TestDefinitionsMode:
     async def test_offers_the_tools_and_stops_at_the_first_call_without_executing(self):
         executed: list[ToolCall] = []
@@ -459,6 +550,80 @@ class TestExecuteMode:
 
         assert [message["content"] for message in streamer.calls[1]["messages"][-2:]] == ["L", "C"]
         assert result.tool_call_count == 2
+
+    async def test_answers_by_call_order_and_repeats_the_last_response(self):
+        # Three turns of the same tool, then a fourth with two calls in one turn:
+        # the counter runs per tool name across the whole result, every turn.
+        streamer = ScriptedStreamer(
+            llm_result(tool_calls=[call(call_id="a")]),
+            llm_result(tool_calls=[call(call_id="b")]),
+            llm_result(tool_calls=[call(call_id="c"), call(call_id="d")]),
+            llm_result(text="Done."),
+        )
+
+        result = await run(
+            streamer,
+            snapshot=[tool(mock_responses=["page 1", "page 2", "page 3"])],
+            tool_mode="execute",
+            max_turns=6,
+        )
+
+        answers = [message.content for message in result.transcript if message.role == "tool"]
+        assert answers == ["page 1", "page 2", "page 3", "page 3"]
+        assert all(
+            message.tool_is_error is False
+            for message in result.transcript
+            if message.role == "tool"
+        )
+
+    async def test_a_malformed_call_does_not_use_up_a_scripted_response(self):
+        # The first call is refused for its arguments, so the model never read
+        # "page 1" — the next valid call has to get it, not "page 2".
+        streamer = ScriptedStreamer(
+            llm_result(tool_calls=[call(call_id="a", arguments="{not json")]),
+            llm_result(tool_calls=[call(call_id="b", arguments='{"id":1}')]),
+            llm_result(text="Done."),
+        )
+
+        result = await run(
+            streamer,
+            snapshot=[tool(mock_responses=["page 1", "page 2"])],
+            tool_mode="execute",
+            max_turns=6,
+        )
+
+        tool_messages = [message for message in result.transcript if message.role == "tool"]
+        assert tool_messages[0].tool_is_error is True
+        assert tool_messages[1].content == "page 1"
+        assert tool_messages[1].tool_is_error is False
+
+    async def test_counts_each_tool_by_its_own_name(self):
+        streamer = ScriptedStreamer(
+            llm_result(tool_calls=[call("lookup", call_id="a"), call("convert", call_id="b")]),
+            llm_result(tool_calls=[call("lookup", call_id="c"), call("convert", call_id="d")]),
+            llm_result(text="Done."),
+        )
+
+        result = await run(
+            streamer,
+            snapshot=[
+                tool("lookup", mock_responses=["L1", "L2"]),
+                tool("convert", mock_responses=["C1"]),
+            ],
+            tool_mode="execute",
+        )
+
+        answers = [message.content for message in result.transcript if message.role == "tool"]
+        assert answers == ["L1", "C1", "L2", "C1"]
+
+    async def test_an_empty_response_list_is_still_the_unconfigured_error(self):
+        streamer = ScriptedStreamer(llm_result(tool_calls=[call()]), llm_result(text="Done."))
+
+        result = await run(streamer, snapshot=[tool(mock_responses=[])], tool_mode="execute")
+
+        tool_message = next(m for m in result.transcript if m.role == "tool")
+        assert tool_message.tool_is_error is True
+        assert "no canned response configured" in tool_message.content
 
     async def test_stops_before_executing_calls_it_has_no_turn_left_to_use(self):
         executed: list[ToolCall] = []
@@ -750,6 +915,54 @@ class TestSerialization:
 
         assert parse_tools_snapshot(serialize_tools_snapshot(snapshot)) == snapshot
 
+    def test_a_single_response_entry_is_byte_identical_to_the_old_shape(self):
+        # `describe_row_drift` compares these entries across a row, so the same
+        # one-response tool frozen before and after call order existed must
+        # serialize to the same bytes — or every older run reports "tools" drift.
+        legacy = json.dumps(
+            [
+                {
+                    "definition": tool().definition,
+                    "source": "manual",
+                    "toolset_id": 1,
+                    "toolset_name": "Support Desk (mock)",
+                    "mock_response": '{"ok":true}',
+                }
+            ]
+        )
+
+        assert serialize_tools_snapshot([tool()]) == legacy
+        assert "mock_responses" not in json.loads(serialize_tools_snapshot([tool()]))[0]
+
+    def test_an_unconfigured_entry_still_writes_a_null_mock_response(self):
+        stored = json.loads(serialize_tools_snapshot([tool(mock_response=None)]))[0]
+
+        assert stored["mock_response"] is None
+        assert "mock_responses" not in stored
+
+    def test_several_responses_add_the_list_beside_the_first(self):
+        stored = json.loads(serialize_tools_snapshot([tool(mock_responses=["one", "two"])]))[0]
+
+        assert stored["mock_response"] == "one"
+        assert stored["mock_responses"] == ["one", "two"]
+
+    def test_round_trips_several_responses(self):
+        snapshot = [tool(mock_responses=["one", "two", "three"])]
+
+        assert parse_tools_snapshot(serialize_tools_snapshot(snapshot)) == snapshot
+
+    def test_reads_an_old_snapshot_holding_only_mock_response(self):
+        legacy = json.dumps([{**tool().to_json(), "mock_response": "PAID"}])
+
+        assert parse_tools_snapshot(legacy)[0].mock_responses == ("PAID",)
+
+    def test_a_malformed_response_list_falls_back_to_the_single_response(self):
+        stored = json.dumps(
+            [{**tool().to_json(), "mock_response": "first", "mock_responses": ["first", 2]}]
+        )
+
+        assert parse_tools_snapshot(stored)[0].mock_responses == ("first",)
+
     def test_reads_a_missing_or_malformed_snapshot_as_no_tools(self):
         assert parse_tools_snapshot(None) == []
         assert parse_tools_snapshot("") == []
@@ -811,7 +1024,7 @@ class TestSerialization:
             json.dumps([{**tool().to_json(), "source": "smtp", "mock_response": None}])
         )
 
-        assert [(entry.source, entry.mock_response) for entry in parsed] == [("manual", None)]
+        assert [(entry.source, entry.mock_responses) for entry in parsed] == [("manual", ())]
 
     def test_round_trips_a_transcript_including_the_display_only_annotations(self):
         messages = [

@@ -46,6 +46,29 @@ import { api } from './client'
 export type ToolMode = 'none' | 'definitions' | 'execute'
 export type ToolChoice = 'auto' | 'required' | 'none'
 
+/** One earlier turn of a follow-up test case's conversation. A case's history
+ * starts with `user`, alternates strictly and ends with `assistant` — the
+ * case's own user message is the next turn — and the server refuses anything
+ * else (`message_assembly.validate_history`), since several chat templates 400
+ * on non-alternating roles. Sent between the system message and the final user
+ * message; frozen per result like the three texts. */
+export interface HistoryTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+/** Mirrors the backend's `MAX_HISTORY_TURNS` (`app/services/message_assembly.py`):
+ * the editor stops offering another exchange here rather than letting the save
+ * be refused. */
+export const MAX_HISTORY_TURNS = 50
+
+/** Per-case replacement for a manual tool's canned responses, keyed by tool
+ * name (the name the model calls it by). Each key must name an enabled manual
+ * tool of the case's selected toolsets — the server refuses a stale one on save
+ * and again at run creation (`assert_tool_config`). Applied only in `execute`
+ * mode; stored and ignored otherwise. */
+export type MockOverrides = Record<string, string[]>
+
 export interface TestGroup {
   id: number
   name: string
@@ -87,6 +110,10 @@ export interface TestCase {
   created_at: string
   updated_at: string
   toolset_ids: number[]
+  /** Earlier turns sent before this case's user message; `[]` when none. */
+  history: HistoryTurn[]
+  /** `{}` when the case overrides nothing. */
+  mock_overrides: MockOverrides
 }
 
 export interface TestCaseInput {
@@ -103,6 +130,12 @@ export interface TestCaseInput {
   tool_choice?: ToolChoice | null
   max_turns?: number
   toolset_ids?: number[]
+  /** On a PATCH, absent leaves the stored history alone; `null` or `[]`
+   * clears it. */
+  history?: HistoryTurn[] | null
+  /** On a PATCH, absent leaves the stored overrides alone; `null` or `{}`
+   * clears them. */
+  mock_overrides?: MockOverrides | null
 }
 
 export const testGroupsApi = {

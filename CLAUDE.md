@@ -163,6 +163,9 @@ everything into `run_results` rows at creation time: title, group name, expected
 `test_case_text` (the case's own content) — and **two version ids**,
 `system_prompt_version_id` / `task_prompt_version_id`, one per slot, each the version that
 slot's draft happened to be byte-identical to, if any (see "Prompt versioning" below).
+Beside the three texts sits the case's **earlier conversation**, `run_results.history`
+(`0011_test_case_conversation`), and an `execute` case's per-case mock overrides are frozen
+too — as the canned answers inside that row's `tools_snapshot`, not as a column of their own.
 `test_case_id`/`endpoint_id` FKs are kept (`SET NULL` on delete) only for cross-run
 comparison; rendering always uses the snapshots.
 
@@ -493,8 +496,11 @@ unrecognised value to `viewer`, never to admin), and the FastAPI dependency guar
 - **Roles**: `admin` / `member` / `viewer`, all semantics in `policy.py`'s two pure
   predicates, with the vocabulary derived from `app.models.auth.UserRole`'s `Literal` so a
   role added to the column cannot be missing from `ROLES`. Content vs. credentials is the
-  line: toolset create/update/delete is admin (it holds `mcp_url` + headers), the tools
-  *inside* it are member; endpoints are admin, `POST /api/endpoints/{id}/discover` is member
+  line: a toolset that can hold credentials is admin (`mcp_url` + headers), so changing a
+  toolset's kind, its MCP URL/headers or its sharing, and deleting any toolset, is admin —
+  but a **manual** toolset holds none, so a member may create one and edit its name and
+  description (`POST`/`PUT /api/toolsets` are `Writer`, narrowed by `_require_admin_for` in
+  `app/api/toolsets.py`), and the tools *inside* any toolset are member; endpoints are admin, `POST /api/endpoints/{id}/discover` is member
   (`/runs/new` posts it on page load for everyone), `POST /{id}/test` and
   `POST /endpoints/test-connection` stay admin (they exercise a stored or submitted API key).
 - **First account is the administrator, then sign-up closes forever** — `app/auth/router.py`
@@ -572,6 +578,19 @@ caller's job):
   because `delete_prompt` can `SET NULL` a slot on cases that were already valid; a row
   emptied that way is marked `error` with a readable message instead of the provider
   answering 400.
+
+A test case may also carry an **earlier conversation** (`test_cases.history`, a JSON array of
+`{role, content}`), for follow-up questions — "same list, only Germany" means nothing without
+the turn before it. It is sent **between** the system message and the user message
+(`run_tool_loop(history=...)`), verbatim, never merged with the task prompt or `content`,
+which still form only the final user message. `validate_history`
+(`app/services/message_assembly.py`) is called where `assert_user_message` is: roles
+`user`/`assistant` only, no blank turn, starting with `user`, strictly alternating and
+ending with `assistant` — the case's own user message comes next, and several chat
+templates (Mistral, Gemma) answer a non-alternating conversation with a 400 rather than a
+measurement. The transcript records the history turns with **no `turn` index**; that
+absence is what tells every consumer (turn counts, metrics, `TranscriptView.vue`) they were
+scripted rather than produced by the model.
 
 Assembly happens at **execution** time from the frozen columns, not at run creation — see
 "Snapshot model" for why the parts stay separate. There is no server-side preview endpoint:
@@ -660,13 +679,42 @@ selected toolsets are refused, both in the test-case editor and again in run cre
 the one shared function `assert_tool_config`
 (`backend/app/services/tool_config.py`).
 
-- **Toolsets** come in three kinds. `manual` (tools authored in the UI, answering with
-  `mock_response` verbatim — what keeps a multi-turn test deterministic), `mcp` (tools
+- **Toolsets** come in three kinds. `manual` (tools authored in the UI or over MCP, answering
+  with a canned mock response verbatim — what keeps a multi-turn test deterministic), `mcp` (tools
   discovered from a streamable-HTTP MCP server and really executed against it,
   `backend/app/services/mcp_client.py`, the official `mcp` SDK, connections opened
   per-operation, never pooled), and `documents` (a markdown corpus the model retrieves
   from — see below). `tools` rows follow the `endpoint_models` rule: discovery upserts and
   **never deletes** — a tool absent from `tools/list` only flips `enabled` false.
+- **A manual tool answers by call order.** `tools.mock_responses` (`0010_mock_responses`, a
+  JSON array that replaced the single `mock_response` column) holds one or more canned
+  answers; within one result row the Nth call of a tool gets the Nth, and the last repeats
+  (`pick_mock_response`, a per-tool-name counter across every turn in `run_tool_loop`) —
+  real agents call one tool twice in an answer (a count, then a list). The counter advances
+  only when a canned response was actually **served**: a call refused for malformed
+  arguments gets an error and does not use up "page 1". In `tools_snapshot`
+  an entry still writes `mock_response` (the first, or null) and adds `mock_responses`
+  **only when there is more than one**, so a single-response entry stays byte-identical to
+  every snapshot frozen before the change and `/results` reports no false "tools" drift.
+  What a tool's description and each response may hold is decided once, in
+  `app/services/tool_authoring.py` (`MAX_TOOL_TEXT_CHARS` per field — real descriptions
+  run to ~50k characters — and `MAX_MOCK_RESPONSES`), asked by both write doors.
+- **A test case can override a manual tool's canned answers** (`test_cases.mock_overrides`,
+  `{tool_name: [responses…]}`), so one shared toolset serves many cases instead of one
+  toolset per case. Keyed by tool **name** and validated by the one shared
+  `assert_tool_config` (every key an enabled `manual` tool of the selected toolsets) — on
+  create, on a PATCH that touches `mock_overrides`, the toolsets or `tool_mode` (an
+  unrelated edit is never held hostage by an override gone stale), and always at run
+  creation, the backstop that names the case. Going stale is guarded at the source too:
+  renaming, disabling or deleting a manual tool is refused (`ToolOverriddenError`, 409 /
+  MCP error, raised inside `update_tool`/`set_tool_enabled`/`delete_tool`) while any test
+  case linked to its toolset overrides it — counted across **every** workspace, unscoped
+  like `count_toolset_references`, since a global toolset is overridden from engagements
+  the writer cannot see. Run creation swaps the override into that row's `tools_snapshot`
+  **only under `execute`** (nothing else sends a canned response, so freezing one into a
+  `definitions` run would only be false "tools" drift), which is the whole freezing story:
+  the snapshot invariant and the drift report needed nothing new. Under `tool_mode:
+  "none"` overrides are kept and neither checked nor applied.
 - **A tool failure is never a failed row.** The error text is serialized back to the
   model as that tool's output — what a real agent sees, and itself worth measuring. Only
   connection-level `LlmError`s can fail a row.
@@ -845,9 +893,9 @@ model-mode cell keeps the newest `ok` row and reports the skipped one
 (`CompareCellView.superseded`). `describe_row_drift` (`app.services.compare`) names
 whatever is *not* held constant across a row, since a difference between cells might be
 config rather than model: the three frozen texts **separately** — "system prompt" / "task
-prompt" / "test case text" — plus expected output, `tools_snapshot`, tool mode, tool choice,
-run params, and max turns once any cell actually executes tools. In model mode each of the
-three texts (and the rubric) is compared again against the live test case ("… edited
+prompt" / "test case text" — plus "conversation history", expected output, `tools_snapshot`,
+tool mode, tool choice, run params, and max turns once any cell actually executes tools. In
+model mode each of the three texts (and the history, and the rubric) is compared again against the live test case ("… edited
 since"); a part already drifting across the row is not additionally reported. Expected
 output sits outside the three because the model never saw it — rewriting the rubric changes
 the standard past results were graded by rather than invalidating them. Splitting the
@@ -949,7 +997,7 @@ measurements back — the interesting test cases already exist in other repos.
   naming the right one reveals nothing a `list_customers` + per-workspace probe wouldn't.
   This is the id-addressed tools' answer to the deep-link limitation noted under "Customer
   workspaces".
-- **The 24 tools** (registered in `backend/app/mcp/server.py`):
+- **The 31 tools** (registered in `backend/app/mcp/server.py`):
   `list_customers`, `list_endpoints`, `list_param_groups` (the named request-param
   presets `create_run` takes by name in `param_groups` — listed and used here, never
   written: the presets are authored in the UI or saved off a run),
@@ -959,9 +1007,23 @@ measurements back — the interesting test cases already exist in other repos.
   existing group, `created: false`), `list_test_cases`, `create_test_case`,
   `update_test_case` (patches only the keys present, and re-checks tool config as it will
   be *after* the patch), `list_documents` / `create_document` / `update_document` (a
-  `documents` toolset's markdown corpus — `list_documents` doubles as the corpus discovery
-  path, since toolsets themselves are not listable here, and it reports metadata only,
-  never a document's text, which exists to be read by the *model* at execution time),
+  `documents` toolset's markdown corpus — it reports metadata only, never a document's
+  text, which exists to be read by the *model* at execution time),
+  `list_toolsets` / `get_tool` / `create_toolset` / `update_toolset` / `create_tool` /
+  `update_tool` / `delete_tool` (**manual** mock toolsets and their tools — see "Not
+  writable over MCP" for where that line falls; `list_toolsets` reports every kind but only
+  sizes, `get_tool` is the one read that returns a description and its mock responses in
+  full, since either can run to tens of thousands of characters; `mock_response`,
+  `parameters` and every optional free-text argument (test-case `content` /
+  `expected_output`, tool and toolset `description`, prompt and document text, document
+  `title`, `note`, `comment`) are typed `Any` with an explicit string schema and read off
+  `raw_arguments` (`_raw_text`), because the SDK `json.loads` every string argument not
+  annotated as exactly `str` — a JSON document in `content` was refused and the text
+  `"null"` became None; `create_tool` /
+  `update_tool` accept `mock_responses` — the name `get_tool` returns — as an alias of
+  `mock_response`, refusing both at once, since the SDK silently ignores an unknown
+  argument; a toolset name already visible here is refused case-insensitively, by the
+  repository for both doors (`ToolsetNameConflictError`)),
   `create_run`, `execute_run` (fire-and-forget — safe only because
   the executor already persists every row as it finishes), `list_runs`, `get_run`,
   `get_run_result`, `set_rating` (refuses a still-pending/running row; omitting `note`
@@ -969,8 +1031,12 @@ measurements back — the interesting test cases already exist in other repos.
   distinguish "absent" from "null" by the time an argument reaches the tool, so presence is
   read off the raw `tools/call` params via `raw_arguments`). `mark_deployed` and
   `delete_test_case`/`delete_prompt`/`delete_document` are **deliberately absent** —
-  deploying is a UI-only human claim about a customer's production system, and there is no
-  delete surface over MCP at all.
+  deploying is a UI-only human claim about a customer's production system, and
+  `delete_tool` is the **only** delete over MCP: a mock tool is pure content, and every run
+  that offered it froze its definition and canned answers in `tools_snapshot`, so removing
+  it can cost no history — though a tool test cases still override is refused, like a
+  rename or a disable (`ToolOverriddenError`, see "Tool / API calling"). Nothing else is
+  deletable here.
 - **Prompt kinds on the wire.** `create_prompt` / `update_prompt` take `kind`
   (`"system"` default), `list_prompts` returns it, and `create_test_case` /
   `update_test_case` take `system_prompt` and `task_prompt` — both `RowRef`s resolving by
@@ -984,25 +1050,33 @@ measurements back — the interesting test cases already exist in other repos.
   and as the text those slots hold (`system_prompt_text` / `task_prompt_text`) — the same
   two key names `get_run_result` uses for the frozen copies, so a case and its result speak
   one vocabulary. `get_run` / `get_run_result` likewise carry both version ids.
-- **Not writable over MCP**: endpoints, toolsets and tools (a base URL with an API key and
-  an MCP server URL are credentials — the app's line is content over the API, credentials
-  in the UI), customer workspaces (creating an engagement is a human decision with
+  `create_test_case` / `update_test_case` also take `history` (`[{role, content}]`) and
+  `mock_overrides` (tool name → a string or a list of strings); `get_run_result` returns the
+  frozen `history`.
+- **Not writable over MCP**: endpoints, `mcp`/`documents` toolsets, a toolset's kind, MCP
+  URL, headers and sharing, and deleting a toolset (a base URL with an API key and an MCP
+  server URL are credentials — the app's line is content over the API, credentials in the
+  UI). A **manual** toolset holds no credentials — its tools are names, schemas and canned
+  answers — so it and its tools *are* writable here (`_pick_manual_toolset` refuses every
+  other kind by name, `_assert_own_toolset` refuses a row borrowed from Base), which is what
+  lets an agent push another project's real tool definitions in rather than a human
+  retyping 50k-character descriptions. Also not writable: customer workspaces (creating an engagement is a human decision with
   billing behind it), and a prompt's `deployed_version_id` (see "Prompt versioning").
   Versions themselves *are* writable over MCP (`commit_prompt`, `set_baseline`) because
   they are content, not credentials — and a `documents` toolset's **markdown corpus** is
-  writable for exactly the same reason, which is where that line now falls one level lower
-  than the table: the *toolset* stays uncreatable and uneditable here, the documents inside
-  one are content, and an agent that already has another project's `docs/` on disk is the
+  writable for exactly the same reason, one level lower than the table: a *documents*
+  toolset stays uncreatable and uneditable here, the documents inside one are content, and
+  an agent that already has another project's `docs/` on disk is the
   primary reason `create_document` exists. A corpus borrowed from Base is readable and
   retrievable from every workspace but explicitly refused for writing
-  (`_assert_own_corpus`) — a named refusal rather than `scope_where`'s silent no-op, which
+  (`_assert_own_toolset`) — a named refusal rather than `scope_where`'s silent no-op, which
   an agent would otherwise read back as a successful edit. `list_endpoints` and
   `create_run`'s `endpoint` argument see and accept **global** endpoints for free, since
   both are read paths that already ask `visible_where` — nothing MCP-specific was needed to
   share them.
 - **A judge model reading these results is itself injectable.** `get_run_result` returns
-  `system_prompt_text`, `task_prompt_text` and `test_case_text`, and for the
-  `Prompt Injection & Instruction Hierarchy` group any of the three can carry a live
+  `system_prompt_text`, `task_prompt_text`, `test_case_text` and `history`, and for the
+  `Prompt Injection & Instruction Hierarchy` group any of them can carry a live
   payload. Grade from `expected_output` + `response`, and never let a judge's output pick a
   tool call. Most of that group needs no judge at all — the rubrics are canary strings and
   "was this tool called."
@@ -1016,11 +1090,10 @@ exercises the wired-up handler (real Postgres, no server process) via
 
 `docs/example-suite/` is the standard suite — 3 manual toolsets with 12 tools, 16 prompts
 and 38 test cases in 4 groups — written as **documentation an agent executes over MCP**,
-not a script. The split inside it is forced by the app's own rule: a toolset is not
-writable over MCP (the container is where an MCP URL and headers, i.e. credentials, live),
-so `toolsets.md` is
-instructions for a human in the UI and the four group files are for an agent to push in
-with `create_test_group` / `create_prompt` / `create_test_case`. Do the toolsets first: six
+not a script. `toolsets.md` describes its three manual toolsets, which an agent pushes in
+with `create_toolset` / `create_tool` (or a human types into the UI), and the four group
+files are for an agent to push in with `create_test_group` / `create_prompt` /
+`create_test_case`. Do the toolsets first: six
 test cases reference one by name, and `create_test_case` refuses a tool test whose toolsets
 do not exist or hold no enabled tools.
 
@@ -1095,8 +1168,10 @@ Two suites, split by whether they need a database.
 `test_message_assembly.py` (both message parts present, each alone, whitespace-only on
 either side, both blank), `test_llm.py` (SSE fixtures per provider style, including a
 reasoning model's own channel and the throughput guard), `test_compare.py`,
-`test_tool_config.py`, `test_tool_loop.py` (metric aggregation, and every value of
-`ToolSource` surviving a `tools_snapshot` round trip), `test_documents.py` (which heading a
+`test_tool_config.py`, `test_tool_loop.py` (metric aggregation, every value of
+`ToolSource` surviving a `tools_snapshot` round trip, call-order mock responses and the
+single-response byte-identity, history placement), `test_tool_authoring.py` (the
+name/description/schema/mock-response/override rules both write doors share), `test_documents.py` (which heading a
 search hit sits under, `read_document`'s windowing, and the key/markdown/title rules both
 write doors share), `test_diff.py`,
 `test_attribution.py` (version matching, dirty detection), `test_mcp.py`, `test_scope.py`

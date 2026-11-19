@@ -75,6 +75,7 @@ from app.services.compare import (
     snapshot_endpoint_name,
     split_model_column_key,
 )
+from app.services.message_assembly import decode_history
 from app.services.tool_loop import parse_transcript
 
 router = APIRouter(prefix="/results", tags=["results"])
@@ -206,6 +207,7 @@ def _to_cell(scope: Scope, row: CompareCellRow, column_key: str = "") -> Compare
         tool_call_count=result.tool_call_count,
         tool_call_names=_tool_call_names(result.transcript_json),
         column_key=column_key,
+        history=decode_history(result.history) or None,
     )
 
 
@@ -403,6 +405,8 @@ async def _model_mode(
             # rewritten since the runs leaves their results valid and moves the
             # standard they are graded by.
             expected_output=row.expected_output,
+            # The fourth sent part, live — "conversation history edited since".
+            history=decode_history(row.history) or None,
         )
         for row in await compare_test_case_rows(scope, session)
     ]

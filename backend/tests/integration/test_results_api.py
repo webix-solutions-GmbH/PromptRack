@@ -531,6 +531,76 @@ class TestThreeTextsOnTheWire:
         assert body["rows"][0]["drift"] == ["test case text edited since"]
 
 
+HISTORY = [
+    {"role": "user", "content": "List open invoices."},
+    {"role": "assistant", "content": "4711, 4712."},
+]
+
+
+class TestConversationHistoryOnTheWire:
+    async def _suite(self, scope: Scope, session: AsyncSession) -> tuple[int, int, int]:
+        """`(endpoint_id, group_id, test_case_id)`, one case with a history."""
+        endpoint = await create_endpoint(scope, session, name="Box", base_url="http://box/v1")
+        group = await create_test_group(scope, session, name="Group")
+        case = await create_test_case(
+            scope, session, group_id=group.id, title="First", content="Only DE.", history=HISTORY
+        )
+        await session.commit()
+        return endpoint.id, group.id, case.id
+
+    async def test_cells_and_rows_carry_it_and_a_change_between_runs_is_drift(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id, case_id = await self._suite(scope, session)
+        first = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        await update_test_case(scope, session, case_id, {"history": None})
+        await session.commit()
+        session.expire_all()
+        second = await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, mode="runs", runs=f"{first},{second}")
+
+        row = body["rows"][0]
+        assert row["history"] == HISTORY  # the first cell's frozen copy
+        assert row["cells"][0]["history"] == HISTORY
+        assert row["cells"][1]["history"] is None
+        assert row["drift"] == ["conversation history"]
+
+    async def test_model_mode_reports_a_history_edited_since_the_run(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id, case_id = await self._suite(scope, session)
+        await make_run(scope, session, endpoint_id, group_id, outcomes=("ok",))
+        edited = [HISTORY[0], {"role": "assistant", "content": "Only 4711."}]
+        await update_test_case(scope, session, case_id, {"history": edited})
+        await session.commit()
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, models=[f"{endpoint_id}|test-model"])
+
+        row = body["rows"][0]
+        assert row["history"] == edited  # live, like the row's test_case_text
+        assert row["cells"][0]["history"] == HISTORY
+        assert row["drift"] == ["conversation history edited since"]
+
+    async def test_no_history_is_null_and_no_drift(
+        self, client: AsyncClient, session: AsyncSession, create_workspace: CreateWorkspace
+    ) -> None:
+        customer_id, scope = await create_workspace("Acme")
+        endpoint_id, group_id = await make_suite(scope, session)
+        await make_run(scope, session, endpoint_id, group_id)
+        await sign_in(client, session, "member@example.com", customer_id)
+
+        body = await matrix(client, models=[f"{endpoint_id}|test-model"])
+
+        assert all(row["history"] is None for row in body["rows"])
+        assert all(row["cells"][0]["history"] is None for row in body["rows"])
+        assert all(row["drift"] == [] for row in body["rows"])
+
+
 class TestExpectedOutputOnTheWire:
     """The rubric the row header shows, in both pivots.
 

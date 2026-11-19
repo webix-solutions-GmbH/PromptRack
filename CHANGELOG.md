@@ -5,6 +5,17 @@ also that build's container image tag — `0.3.0` here is
 `ghcr.io/webix-solutions-gmbh/promptrack:0.3.0`, and the GitHub release on the
 same tag carries this section verbatim.
 
+## Unreleased
+
+- Manual (mock) toolsets and their tools can be listed, created, updated and deleted over MCP
+- Members can create and edit manual toolsets; MCP-server toolsets, sharing and deleting stay admin
+- Tool descriptions and mock responses take long texts (50k+ characters) and get a multi-line editor
+- A manual tool can hold several mock responses, answered by call order — the last one repeats
+- A test case can override a manual tool's mock response, so one shared toolset serves many cases
+- A test case can carry earlier user/assistant turns, sent before its own message for follow-up questions
+- Fixed MCP text arguments that look like JSON (a JSON document as test-case content, the word "null") being refused or turned into nothing
+- A second toolset with a name already in use is refused in the UI too, not only over MCP
+
 ## 0.4.0 — 2026-08-31
 
 - Parameter groups: named request-param presets ("no thinking") selectable on any run, merged between the endpoint's defaults and the run's own params

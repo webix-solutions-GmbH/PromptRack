@@ -524,7 +524,7 @@ class TestGlobals:
         _, a = await create_workspace("A")
 
         shared = await create_toolset(base, session, name="Mock ERP", is_global=True)
-        await create_tool(base, session, shared.id, name="lookup_order", mock_response="{}")
+        await create_tool(base, session, shared.id, name="lookup_order", mock_responses=["{}"])
 
         group = await create_test_group(a, session, name="General")
         case = await create_test_case(
@@ -569,7 +569,7 @@ class TestGlobals:
         _, b = await create_workspace("B")
 
         shared_id = (await create_toolset(base, session, name="Mock ERP", is_global=True)).id
-        await create_tool(base, session, shared_id, name="lookup_order", mock_response="{}")
+        await create_tool(base, session, shared_id, name="lookup_order", mock_responses=["{}"])
 
         linked: list[tuple[Scope, int]] = []
         for workspace, titles in ((a, ("One", "Two")), (b, ("Three",))):

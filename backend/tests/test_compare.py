@@ -42,6 +42,7 @@ from app.services.compare import (
     snapshot_endpoint_name,
     split_model_column_key,
 )
+from app.services.message_assembly import HistoryTurn
 
 _ids = count(1)
 
@@ -1163,3 +1164,77 @@ class TestTheRubricDriftNote:
 
         drift = annotate_drift(rows, live_by_test_case=live_texts_by_test_case(cases))
         assert drift[0].drift == ["expected output edited since"]
+
+
+# ---------------------------------------------------------------------------
+# Conversation history — the fourth sent part
+# ---------------------------------------------------------------------------
+
+EARLIER = [HistoryTurn("user", "List open invoices."), HistoryTurn("assistant", "4711, 4712.")]
+REWORDED = [HistoryTurn("user", "List open invoices."), HistoryTurn("assistant", "4711 only.")]
+
+
+class TestConversationHistoryDrift:
+    def test_identical_or_absent_history_is_not_drift(self) -> None:
+        assert describe_row_drift([cell(1, history=EARLIER), cell(2, history=list(EARLIER))]) == []
+        # None and [] both mean "no history".
+        assert describe_row_drift([cell(1), cell(2, history=[])]) == []
+
+    def test_whitespace_inside_a_turn_is_not_drift(self) -> None:
+        padded = [HistoryTurn("user", "List  open\ninvoices. "), EARLIER[1]]
+        assert describe_row_drift([cell(1, history=EARLIER), cell(2, history=padded)]) == []
+
+    def test_a_different_history_is_named_on_its_own(self) -> None:
+        assert describe_row_drift([cell(1, history=EARLIER), cell(2, history=REWORDED)]) == [
+            "conversation history"
+        ]
+        assert describe_row_drift([cell(1, history=EARLIER), cell(2)]) == [
+            "conversation history"
+        ]
+
+    def test_a_role_change_is_drift_even_with_the_same_words(self) -> None:
+        swapped = [HistoryTurn("assistant", "List open invoices."), EARLIER[1]]
+        assert describe_row_drift([cell(1, history=EARLIER), cell(2, history=swapped)]) == [
+            "conversation history"
+        ]
+
+    def test_model_mode_reports_an_edit_since_against_the_live_case(self) -> None:
+        assert describe_row_drift([cell(1, history=EARLIER)], live(history=REWORDED)) == [
+            "conversation history edited since"
+        ]
+        # Added after the run, and removed after the run, both count.
+        assert describe_row_drift([cell(1)], live(history=EARLIER)) == [
+            "conversation history edited since"
+        ]
+        assert describe_row_drift([cell(1, history=EARLIER)], live()) == [
+            "conversation history edited since"
+        ]
+        assert describe_row_drift([cell(1, history=EARLIER)], live(history=EARLIER)) == []
+
+    def test_already_drifting_across_the_row_is_not_also_reported_as_edited(self) -> None:
+        assert describe_row_drift(
+            [cell(1, history=EARLIER), cell(2, history=REWORDED)], live(history=[])
+        ) == ["conversation history"]
+
+    def test_model_mode_reads_it_off_the_live_test_case_and_carries_it_on_the_row(self) -> None:
+        cases = [live_case(10, text="text", history=REWORDED)]
+        rows = build_model_matrix(
+            ["1|a"],
+            cases,
+            [model_cell(1, "1|a", test_case_id=10, test_case_text="text", history=EARLIER)],
+        ).rows
+
+        assert rows[0].history == REWORDED  # live, like the row's test_case_text
+        assert rows[0].cells[0] is not None and rows[0].cells[0].history == EARLIER
+        drift = annotate_drift(rows, live_by_test_case=live_texts_by_test_case(cases))
+        assert drift[0].drift == ["conversation history edited since"]
+
+    def test_run_mode_rows_carry_the_first_cells_history(self) -> None:
+        rows = build_compare_matrix(
+            [1, 2],
+            [
+                cell(1, test_case_id=10, history=EARLIER),
+                cell(2, test_case_id=10, history=REWORDED),
+            ],
+        )
+        assert rows[0].history == EARLIER

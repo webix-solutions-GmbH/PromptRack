@@ -1,7 +1,10 @@
 <script setup lang="ts">
-// Toolsets list. Creating/editing a toolset is admin-only — it holds
-// `mcp_url` and headers, which are credentials — but every member reads the
-// list to pick toolsets for a test case.
+// Toolsets list. Every signed-in user reads it to pick toolsets for a test
+// case. A member may create a *manual* toolset — canned responses, no
+// credential anywhere in it — so the create dialog offers a member name and
+// description only. The kind choice (an MCP toolset's URL and headers are
+// credentials) and sharing are admin-only, and a member's request leaves those
+// keys out entirely: the route refuses a member's body that names one.
 import { onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import Button from 'primevue/button'
@@ -95,14 +98,18 @@ async function submitForm() {
   formError.value = null
   saving.value = true
   try {
-    await toolsetsApi.create({
-      name: form.value.name,
-      description: form.value.description || null,
-      kind: form.value.kind,
-      mcp_url: form.value.kind === 'mcp' ? form.value.mcp_url || null : null,
-      mcp_headers: form.value.kind === 'mcp' ? form.value.mcp_headers || null : null,
-      is_global: form.value.is_global,
-    })
+    await toolsetsApi.create(
+      auth.canAdminister
+        ? {
+            name: form.value.name,
+            description: form.value.description || null,
+            kind: form.value.kind,
+            mcp_url: form.value.kind === 'mcp' ? form.value.mcp_url || null : null,
+            mcp_headers: form.value.kind === 'mcp' ? form.value.mcp_headers || null : null,
+            is_global: form.value.is_global,
+          }
+        : { name: form.value.name, description: form.value.description || null, kind: 'manual' },
+    )
     toast.add({ severity: 'success', summary: 'Toolset created', life: 5000 })
     dialogOpen.value = false
     await load()
@@ -127,7 +134,7 @@ async function submitForm() {
           documentation" becomes a measurable workload.
         </p>
       </div>
-      <Button v-if="auth.canAdminister" label="New toolset" icon="pi pi-plus" @click="openCreate" />
+      <Button v-if="auth.canWrite" label="New toolset" icon="pi pi-plus" @click="openCreate" />
     </div>
 
     <Message v-if="loadError" severity="error" :closable="false">{{ loadError }}</Message>
@@ -178,35 +185,43 @@ async function submitForm() {
             placeholder="Read-only product and partner lookups"
           />
         </div>
-        <div class="field">
-          <label>Kind</label>
-          <SelectButton v-model="form.kind" :options="TOOLSET_KIND_OPTIONS" option-label="label" option-value="value" />
-        </div>
-        <template v-if="form.kind === 'mcp'">
+        <template v-if="auth.canAdminister">
           <div class="field">
-            <label for="toolset-mcp-url">MCP URL *</label>
-            <InputText id="toolset-mcp-url" v-model="form.mcp_url" placeholder="https://mcp.example.com" />
+            <label>Kind</label>
+            <SelectButton v-model="form.kind" :options="TOOLSET_KIND_OPTIONS" option-label="label" option-value="value" />
           </div>
-          <div class="field">
-            <label for="toolset-mcp-headers">Headers (JSON)</label>
-            <Textarea
-              id="toolset-mcp-headers"
-              v-model="form.mcp_headers"
-              rows="3"
-              auto-resize
-              placeholder='{"Authorization": "Bearer …"}'
-            />
-          </div>
+          <template v-if="form.kind === 'mcp'">
+            <div class="field">
+              <label for="toolset-mcp-url">MCP URL *</label>
+              <InputText id="toolset-mcp-url" v-model="form.mcp_url" placeholder="https://mcp.example.com" />
+            </div>
+            <div class="field">
+              <label for="toolset-mcp-headers">Headers (JSON)</label>
+              <Textarea
+                id="toolset-mcp-headers"
+                v-model="form.mcp_headers"
+                rows="3"
+                auto-resize
+                placeholder='{"Authorization": "Bearer …"}'
+              />
+            </div>
+          </template>
+          <p v-else-if="form.kind === 'documents'" class="hint">
+            Creating this adds its three retrieval tools — <span class="mono">list_documents</span>,
+            <span class="mono">search_documents</span> and <span class="mono">read_document</span> —
+            straight away. Upload or write the markdown on the toolset's own page afterwards.
+          </p>
+          <label v-if="auth.isBaseWorkspace" class="checkbox-option" for="toolset-is-global">
+            <Checkbox v-model="form.is_global" binary input-id="toolset-is-global" />
+            Global — share this toolset with every workspace
+          </label>
         </template>
-        <p v-else-if="form.kind === 'documents'" class="hint">
-          Creating this adds its three retrieval tools — <span class="mono">list_documents</span>,
-          <span class="mono">search_documents</span> and <span class="mono">read_document</span> —
-          straight away. Upload or write the markdown on the toolset's own page afterwards.
+        <!-- Stated rather than chosen, the way the test-case editor states a
+             prompt's kind: a member's toolset is always manual. -->
+        <p v-else class="hint">
+          A manual toolset: you add its tools and their canned responses on the toolset's page.
+          MCP and documents toolsets are created by an administrator.
         </p>
-        <label v-if="auth.isBaseWorkspace" class="checkbox-option" for="toolset-is-global">
-          <Checkbox v-model="form.is_global" binary input-id="toolset-is-global" />
-          Global — share this toolset with every workspace
-        </label>
         <Message v-if="formError" severity="error" :closable="false">{{ formError }}</Message>
         <div class="dialog-actions">
           <Button type="button" label="Cancel" text @click="dialogOpen = false" />

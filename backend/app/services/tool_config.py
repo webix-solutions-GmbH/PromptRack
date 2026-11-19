@@ -20,7 +20,7 @@ and `app.services.attribution` draw, except this one cannot stay pure since
 "which tools are enabled" is a live read.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +29,7 @@ from app.models import Toolset
 from app.repos.customers import assert_same_customer
 from app.repos.toolsets import list_tools
 from app.scope import Scope
+from app.services.tool_authoring import clean_mock_responses
 
 #: The agentic loop's own turn budget: the default offered when nothing is
 #: specified, and the hard ceiling regardless of what a test case asks for.
@@ -96,6 +97,7 @@ async def assert_tool_config(
     tool_mode: str,
     toolset_ids: Sequence[int],
     subject: str,
+    mock_overrides: Mapping[str, Sequence[str]] | None = None,
 ) -> None:
     """Refuses a `tool_mode` that would run with no enabled tools, or with a
     name collision across the selected toolsets.
@@ -103,6 +105,16 @@ async def assert_tool_config(
     `subject` names what is wrong in the raised message, e.g.
     `Test case "Reconcile invoice"`. A no-op for `tool_mode == "none"` —
     nothing is offered, so there is nothing to check.
+
+    `mock_overrides` is the case's per-tool canned-response override, keyed by
+    tool name. Every key has to name an **enabled `manual`** tool among the
+    selected toolsets — an MCP or documents tool has no canned response to
+    replace, and a disabled one is never offered — and every value goes through
+    `clean_mock_responses`. Checked here rather than only at authoring time
+    because this same function runs again at run creation: a tool renamed or
+    removed after the case was saved then refuses the run, naming the case,
+    instead of the override silently doing nothing. Under `tool_mode == "none"`
+    overrides are neither checked nor applied (they stay stored, inert).
 
     Toolset ids outside this workspace raise `CrossCustomerError` (from
     `assert_same_customer`) rather than `ToolConfigError`, so a caller can
@@ -136,3 +148,39 @@ async def assert_tool_config(
             f"{subject} selects toolsets that both define: {', '.join(collisions)}. "
             "Tool names must be unique within one prompt."
         )
+
+    if mock_overrides:
+        eligible = sorted(
+            {tool.name for tool in tools if tool.enabled and tool.source == "manual"}
+        )
+        assert_mock_overrides(mock_overrides, eligible, subject=subject)
+
+
+def assert_mock_overrides(
+    mock_overrides: Mapping[str, Sequence[str]],
+    eligible: Sequence[str],
+    *,
+    subject: str,
+) -> None:
+    """The pure half of the override check: names against the eligible manual
+    tools, values through `clean_mock_responses`. Split out of
+    :func:`assert_tool_config` so it is testable without a database.
+    """
+    allowed = set(eligible)
+    for name, responses in mock_overrides.items():
+        if name not in allowed:
+            known = ", ".join(eligible) if eligible else "none"
+            raise ToolConfigError(
+                f'{subject} overrides the canned response of "{name}", which is not an '
+                "enabled manual tool in its selected toolsets. Tools that can be "
+                f"overridden: {known}."
+            )
+        try:
+            cleaned = clean_mock_responses(list(responses))
+        except ValueError as exc:
+            raise ToolConfigError(f'{subject}: the override for "{name}": {exc}') from exc
+        if not cleaned:
+            raise ToolConfigError(
+                f'{subject}: the override for "{name}" has no canned response. Give it one, '
+                "or remove the override."
+            )

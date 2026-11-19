@@ -89,7 +89,12 @@ from app.services.documents import (
 )
 from app.services.llm import LlmError, ToolCall, stream_chat
 from app.services.mcp_client import call_mcp_tool
-from app.services.message_assembly import assert_user_message, system_message, user_message
+from app.services.message_assembly import (
+    assert_user_message,
+    decode_history,
+    system_message,
+    user_message,
+)
 from app.services.params import strip_reserved
 from app.services.run_events import (
     Aborted,
@@ -686,6 +691,9 @@ async def _execute(
                         result.task_prompt_text, result.test_case_text
                     ),
                     system_prompt=system_message(result.system_prompt_text),
+                    # The frozen copy, never the live case: Resume sends what
+                    # the run was created with.
+                    history=decode_history(result.history),
                     params=params,
                     snapshot=snapshot,
                     tool_mode=result.tool_mode,

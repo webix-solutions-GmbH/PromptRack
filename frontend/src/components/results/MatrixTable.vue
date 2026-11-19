@@ -386,6 +386,23 @@ function caseTextPeek(row: CompareRowView): PeekContent {
   }
 }
 
+/** The row's earlier conversation, one labelled block per turn in send order.
+ * Carried on the row like `test_case_text`; the button hides on a null or
+ * empty history, so this never renders an empty peek. Uncoded: the part
+ * colours belong to the system/task/content channels. */
+function historyPeek(row: CompareRowView): PeekContent {
+  return {
+    source: 'Earlier conversation',
+    caseTitle: row.test_case_title,
+    blocks: (row.history ?? []).map((turn, index) => ({
+      key: `history-${index}`,
+      label: turn.role === 'user' ? 'User' : 'Assistant',
+      badge: null,
+      text: turn.content,
+    })),
+  }
+}
+
 /** The run's own note, opened by the bubble in its column header — the same
  * hover-to-glance/click-to-pin idiom the row peeks use, because a comment is
  * free text of any length and the header has one line of room. Guarded by the
@@ -699,6 +716,7 @@ function tokenLabel(cell: CompareCellView): string | null {
               <div
                 v-if="
                   row.test_case_text ||
+                  (row.history?.length ?? 0) > 0 ||
                   rowPromptBlocks(row).length > 0 ||
                   toolsFor(row) !== null ||
                   row.expected_output ||
@@ -730,6 +748,19 @@ function tokenLabel(cell: CompareCellView): string | null {
                     />
                   </span>
                   Prompts
+                </button>
+                <!-- Send order again: the earlier turns go out between the
+                     system message and the user message. -->
+                <button
+                  v-if="(row.history?.length ?? 0) > 0"
+                  type="button"
+                  class="peek-button"
+                  @mouseenter="peekEnter($event, historyPeek(row))"
+                  @mouseleave="peekLeave"
+                  @click="pin(historyPeek(row))"
+                >
+                  <i class="pi pi-comments" aria-hidden="true" />
+                  Conversation ({{ row.history?.length }})
                 </button>
                 <button
                   v-if="row.test_case_text"

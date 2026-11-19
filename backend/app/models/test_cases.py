@@ -71,9 +71,23 @@ class TestCase(Base):
     task_prompt_id: Mapped[int | None] = mapped_column(
         ForeignKey("prompts.id", ondelete="SET NULL"), index=True
     )
+    #: Earlier user/assistant turns sent between the system message and the
+    #: test's own user message — a JSON array of `{"role", "content"}`, NULL for
+    #: none. Validated by `app.services.message_assembly.validate_history`
+    #: (starts with user, alternates, ends with assistant) and frozen into
+    #: `run_results.history` at run creation.
+    history: Mapped[str | None] = mapped_column(Text)
     tool_mode: Mapped[ToolMode] = mapped_column(Text, server_default="none")
     tool_choice: Mapped[ToolChoice | None] = mapped_column(Text)
     max_turns: Mapped[int] = mapped_column(server_default=text("6"))
+    #: Per-tool canned-response overrides for this case — a JSON object
+    #: `{tool name: [response, ...]}`, NULL for none. Keyed by *name* on
+    #: purpose: one shared manual toolset serves many cases, and run creation
+    #: swaps the override into that case's frozen tool snapshot. Each key must
+    #: name an enabled manual tool of the selected toolsets
+    #: (`app.services.tool_config.assert_tool_config`, at authoring time and
+    #: again at run creation). Inert under `tool_mode = "none"`.
+    mock_overrides: Mapped[str | None] = mapped_column(Text)
     sort_order: Mapped[int] = mapped_column(server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

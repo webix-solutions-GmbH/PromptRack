@@ -63,7 +63,7 @@ from app.repos.runs import (
 from app.repos.scoped import utc_now
 from app.scope import CrossCustomerError, Scope
 from app.services.executor import execute_run, run_in_background
-from app.services.message_assembly import NoUserMessageError
+from app.services.message_assembly import HistoryTurn, NoUserMessageError, decode_history
 from app.services.params import ParamsError, validate_params
 from app.services.run_create import RunCreateError, create_run_record
 from app.services.run_events import (
@@ -154,6 +154,9 @@ class RunResultView(BaseModel):
     #: `test_case_text` so `/results` can say *the task prompt changed*
     #: instead of *the user message changed*.
     task_prompt_text: str | None
+    #: The conversation history sent between the system message and the user
+    #: message, frozen at run creation. Null when the case had none.
+    history: list[HistoryTurn] | None
     tools_snapshot: list[Any] | None
     tool_mode: ToolMode
     tool_choice: ToolChoice | None
@@ -324,6 +327,7 @@ def _result_view(result: RunResult) -> RunResultView:
         expected_output=result.expected_output,
         system_prompt_text=result.system_prompt_text,
         task_prompt_text=result.task_prompt_text,
+        history=decode_history(result.history) or None,
         tools_snapshot=_json_value(result.tools_snapshot),
         tool_mode=result.tool_mode,
         tool_choice=result.tool_choice,

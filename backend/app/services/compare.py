@@ -43,6 +43,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from app.models import Rating, ResultStatus, ToolChoice, ToolMode
+from app.services.message_assembly import HistoryTurn
 
 #: Hard cap on how many runs can be compared side by side.
 MAX_COMPARE_RUNS = 4
@@ -276,6 +277,10 @@ class CompareCellView:
     superseded: SupersededAttempt | None = None
     #: Which model column this cell belongs to; model mode only.
     column_key: str = ""
+    #: The frozen conversation history sent before the user message, or `None`
+    #: when there was none — the fourth sent part, compared like the three
+    #: texts ("conversation history").
+    history: list[HistoryTurn] | None = None
 
 
 @dataclass(frozen=True)
@@ -312,6 +317,10 @@ class CompareRowView:
     #: Conditions that are *not* held constant across the row; see
     #: :func:`describe_row_drift`. Filled by :func:`annotate_drift`.
     drift: list[str] = field(default_factory=list)
+    #: The conversation history, picked exactly like `test_case_text`: the
+    #: first cell's frozen copy in run mode, the live test case's in model mode.
+    #: `None` when there is none.
+    history: list[HistoryTurn] | None = None
 
 
 @dataclass(frozen=True)
@@ -334,6 +343,7 @@ class LiveTexts:
     system_prompt_text: str | None = None
     task_prompt_text: str | None = None
     expected_output: str | None = None
+    history: list[HistoryTurn] | None = None
 
 
 @dataclass(frozen=True)
@@ -357,6 +367,8 @@ class CompareTestCaseView:
     #: same reason the two prompt texts are: a caller that has not read it
     #: degrades to reporting nothing rather than to reporting a removal.
     expected_output: str | None = None
+    #: The live conversation history (`None` = none).
+    history: list[HistoryTurn] | None = None
 
     def live_texts(self) -> LiveTexts:
         return LiveTexts(
@@ -364,6 +376,7 @@ class CompareTestCaseView:
             system_prompt_text=self.system_prompt_text,
             task_prompt_text=self.task_prompt_text,
             expected_output=self.expected_output,
+            history=self.history,
         )
 
 
@@ -416,6 +429,7 @@ class _RowBuilder:
     first_column: int
     #: `sort_order` within that first column.
     first_sort_order: int
+    history: list[HistoryTurn] | None = None
 
     def freeze(self) -> CompareRowView:
         return CompareRowView(
@@ -426,6 +440,7 @@ class _RowBuilder:
             test_case_text=self.test_case_text,
             cells=self.cells,
             expected_output=shared_expected_output(self.cells),
+            history=self.history,
         )
 
 
@@ -493,6 +508,7 @@ def build_compare_matrix(
                 cells=[None] * len(run_ids),
                 first_column=column,
                 first_sort_order=result.sort_order,
+                history=result.history,
             )
             rows.append(row)
 
@@ -824,6 +840,8 @@ def build_model_matrix(
                 # mode anchors a row's identity to the live test case, but what
                 # a cell was graded against is what its own run recorded.
                 expected_output=shared_expected_output(row_cells),
+                # Live, like `test_case_text` beside it.
+                history=test_case.history,
             )
         )
 
@@ -864,6 +882,17 @@ _TEXT_ASPECTS: tuple[tuple[str, Callable[[CompareCellView], str | None]], ...] =
     ("test case text", lambda cell: cell.test_case_text),
 )
 
+#: The fourth sent part's user-visible label.
+HISTORY_ASPECT = "conversation history"
+
+
+def _history_key(turns: Sequence[HistoryTurn] | None) -> str:
+    """A conversation history as a comparable key: roles verbatim, each
+    content under the same whitespace normalization the texts get. `None` and
+    `[]` are the same key — no history either way.
+    """
+    return json.dumps([[turn.role, _text_key(turn.content)] for turn in turns or ()])
+
 
 def describe_row_drift(
     cells: Sequence[CompareCellView | None], live: LiveTexts | None = None
@@ -889,6 +918,9 @@ def describe_row_drift(
             (label, lambda cell, of=of: _text_key(of(cell)))
             for label, of in _TEXT_ASPECTS
         ),
+        # The fourth sent part, compared as a whole: a follow-up question
+        # asked after a different earlier exchange is a different test.
+        (HISTORY_ASPECT, lambda cell: _history_key(cell.history)),
         # Outside `_TEXT_ASPECTS` because it is not one of the three texts sent
         # to the model — but it *is* compared against the live test case too
         # (`_LIVE_ASPECTS` below), on different terms: the model never saw the
@@ -919,24 +951,26 @@ def describe_row_drift(
 
     if live is not None:
         first = present[0]
-        for label, of in _LIVE_ASPECTS:
+        for label, of, key in _LIVE_ASPECTS:
             # Already drifting across the row: saying it also drifted from live
             # adds nothing a reader can act on.
             if label in drift:
                 continue
-            live_text = getattr(live, _LIVE_FIELD[label])
-            if _text_key(of(first)) != _text_key(live_text):
+            live_value = getattr(live, _LIVE_FIELD[label])
+            if key(of(first)) != key(live_value):
                 drift.append(f"{label} edited since")
 
     return drift
 
 
 #: What model mode additionally compares against the live test case: the three
-#: sent texts, plus the rubric — see the note at the `"expected output"` aspect
-#: for why the rubric belongs here despite never being sent.
-_LIVE_ASPECTS: tuple[tuple[str, Callable[[CompareCellView], str | None]], ...] = (
-    *_TEXT_ASPECTS,
-    ("expected output", lambda cell: cell.expected_output),
+#: sent texts and the conversation history, plus the rubric — see the note at
+#: the `"expected output"` aspect for why the rubric belongs here despite never
+#: being sent. Each entry carries the key function both sides are compared by.
+_LIVE_ASPECTS: tuple[tuple[str, Callable[[CompareCellView], Any], Callable[[Any], str]], ...] = (
+    *((label, of, _text_key) for label, of in _TEXT_ASPECTS),
+    (HISTORY_ASPECT, lambda cell: cell.history, _history_key),
+    ("expected output", lambda cell: cell.expected_output, _text_key),
 )
 
 #: Which :class:`LiveTexts` field each aspect compares against.
@@ -944,6 +978,7 @@ _LIVE_FIELD: dict[str, str] = {
     "system prompt": "system_prompt_text",
     "task prompt": "task_prompt_text",
     "test case text": "test_case_text",
+    HISTORY_ASPECT: "history",
     "expected output": "expected_output",
 }
 

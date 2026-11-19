@@ -24,7 +24,7 @@ Three things this module is responsible for, and the reasoning behind each:
 
 The frozen half of a run's tool configuration lives here too
 (:class:`SnapshotTool` and its (de)serializers): the definition sent to the
-model and a manual tool's canned response are *content* and travel with the
+model and a manual tool's canned responses are *content* and travel with the
 run, while an MCP toolset's URL and headers are credentials and are read live
 at execution time — the same line an endpoint's `base_url`/`api_key` sits on.
 Which is why the loop takes an `execute_tool` callable rather than looking a
@@ -44,6 +44,7 @@ and nothing in this build reads them back.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from time import monotonic
@@ -59,6 +60,7 @@ from app.services.llm import (
     compute_tokens_per_sec,
     stream_chat,
 )
+from app.services.message_assembly import HistoryTurn
 from app.services.tool_config import normalize_max_turns
 
 #: One entry of the OpenAI-compatible `tools` array, as it goes on the wire.
@@ -93,10 +95,11 @@ class SnapshotTool:
     source: ToolSource
     toolset_id: int
     toolset_name: str
-    #: A manual tool's canned response, returned verbatim. None for MCP and
-    #: document tools (and for a manual tool nobody configured, which the loop
-    #: reports).
-    mock_response: str | None = None
+    #: A manual tool's canned responses, by call order: the n-th call of this
+    #: tool within one result gets the n-th, and the last repeats for every call
+    #: after. Empty for MCP and document tools (and for a manual tool nobody
+    #: configured, which the loop reports).
+    mock_responses: tuple[str, ...] = ()
     #: How much corpus a `documents` toolset held when this run was created, and
     #: when it had last changed (ISO-8601, or None for a corpus that has never
     #: had a document in it). None on both for every other source. Frozen for
@@ -116,13 +119,25 @@ class SnapshotTool:
         return ""
 
     def to_json(self) -> dict[str, Any]:
+        """The frozen entry.
+
+        `mock_response` is always written, holding the first response (or
+        null), and `mock_responses` is added **only** when there is more than
+        one. That is not tidiness: `describe_row_drift` compares these entries
+        across a row, so a single-response tool frozen today has to be
+        byte-identical to the same tool frozen before call order existed —
+        otherwise `/results` would report "tools" drift against every older run
+        of an unchanged suite.
+        """
         payload: dict[str, Any] = {
             "definition": self.definition,
             "source": self.source,
             "toolset_id": self.toolset_id,
             "toolset_name": self.toolset_name,
-            "mock_response": self.mock_response,
+            "mock_response": self.mock_responses[0] if self.mock_responses else None,
         }
+        if len(self.mock_responses) > 1:
+            payload["mock_responses"] = list(self.mock_responses)
         # Omitted rather than written as nulls, so a manual or MCP tool's frozen
         # entry stays byte-identical to what this column has always held.
         if self.document_count is not None:
@@ -185,7 +200,6 @@ def parse_tools_snapshot(raw: str | None) -> list[SnapshotTool]:
         source = entry.get("source")
         toolset_id = entry.get("toolset_id")
         toolset_name = entry.get("toolset_name")
-        mock_response = entry.get("mock_response")
 
         tools.append(
             SnapshotTool(
@@ -193,12 +207,26 @@ def parse_tools_snapshot(raw: str | None) -> list[SnapshotTool]:
                 source=_tool_source(source),
                 toolset_id=toolset_id if isinstance(toolset_id, int) else 0,
                 toolset_name=toolset_name if isinstance(toolset_name, str) else "",
-                mock_response=mock_response if isinstance(mock_response, str) else None,
+                mock_responses=_snapshot_mock_responses(entry),
                 document_count=_optional_int(entry.get("document_count")),
                 corpus_updated_at=_optional_str(entry.get("corpus_updated_at")),
             )
         )
     return tools
+
+
+def _snapshot_mock_responses(entry: Mapping[str, Any]) -> tuple[str, ...]:
+    """A frozen entry's canned responses, from either shape it may hold.
+
+    `mock_responses` (a list of strings) is only written when there are several
+    — see :meth:`SnapshotTool.to_json` — so every single-response entry, and
+    every entry frozen before call order existed, carries `mock_response` alone.
+    """
+    many = entry.get("mock_responses")
+    if isinstance(many, list) and many and all(isinstance(item, str) for item in many):
+        return tuple(many)
+    one = entry.get("mock_response")
+    return (one,) if isinstance(one, str) else ()
 
 
 def snapshot_definitions(snapshot: Sequence[SnapshotTool]) -> list[ToolDefinition]:
@@ -454,36 +482,65 @@ def error_payload(message: str) -> str:
     return json.dumps({"error": message})
 
 
+def pick_mock_response(responses: Sequence[str], call_index: int) -> str | None:
+    """The canned response for the `call_index`-th (0-based) call of one tool.
+
+    By call order, and the last one repeats: a tool scripted "pending, then
+    done" keeps answering "done" however often the model polls it, so a longer
+    loop than the author imagined stays answerable rather than erroring. None
+    when nothing is configured.
+    """
+    if not responses:
+        return None
+    return responses[min(max(call_index, 0), len(responses) - 1)]
+
+
 async def _execute_one(
     call: ToolCall,
     snapshot: Sequence[SnapshotTool],
     execute_tool: ToolExecutor | None,
-) -> ToolExecutionOutcome:
-    """Dispatches one call.
+    call_index: int = 0,
+) -> tuple[ToolExecutionOutcome, bool]:
+    """Dispatches one call; the flag says whether a canned response was served.
 
     A failure here is never a failed result — see the module docstring. Every
     branch answers *something*, because a model left waiting on a tool message
     that never arrives is the one outcome that teaches nothing.
+
+    `call_index` is how many canned responses of this same tool the result has
+    already served, across every turn — what picks a manual tool's canned
+    response by call order (:func:`pick_mock_response`). The returned flag is
+    true only when one was actually served, so a call refused for malformed
+    arguments does not use up "page 1" of a scripted sequence the model never
+    got to read.
     """
     entry = next((tool for tool in snapshot if tool.name == call.name), None)
     if entry is None:
-        return ToolExecutionOutcome(
-            error_payload(
-                f'The model called "{call.name}", which was not one of the tools it was offered.'
+        return (
+            ToolExecutionOutcome(
+                error_payload(
+                    f'The model called "{call.name}", which was not one of the tools it was '
+                    "offered."
+                ),
+                True,
             ),
-            True,
+            False,
         )
 
     parsed = parse_tool_arguments(call.arguments)
     if parsed.error is not None:
-        return ToolExecutionOutcome(error_payload(parsed.error), True)
+        return ToolExecutionOutcome(error_payload(parsed.error), True), False
 
     if entry.source == "manual":
-        if entry.mock_response is None:
-            return ToolExecutionOutcome(
-                error_payload("This tool has no canned response configured."), True
+        response = pick_mock_response(entry.mock_responses, call_index)
+        if response is None:
+            return (
+                ToolExecutionOutcome(
+                    error_payload("This tool has no canned response configured."), True
+                ),
+                False,
             )
-        return ToolExecutionOutcome(entry.mock_response, False)
+        return ToolExecutionOutcome(response, False), True
 
     if execute_tool is None:
         # Reachable when the toolset behind the call was deleted or switched
@@ -491,17 +548,23 @@ async def _execute_one(
         # build against. Naming which kind of tool went unanswered is the
         # difference between a readable transcript and a puzzle.
         kind = "document tools" if entry.source == "documents" else "MCP tools"
-        return ToolExecutionOutcome(
-            error_payload(f"No executor is configured for {kind} in this run."), True
+        return (
+            ToolExecutionOutcome(
+                error_payload(f"No executor is configured for {kind} in this run."), True
+            ),
+            False,
         )
 
     try:
-        return await execute_tool(call)
+        return await execute_tool(call), False
     except Exception as exc:  # noqa: BLE001 - a tool failure is data, not a crash
         # Deliberately not `BaseException`: a `CancelledError` (the client
         # disconnected mid-run) has to keep propagating so the executor can
         # reset the in-flight row to `pending`.
-        return ToolExecutionOutcome(error_payload(str(exc) or "Tool execution failed."), True)
+        return (
+            ToolExecutionOutcome(error_payload(str(exc) or "Tool execution failed."), True),
+            False,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +651,9 @@ async def run_tool_loop(
     model: str,
     user_message: str,
     system_prompt: str | None = None,
+    # Earlier user/assistant turns, sent between the system message and the
+    # user message. Already validated (alternating, ending with assistant).
+    history: Sequence[HistoryTurn] = (),
     params: Mapping[str, Any] | None = None,
     # Frozen tool configuration. Empty means a plain one-shot completion.
     snapshot: Sequence[SnapshotTool] = (),
@@ -623,6 +689,12 @@ async def run_tool_loop(
     if system_prompt and system_prompt.strip():
         messages.append({"role": "system", "content": system_prompt})
         transcript.append(TranscriptMessage(role="system", content=system_prompt))
+    # The conversation so far. Recorded with **no** `turn`: these messages were
+    # authored, not produced by any model turn of this result, and that absence
+    # is how a reader tells a history assistant message from a measured one.
+    for past in history:
+        messages.append({"role": past.role, "content": past.content})
+        transcript.append(TranscriptMessage(role=past.role, content=past.content))
     messages.append({"role": "user", "content": user_message})
     transcript.append(TranscriptMessage(role="user", content=user_message))
 
@@ -631,6 +703,11 @@ async def run_tool_loop(
     final_text = ""
     final_reasoning = ""
     tool_call_count = 0
+    # Canned responses served per tool name across the whole result, every turn
+    # included — the index a manual tool's canned responses are picked by.
+    # Counted only when one was actually served: a call refused for malformed
+    # arguments answered with an error, not with the next scripted response.
+    calls_seen: Counter[str] = Counter()
 
     for turn in range(turn_budget):
         if on_turn_start is not None:
@@ -710,7 +787,11 @@ async def run_tool_loop(
 
         for call in metrics.tool_calls:
             started_at = monotonic()
-            outcome = await _execute_one(call, snapshot, execute_tool)
+            outcome, served_canned = await _execute_one(
+                call, snapshot, execute_tool, calls_seen[call.name]
+            )
+            if served_canned:
+                calls_seen[call.name] += 1
             duration_ms = round((monotonic() - started_at) * 1000)
 
             messages.append(
@@ -819,6 +900,7 @@ __all__ = [
     "parse_tools_snapshot",
     "parse_transcript",
     "parse_turns",
+    "pick_mock_response",
     "run_tool_loop",
     "serialize_tools_snapshot",
     "serialize_transcript",

@@ -505,7 +505,7 @@ class TestDocumentsToolset:
         # rather than in `DOCUMENT_TOOLS`' own order.
         assert [tool["name"] for tool in body["tools"]] == sorted(DOCUMENT_TOOL_NAMES)
         assert {tool["source"] for tool in body["tools"]} == {"documents"}
-        assert {tool["mock_response"] for tool in body["tools"]} == {None}
+        assert all(tool["mock_responses"] == [] for tool in body["tools"])
         assert all(tool["enabled"] for tool in body["tools"])
         # No server, so nothing that names one may be left behind on it.
         assert body["mcp_url"] is None
@@ -529,7 +529,7 @@ class TestDocumentsToolset:
 
         refused = await client.post(
             f"/api/toolsets/{toolset_id}/tools",
-            json={"name": "lookup_order", "mock_response": "{}"},
+            json={"name": "lookup_order", "mock_responses": ["{}"]},
         )
         assert refused.status_code == 400
         assert "documents toolset" in refused.json()["message"]

@@ -1,10 +1,17 @@
 <script setup lang="ts">
-// Toolset detail/edit. `canAdminister` gates the toolset itself (its
-// `mcp_url` and headers are credentials); `canWrite` gates the tools inside
-// it, which are content — the same split as the toolsets list. A documents
-// toolset's corpus sits on the `canWrite` side of that line for the same
-// reason: markdown a customer wrote is content, and the toolset holds no
-// credential at all.
+// Toolset detail/edit. The line is content vs. credentials, drawn per field
+// rather than per page:
+//
+// - `canWrite` (member) edits the tools inside any toolset this workspace owns,
+//   a documents toolset's corpus, and — while the toolset is `manual` — its
+//   name and description. A manual toolset is canned responses and nothing
+//   else, so it holds no credential to protect.
+// - `canAdminister` alone changes the kind, an MCP toolset's URL and headers
+//   (credentials), sharing (`is_global`, Base only), anything about a toolset
+//   that is not manual, and deletes the toolset. Those fields are not rendered
+//   for a member, and `buildInput` leaves their keys out of the body entirely:
+//   the route refuses a member's request that so much as names one.
+//
 //
 // The three tool rows of a documents toolset are synthesized, not authored, so
 // this page shows them like any other tool but offers no way to add a fourth or
@@ -38,7 +45,9 @@ import {
   type ToolsetKind,
 } from '../api/toolsets'
 import { ApiError } from '../api/client'
-import { formatDateTime } from '../lib/format'
+import MockResponsesEditor from '../components/MockResponsesEditor.vue'
+import { formatChars, formatDateTime, titleIfShort } from '../lib/format'
+import { mockResponsesForWire } from '../lib/tools'
 import { useAuthStore } from '../stores/auth'
 
 const props = defineProps<{ id: string }>()
@@ -62,6 +71,15 @@ const loadError = ref<string | null>(null)
  * a borrowed document is allowed and useful: the corpus is what a retrieval
  * measurement is measured against. */
 const documentsWritable = computed(() => auth.canWrite && toolset.value?.editable === true)
+
+/** Whether the Details panel shows at all: an admin's for every kind, a
+ * member's only for a manual toolset — see the header comment. A borrowed
+ * global toolset shows it to nobody, since only Base can write it. */
+const settingsVisible = computed(() => {
+  const row = toolset.value
+  if (!row?.editable) return false
+  return auth.canAdminister || (auth.canWrite && row.kind === 'manual')
+})
 
 interface ToolsetFormState {
   name: string
@@ -147,8 +165,20 @@ const saveError = ref<string | null>(null)
  * typed new headers or explicitly asked for the stored ones to be removed.
  * Anything else — including a save that never touched the field — leaves them
  * intact. (Switching to `manual` clears them server-side either way.)
+ *
+ * A member's body is name, description and `kind: 'manual'` and nothing else.
+ * Not `mcp_url: null`, not `is_global: false`: the route answers a member's
+ * request that names any admin-only key with a 403, whatever its value, so the
+ * keys must be absent rather than merely harmless.
  */
 function buildInput(): ToolsetInput {
+  if (!auth.canAdminister) {
+    return {
+      name: form.value.name,
+      description: form.value.description || null,
+      kind: 'manual',
+    }
+  }
   const input: ToolsetInput = {
     name: form.value.name,
     description: form.value.description || null,
@@ -292,11 +322,12 @@ interface ToolFormState {
   name: string
   description: string
   parameters_json: string
-  mock_response: string
+  /** Call order — see `MockResponsesEditor`. */
+  mock_responses: string[]
 }
 
 function emptyToolForm(): ToolFormState {
-  return { name: '', description: '', parameters_json: '', mock_response: '' }
+  return { name: '', description: '', parameters_json: '', mock_responses: [] }
 }
 
 const toolDialogOpen = ref(false)
@@ -320,7 +351,7 @@ function openEditTool(tool: Tool) {
     name: tool.name,
     description: tool.description ?? '',
     parameters_json: tool.parameters_json,
-    mock_response: tool.mock_response ?? '',
+    mock_responses: [...tool.mock_responses],
   }
   toolFormError.value = null
   toolDialogOpen.value = true
@@ -328,13 +359,18 @@ function openEditTool(tool: Tool) {
 
 async function submitTool() {
   toolFormError.value = null
+  const responses = mockResponsesForWire(toolForm.value.mock_responses)
+  if (!responses.ok) {
+    toolFormError.value = responses.error
+    return
+  }
   savingTool.value = true
   try {
     const input = {
       name: toolForm.value.name,
       description: toolForm.value.description || null,
       parameters_json: toolForm.value.parameters_json || '{}',
-      mock_response: toolForm.value.mock_response || null,
+      mock_responses: responses.value,
     }
     if (editingTool.value) {
       await toolsetsApi.updateTool(toolsetId.value, editingTool.value.id, input)
@@ -566,12 +602,6 @@ async function onFilesPicked(event: Event) {
     uploading.value = false
   }
 }
-
-/** A document's size in the same unit `read_document` windows in, so the table
- * and the model measure a document the same way. */
-function formatChars(chars: number): string {
-  return `${chars.toLocaleString()} chars`
-}
 </script>
 
 <template>
@@ -609,7 +639,7 @@ function formatChars(chars: number): string {
         />
       </div>
 
-      <section v-if="auth.canAdminister && toolset.editable" class="panel">
+      <section v-if="settingsVisible" class="panel">
         <h2>Details</h2>
         <form class="dialog-form" @submit.prevent="save">
           <div class="field">
@@ -620,58 +650,62 @@ function formatChars(chars: number): string {
             <label for="toolset-description">Description</label>
             <InputText id="toolset-description" v-model="form.description" />
           </div>
-          <div class="field">
-            <label>Kind</label>
-            <SelectButton v-model="form.kind" :options="TOOLSET_KIND_OPTIONS" option-label="label" option-value="value" />
-          </div>
-          <template v-if="form.kind === 'mcp'">
+          <!-- Kind, the MCP connection and sharing are admin-only; a member sees
+               this panel only on a manual toolset and gets name + description. -->
+          <template v-if="auth.canAdminister">
             <div class="field">
-              <label for="toolset-mcp-url">MCP URL</label>
-              <InputText id="toolset-mcp-url" v-model="form.mcp_url" />
+              <label>Kind</label>
+              <SelectButton v-model="form.kind" :options="TOOLSET_KIND_OPTIONS" option-label="label" option-value="value" />
             </div>
-            <div class="field">
-              <label for="toolset-mcp-headers">Headers (JSON)</label>
-              <Textarea
-                id="toolset-mcp-headers"
-                v-model="form.mcp_headers"
-                rows="3"
-                auto-resize
-                :disabled="clearMcpHeaders"
-                :placeholder="
-                  toolset.has_mcp_headers
-                    ? 'leave blank to keep the stored headers'
-                    : '{&quot;Authorization&quot;: &quot;Bearer …&quot;}'
-                "
-              />
-              <p v-if="toolset.has_mcp_headers" class="hint">
-                Authentication headers are stored — leave this blank to keep them, or paste a new
-                JSON object to replace them.
-              </p>
-              <label
-                v-if="toolset.has_mcp_headers"
-                class="checkbox-option"
-                for="toolset-clear-mcp-headers"
-              >
-                <Checkbox
-                  v-model="clearMcpHeaders"
-                  binary
-                  input-id="toolset-clear-mcp-headers"
+            <template v-if="form.kind === 'mcp'">
+              <div class="field">
+                <label for="toolset-mcp-url">MCP URL</label>
+                <InputText id="toolset-mcp-url" v-model="form.mcp_url" />
+              </div>
+              <div class="field">
+                <label for="toolset-mcp-headers">Headers (JSON)</label>
+                <Textarea
+                  id="toolset-mcp-headers"
+                  v-model="form.mcp_headers"
+                  rows="3"
+                  auto-resize
+                  :disabled="clearMcpHeaders"
+                  :placeholder="
+                    toolset.has_mcp_headers
+                      ? 'leave blank to keep the stored headers'
+                      : '{&quot;Authorization&quot;: &quot;Bearer …&quot;}'
+                  "
                 />
-                Remove the stored headers on save
-              </label>
-            </div>
+                <p v-if="toolset.has_mcp_headers" class="hint">
+                  Authentication headers are stored — leave this blank to keep them, or paste a new
+                  JSON object to replace them.
+                </p>
+                <label
+                  v-if="toolset.has_mcp_headers"
+                  class="checkbox-option"
+                  for="toolset-clear-mcp-headers"
+                >
+                  <Checkbox
+                    v-model="clearMcpHeaders"
+                    binary
+                    input-id="toolset-clear-mcp-headers"
+                  />
+                  Remove the stored headers on save
+                </label>
+              </div>
+            </template>
+            <p v-else-if="form.kind === 'documents'" class="hint">
+              A documents toolset has no server and no canned responses: it offers
+              <span class="mono">list_documents</span>, <span class="mono">search_documents</span> and
+              <span class="mono">read_document</span> over the corpus below, and every call is answered
+              from it live. Switching a toolset to this kind adds the three tools and clears any stored
+              MCP URL and headers.
+            </p>
+            <label v-if="auth.isBaseWorkspace" class="checkbox-option" for="toolset-is-global">
+              <Checkbox v-model="form.is_global" binary input-id="toolset-is-global" />
+              Global — share this toolset with every workspace
+            </label>
           </template>
-          <p v-else-if="form.kind === 'documents'" class="hint">
-            A documents toolset has no server and no canned responses: it offers
-            <span class="mono">list_documents</span>, <span class="mono">search_documents</span> and
-            <span class="mono">read_document</span> over the corpus below, and every call is answered
-            from it live. Switching a toolset to this kind adds the three tools and clears any stored
-            MCP URL and headers.
-          </p>
-          <label v-if="auth.isBaseWorkspace" class="checkbox-option" for="toolset-is-global">
-            <Checkbox v-model="form.is_global" binary input-id="toolset-is-global" />
-            Global — share this toolset with every workspace
-          </label>
 
           <p class="hint">Updated {{ formatDateTime(toolset.updated_at) }}</p>
 
@@ -681,7 +715,7 @@ function formatChars(chars: number): string {
           </div>
         </form>
 
-        <div class="danger-zone">
+        <div v-if="auth.canAdminister" class="danger-zone">
           <Button
             label="Delete toolset"
             severity="danger"
@@ -726,7 +760,9 @@ function formatChars(chars: number): string {
                 <Tag v-if="data.source === 'mcp'" value="discovered" severity="info" />
                 <Tag v-if="data.source === 'documents'" value="synthesized" severity="success" />
               </div>
-              <span v-if="data.description" class="description">{{ data.description }}</span>
+              <span v-if="data.description" class="description clamped" :title="titleIfShort(data.description)">
+                {{ data.description }}
+              </span>
             </template>
           </Column>
           <Column header="" class="actions-column">
@@ -870,11 +906,16 @@ function formatChars(chars: number): string {
       </section>
     </template>
 
+    <!-- The view width rather than the form width: a real customer's tool
+         description runs to tens of thousands of characters and a JSON mock
+         response further still, so this is a long-text editor, not a
+         three-field creation form. Every long field has a fixed height and
+         scrolls on its own, so the dialog's buttons stay in reach. -->
     <Dialog
       v-model:visible="toolDialogOpen"
       modal
       :header="editingTool ? `Edit ${editingTool.name}` : 'New tool'"
-      class="form-dialog"
+      class="view-dialog"
     >
       <form class="dialog-form" @submit.prevent="submitTool">
         <div class="field">
@@ -883,16 +924,14 @@ function formatChars(chars: number): string {
         </div>
         <div class="field">
           <label for="tool-description">Description</label>
-          <InputText id="tool-description" v-model="toolForm.description" />
+          <Textarea id="tool-description" v-model="toolForm.description" rows="8" class="long-input" />
+          <p class="hint">{{ formatChars(toolForm.description.length) }}</p>
         </div>
         <div class="field">
           <label for="tool-parameters">Parameters (JSON Schema)</label>
           <Textarea id="tool-parameters" v-model="toolForm.parameters_json" rows="4" auto-resize class="mono-input" />
         </div>
-        <div class="field">
-          <label for="tool-mock-response">Mock response</label>
-          <Textarea id="tool-mock-response" v-model="toolForm.mock_response" rows="4" auto-resize class="mono-input" />
-        </div>
+        <MockResponsesEditor v-model="toolForm.mock_responses" id-prefix="tool-mock-response" />
         <Message v-if="toolFormError" severity="error" :closable="false">{{ toolFormError }}</Message>
         <div class="dialog-actions">
           <Button type="button" label="Cancel" text @click="toolDialogOpen = false" />
@@ -982,8 +1021,17 @@ function formatChars(chars: number): string {
   justify-content: space-between;
 }
 
-.mono-input :deep(textarea) {
+/* PrimeVue 4's Textarea *is* the <textarea>, so the class lands on the element
+ * itself — a `:deep(textarea)` descendant selector here never matched it. */
+.mono-input {
   font-family: var(--p-font-family-mono, ui-monospace, monospace);
+}
+
+/* A tool description can be 25,000 characters: fixed height, its own scroll,
+ * and a drag handle that only goes taller — sideways would push past the
+ * dialog's edge. */
+.long-input {
+  resize: vertical;
 }
 
 /* A document's path is read character by character (a trailing `.markdown`, a
@@ -1013,5 +1061,17 @@ function formatChars(chars: number): string {
   font-size: 0.8125rem;
   color: var(--p-text-muted-color);
   margin-top: 0.125rem;
+}
+
+/* A tool's description is the full text the model is offered, and can run to
+ * tens of thousands of characters — the table shows two lines of it and the
+ * edit dialog holds the rest. */
+.description.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 </style>

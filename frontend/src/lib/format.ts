@@ -92,6 +92,29 @@ export function excerpt(value: string | null | undefined, max = 60): string {
   return flat.length > max ? `${flat.slice(0, max)}…` : flat
 }
 
+/** A text's size in characters with thousands separators: `25,000 chars`.
+ * Characters and not bytes, because that is the unit `read_document` windows a
+ * corpus in and the unit a tool description or mock response is measured in
+ * when it grows to tens of thousands of them — the editor and the model count
+ * the same thing. */
+export function formatChars(chars: number): string {
+  return `${chars.toLocaleString()} chars`
+}
+
+/** Longest text worth offering as a native `title` tooltip. Past this a hover
+ * box is a wall the reader cannot scroll — a 25,000-character tool description
+ * as a tooltip is noise — so the full text stays one click away in its editor
+ * instead. */
+const MAX_TITLE_CHARS = 500
+
+/** The full text for a `title` attribute beside a clamped preview, or
+ * `undefined` (which Vue renders as no attribute at all) when it is too long to
+ * be read that way. */
+export function titleIfShort(value: string | null | undefined): string | undefined {
+  if (!value) return undefined
+  return value.length <= MAX_TITLE_CHARS ? value : undefined
+}
+
 /**
  * An endpoint's name as a run displays it. A run keeps its
  * `endpoint_snapshot`, so the fallback is only reached when the run predates

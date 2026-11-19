@@ -9,7 +9,7 @@
 // does its own `fetch` + `ReadableStream` reader.
 import { ApiError } from './client'
 import { api } from './client'
-import type { ToolChoice, ToolMode } from './testCases'
+import type { HistoryTurn, ToolChoice, ToolMode } from './testCases'
 
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed'
 export type ResultStatus = 'pending' | 'running' | 'ok' | 'error'
@@ -61,7 +61,15 @@ export interface SnapshotTool {
   source: 'manual' | 'mcp' | 'documents'
   toolset_id: number
   toolset_name: string
+  /** The first canned response, or `null` when none was configured — kept
+   * under this name so a snapshot of a one-response tool stays byte-identical
+   * to one frozen before responses were chosen by call order, and comparing
+   * the two reports no false "tools" drift. */
   mock_response: string | null
+  /** The whole call-order list, present only when the tool had more than one
+   * response (call N got entry N, the last repeating). Absent means
+   * `mock_response` alone was the answer to every call. */
+  mock_responses?: string[]
   /** Present only on a `documents` tool: the size and freshness of the corpus at
    * run creation. The corpus itself is not frozen (a document tool reads live,
    * scoped by `toolset_id`), so these two are a record of what the run was
@@ -133,6 +141,10 @@ export interface RunResultView {
    * so `/results` can say *the task prompt changed* rather than *the user
    * message changed*. */
   task_prompt_text: string | null
+  /** The test case's earlier conversation turns, frozen at run creation and
+   * sent between the system message and the final user message. Null when the
+   * case had none. */
+  history: HistoryTurn[] | null
   tools_snapshot: SnapshotTool[] | null
   tool_mode: ToolMode
   tool_choice: ToolChoice | null

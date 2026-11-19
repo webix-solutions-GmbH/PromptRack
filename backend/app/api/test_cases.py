@@ -22,6 +22,12 @@ The second shared guard works the same way:
 neither a task prompt nor non-blank `content`, because that request has no
 user message at all. It lives inside the repository functions too, evaluated
 on the *merged* post-patch state, and runs again at run creation.
+
+Two more fields follow the same pattern. `history` (earlier user/assistant
+turns) is checked by `message_assembly.validate_history` inside the repository
+functions. `mock_overrides` (per-tool canned responses for this case) is
+checked by `assert_tool_config` on the post-patch configuration — every key an
+enabled manual tool of the selected toolsets — and again at run creation.
 """
 
 from collections.abc import Sequence
@@ -44,7 +50,13 @@ from app.repos.test_cases import (
     update_test_case,
 )
 from app.scope import CrossCustomerError, Scope
-from app.services.message_assembly import NoUserMessageError
+from app.services.message_assembly import (
+    HistoryError,
+    HistoryTurn,
+    NoUserMessageError,
+    decode_history,
+)
+from app.services.tool_authoring import clean_mock_overrides, decode_mock_overrides
 from app.services.tool_config import (
     DEFAULT_MAX_TURNS,
     ToolConfigError,
@@ -80,6 +92,11 @@ class TestCaseView(BaseModel):
     tool_choice: ToolChoice | None
     max_turns: int
     toolset_ids: list[int]
+    #: Earlier user/assistant turns sent before the user message; `[]` = none.
+    history: list[HistoryTurn]
+    #: Per-tool canned-response overrides for this case, keyed by tool name;
+    #: `{}` = none. Inert under `tool_mode = "none"`.
+    mock_overrides: dict[str, list[str]]
     sort_order: int
     created_at: datetime
     updated_at: datetime
@@ -102,7 +119,18 @@ class TestCaseWriteRequest(BaseModel):
     tool_choice: ToolChoice | None = None
     max_turns: int = DEFAULT_MAX_TURNS
     toolset_ids: list[int] = Field(default_factory=list)
+    #: Validated by `validate_history` inside the repository (a 400 naming the
+    #: case): starts with user, alternates, ends with assistant.
+    history: list[HistoryTurn] = Field(default_factory=list)
+    #: Each key must name an enabled manual tool of the selected toolsets
+    #: (`assert_tool_config`, a 400); shape and text limits are checked here.
+    mock_overrides: dict[str, list[str]] = Field(default_factory=dict)
     sort_order: int = 0
+
+    @field_validator("mock_overrides")
+    @classmethod
+    def _clean_mock_overrides(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        return clean_mock_overrides(value)
 
     @field_validator("title")
     @classmethod
@@ -152,7 +180,18 @@ class TestCasePatchRequest(BaseModel):
     tool_choice: ToolChoice | None = None
     max_turns: int | None = None
     toolset_ids: list[int] | None = None
+    #: Absent = untouched; `null` or `[]` clears.
+    history: list[HistoryTurn] | None = None
+    #: Absent = untouched; `null` or `{}` clears.
+    mock_overrides: dict[str, list[str]] | None = None
     sort_order: int | None = None
+
+    @field_validator("mock_overrides")
+    @classmethod
+    def _clean_mock_overrides_if_present(
+        cls, value: dict[str, list[str]] | None
+    ) -> dict[str, list[str]] | None:
+        return None if value is None else clean_mock_overrides(value)
 
     @field_validator("title")
     @classmethod
@@ -218,6 +257,8 @@ def _view(
         tool_choice=test_case.tool_choice,
         max_turns=test_case.max_turns,
         toolset_ids=toolset_ids,
+        history=decode_history(test_case.history),
+        mock_overrides=decode_mock_overrides(test_case.mock_overrides),
         sort_order=test_case.sort_order,
         created_at=test_case.created_at,
         updated_at=test_case.updated_at,
@@ -323,6 +364,7 @@ async def create_test_case_endpoint(
             tool_mode=body.tool_mode,
             toolset_ids=body.toolset_ids,
             subject=f'Test case "{body.title}"',
+            mock_overrides=body.mock_overrides,
         )
         test_case = await create_test_case(
             scope,
@@ -337,13 +379,15 @@ async def create_test_case_endpoint(
             tool_choice=body.tool_choice,
             max_turns=body.max_turns,
             sort_order=body.sort_order,
+            history=body.history,
+            mock_overrides=body.mock_overrides,
         )
         await replace_toolset_links(scope, session, test_case.id, body.toolset_ids)
     except CrossCustomerError as exc:
         # A prompt (or group, or toolset) that is not in this workspace reads
         # as "no such row" — a 404, not a hint that it exists elsewhere.
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except (ToolConfigError, PromptSlotError, NoUserMessageError) as exc:
+    except (ToolConfigError, PromptSlotError, NoUserMessageError, HistoryError) as exc:
         # A wrong-kind prompt and a case with no user message are both bad
         # requests about rows that do exist here.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
@@ -384,6 +428,26 @@ async def patch_test_case_endpoint(
     ):
         if field in body.model_fields_set:
             values[field] = getattr(body, field)
+    # Presence-patched like the rest; `null` and empty both clear.
+    if "history" in body.model_fields_set:
+        values["history"] = body.history or []
+    if "mock_overrides" in body.model_fields_set:
+        values["mock_overrides"] = body.mock_overrides or {}
+    # Override *names* are re-validated only when the patch touches something
+    # they are checked against — the overrides themselves, the toolsets or the
+    # tool mode. A stored override gone stale some other way must not make every
+    # unrelated edit of the case (a title, a rubric) refuse; run creation still
+    # checks it every time, and that is the backstop that names the case.
+    recheck_overrides = (
+        "mock_overrides" in values or "tool_mode" in values or body.toolset_ids is not None
+    )
+    effective_overrides = (
+        None
+        if not recheck_overrides
+        else values["mock_overrides"]
+        if "mock_overrides" in values
+        else decode_mock_overrides(existing.mock_overrides)
+    )
 
     # Re-checked against the configuration as it will be *after* the patch —
     # switching `tool_mode` without naming `toolset_ids` keeps the existing
@@ -402,6 +466,10 @@ async def patch_test_case_endpoint(
             tool_mode=effective_tool_mode,
             toolset_ids=effective_toolset_ids,
             subject=f'Test case "{values.get("title", existing.title)}"',
+            # The overrides as they will be after the patch, against the
+            # toolsets as they will be: dropping a toolset whose tool is still
+            # overridden is refused rather than left as a dead override.
+            mock_overrides=effective_overrides,
         )
         if values:
             await update_test_case(scope, session, test_case_id, values)
@@ -409,7 +477,7 @@ async def patch_test_case_endpoint(
             await replace_toolset_links(scope, session, test_case_id, body.toolset_ids)
     except CrossCustomerError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    except (ToolConfigError, PromptSlotError, NoUserMessageError) as exc:
+    except (ToolConfigError, PromptSlotError, NoUserMessageError, HistoryError) as exc:
         # `update_test_case` evaluates the user-message guard on the *merged*
         # post-patch row, so a patch that only clears `content` on a case with
         # no task prompt is refused here rather than surviving as a case run

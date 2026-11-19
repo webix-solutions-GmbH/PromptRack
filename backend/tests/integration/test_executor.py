@@ -14,14 +14,17 @@ was never reachable", and an interrupted row going back to `pending`.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+import httpx
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.main import app
 from app.repos.documents import create_document
 from app.repos.endpoints import create_endpoint
 from app.repos.prompts import create_prompt
@@ -30,7 +33,7 @@ from app.repos.test_cases import create_test_case, create_test_group
 from app.repos.toolsets import create_tool, create_toolset
 from app.scope import Scope
 from app.services.executor import RESET_TO_PENDING, RunAlreadyExecutingError, execute_run
-from app.services.llm import LlmError, LlmResult, ToolCall
+from app.services.llm import LlmError, LlmResult, ToolCall, stream_chat
 from app.services.run_create import create_run_record
 from app.services.run_events import RunEvent
 from app.services.run_lock import acquire_run_lock
@@ -528,7 +531,7 @@ class TestToolRuns:
             name="lookup_order",
             description="Looks an order up.",
             parameters_json='{"type":"object","properties":{}}',
-            mock_response='{"status":"shipped"}',
+            mock_responses=['{"status":"shipped"}'],
         )
         await session.commit()
 
@@ -557,6 +560,187 @@ class TestToolRuns:
         assert "TurnStart" in emitted
         assert "ToolCallEvent" in emitted
         assert "ToolResultEvent" in emitted
+
+    async def test_canned_responses_answer_by_call_order_against_the_mock_llm(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        """End to end through the real mock endpoint, over the app's own ASGI
+        transport: `TRIGGER_TOOL_LOOP` makes it call the tool every turn, so the
+        three executed calls get response 1, then 2, then 2 again (the last
+        repeats). `max_turns=4` because the loop stops *before* executing calls
+        it has no turn left to feed back — three executions need a fourth turn.
+        """
+        toolset = await create_toolset(scope, session, name="Pager", kind="manual")
+        await create_tool(
+            scope,
+            session,
+            toolset.id,
+            name="fetch_page",
+            parameters_json='{"type":"object","properties":{}}',
+            mock_responses=['{"page": 1}', '{"page": 2}'],
+        )
+        endpoint = await create_endpoint(
+            scope, session, name="Mock", base_url="http://testserver/api/mock-llm"
+        )
+        group = await create_test_group(scope, session, name="Group")
+        case = await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="Pages",
+            content="Read every page. TRIGGER_TOOL_LOOP",
+            tool_mode="execute",
+            max_turns=4,
+        )
+        from app.repos.test_cases import replace_toolset_links
+
+        await replace_toolset_links(scope, session, case.id, [toolset.id])
+        await session.commit()
+        created = await create_run_record(
+            scope,
+            session,
+            endpoint_id=endpoint.id,
+            model_id="mock-fast-7b",
+            group_ids=[group.id],
+            probe=_no_probe,
+        )
+        await session.commit()
+
+        stream = functools.partial(stream_chat, transport=httpx.ASGITransport(app=app))
+        await execute_run(created.run_id, lambda _event: None, stream=stream)
+
+        [result] = await reload_results(scope, session, created.run_id)
+        assert result.status == "ok", result.error
+        assert result.stopped_reason == "max_turns"
+        transcript = parse_transcript(result.transcript_json) or []
+        tool_messages = [message for message in transcript if message.role == "tool"]
+        assert [message.content for message in tool_messages] == [
+            '{"page": 1}',
+            '{"page": 2}',
+            '{"page": 2}',
+        ]
+        assert all(message.tool_is_error is False for message in tool_messages)
+        # Both responses are frozen; the first stays in the legacy key.
+        [frozen] = json.loads(result.tools_snapshot)
+        assert frozen["mock_response"] == '{"page": 1}'
+        assert frozen["mock_responses"] == ['{"page": 1}', '{"page": 2}']
+
+
+HISTORY = [
+    {"role": "user", "content": "List open orders."},
+    {"role": "assistant", "content": '{"orders": [4711, 4712]}'},
+]
+
+
+class TestConversationHistoryAndOverrides:
+    async def test_history_is_sent_between_the_system_and_the_user_message(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        endpoint = await create_endpoint(scope, session, name="Box", base_url="http://x/v1")
+        group = await create_test_group(scope, session, name="Group")
+        system_prompt = await create_prompt(
+            scope, session, name="framing", content="You are terse.", kind="system"
+        )
+        await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="Follow-up",
+            content="Same list, only Germany.",
+            system_prompt_id=system_prompt.id,
+            history=HISTORY,
+        )
+        await session.commit()
+        created = await create_run_record(
+            scope,
+            session,
+            endpoint_id=endpoint.id,
+            model_id="test-model",
+            group_ids=[group.id],
+            probe=_no_probe,
+        )
+        await session.commit()
+        stream, calls = scripted(_result("4712"))
+
+        await execute_run(created.run_id, lambda _event: None, stream=stream)
+
+        assert calls[0] == [
+            {"role": "system", "content": "You are terse."},
+            *HISTORY,
+            {"role": "user", "content": "Same list, only Germany."},
+        ]
+        [result] = await reload_results(scope, session, created.run_id)
+        assert result.status == "ok"
+        assert json.loads(result.history or "null") == HISTORY
+        # A plain prompt still keeps no transcript; the frozen column is the record.
+        assert result.transcript_json is None
+
+    async def test_an_override_answers_and_history_precedes_the_user_message_on_the_mock_llm(
+        self, session: AsyncSession, scope: Scope
+    ) -> None:
+        """End to end through the real mock endpoint: the shared toolset's own
+        canned response is never seen, the case's override is, and the
+        transcript records the history ahead of the user message with no turn.
+        """
+        toolset = await create_toolset(scope, session, name="Desk", kind="manual")
+        await create_tool(
+            scope,
+            session,
+            toolset.id,
+            name="lookup_order",
+            parameters_json='{"type":"object","properties":{}}',
+            mock_responses=['{"status": "SHARED"}'],
+        )
+        endpoint = await create_endpoint(
+            scope, session, name="Mock", base_url="http://testserver/api/mock-llm"
+        )
+        group = await create_test_group(scope, session, name="Group")
+        case = await create_test_case(
+            scope,
+            session,
+            group_id=group.id,
+            title="Follow-up",
+            content="And the status of 4712?",
+            tool_mode="execute",
+            max_turns=3,
+            history=HISTORY,
+            mock_overrides={"lookup_order": ['{"status": "OVERRIDDEN"}']},
+        )
+        from app.repos.test_cases import replace_toolset_links
+
+        await replace_toolset_links(scope, session, case.id, [toolset.id])
+        await session.commit()
+        created = await create_run_record(
+            scope,
+            session,
+            endpoint_id=endpoint.id,
+            model_id="mock-fast-7b",
+            group_ids=[group.id],
+            probe=_no_probe,
+        )
+        await session.commit()
+
+        stream = functools.partial(stream_chat, transport=httpx.ASGITransport(app=app))
+        await execute_run(created.run_id, lambda _event: None, stream=stream)
+
+        [result] = await reload_results(scope, session, created.run_id)
+        assert result.status == "ok", result.error
+        transcript = parse_transcript(result.transcript_json) or []
+        assert [(message.role, message.turn) for message in transcript[:3]] == [
+            ("user", None),
+            ("assistant", None),
+            ("user", None),
+        ]
+        assert [message.content for message in transcript[:2]] == [
+            turn["content"] for turn in HISTORY
+        ]
+        assert transcript[2].content == "And the status of 4712?"
+        tool_messages = [message for message in transcript if message.role == "tool"]
+        assert [message.content for message in tool_messages] == ['{"status": "OVERRIDDEN"}']
+        assert "SHARED" not in (result.transcript_json or "")
+        # The measured turns are the model's alone.
+        assert result.turn_count == 2
+        assert result.tool_call_count == 1
 
 
 #: Two documents in one corpus, in the mixed German/English a customer's
@@ -720,7 +904,7 @@ class TestDocumentRuns:
         ]
         assert {tool.source for tool in snapshot} == {"documents"}
         assert {tool.toolset_id for tool in snapshot} == {toolset_id}
-        assert {tool.mock_response for tool in snapshot} == {None}
+        assert {tool.mock_responses for tool in snapshot} == {()}
         assert {tool.document_count for tool in snapshot} == {2}
         assert all(tool.corpus_updated_at for tool in snapshot)
 
